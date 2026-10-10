@@ -116,6 +116,15 @@ func (e *Envelope) textSlots() []*slot {
 					continue
 				}
 				role, _ := obj["role"].(string)
+				if typ, _ := obj["type"].(string); typ == "function_call_output" {
+					// Responses 的工具结果:文本在 output 字段(Rust classify 同义)。
+					if _, ok := obj["output"].(string); ok {
+						ctx := SlotCtx{Kind: SlotToolResult, Role: role, MessageIndex: i + 1,
+							Pointer: fmt.Sprintf("/input/%d/output", i)}
+						out = append(out, mapSlot(obj, "output", ctx))
+					}
+					continue
+				}
 				kind := kindForRole(role)
 				ptr := fmt.Sprintf("/input/%d/content", i)
 				if _, ok := obj["content"]; ok {
@@ -160,6 +169,8 @@ func kindForRole(role string) SlotKind {
 		return SlotUserText
 	case "assistant":
 		return SlotAssistantText
+	case "tool":
+		return SlotToolResult
 	default:
 		return SlotUnknown
 	}
@@ -202,7 +213,9 @@ func blocksOrStringSlots(container map[string]any, key string, base SlotCtx) []*
 				ctx := base
 				ctx.Kind = SlotToolResult
 				ctx.Pointer = fmt.Sprintf("%s/%d/content", base.Pointer, j)
-				if inner, ok := obj["content"]; ok {
+				if _, isStr := obj["content"].(string); isStr {
+					out = append(out, mapSlot(obj, "content", ctx))
+				} else if inner, ok := obj["content"]; ok {
 					out = append(out, contentSlots(inner, ctx)...)
 				}
 			}

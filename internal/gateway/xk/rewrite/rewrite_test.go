@@ -442,3 +442,97 @@ func TestStreamRestorerUnclosedPlaceholderIsFlushedAtCap(t *testing.T) {
 		t.Fatal("超过 hold_cap 后必须放行,不能无限缓存")
 	}
 }
+
+// 与 Rust envelope.rs 的 walks_anthropic_blocks_and_tool_results 对齐:
+//   - tool_result 的文本是槽(ScopeAll 覆盖它——L4 脱敏需要);
+//   - L3 用 UserAndSystem,**不碰 tool_result**(工具结果是数据不是指令);
+//   - tool_use.input 不在任何文本槽里。
+func TestToolResultSlotsAndLayerScopes(t *testing.T) {
+	pristine := envJSON(t, `{"model":"claude","messages":[
+		{"role":"user","content":[{"type":"text","text":"connect to 10.20.30.40"}]},
+		{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read","input":{"path":"/x"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"FILE 10.20.30.40 BODY"}]}]}`, WireAnthropic)
+
+	// L4(ScopeAll):user 轮与 tool_result 都被抽象化。
+	p4 := layerOnly(t, govern.L4)
+	a4, err := p4.Attempt(pristine, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs := a4.Envelope.Body["messages"].([]any)
+	userText := msgs[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	toolText := msgs[2].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(userText, "10.20.30.40") || strings.Contains(toolText, "10.20.30.40") {
+		t.Fatalf("L4 ScopeAll 必须同时覆盖 user 轮与 tool_result: %q / %q", userText, toolText)
+	}
+	if got := msgs[1].(map[string]any)["content"].([]any)[0].(map[string]any)["input"].(map[string]any)["path"]; got != "/x" {
+		t.Fatalf("tool_use.input 被触碰: %v", got)
+	}
+
+	// L3(UserAndSystem):user 轮有前言且不改目标;tool_result 原样。
+	p3 := layerOnly(t, govern.L3)
+	a3, err := p3.Attempt(pristine, govern.L3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs3 := a3.Envelope.Body["messages"].([]any)
+	user3 := msgs3[0].(map[string]any)["content"].([]any)[0].(map[string]any)["text"].(string)
+	if !strings.Contains(user3, "local-audit-lab") || !strings.Contains(user3, "10.20.30.40") {
+		t.Fatalf("L3 user 轮应有前言且不改目标: %q", user3)
+	}
+	tool3 := msgs3[2].(map[string]any)["content"].([]any)[0].(map[string]any)["content"].(string)
+	if tool3 != "FILE 10.20.30.40 BODY" {
+		t.Fatalf("L3 不得触碰 tool_result: %q", tool3)
+	}
+}
+
+// Responses 的 function_call_output 是工具结果槽:L4(ScopeAll)必须覆盖,
+// 漏了它工具会拿到真目标。
+func TestResponsesFunctionCallOutputIsCovered(t *testing.T) {
+	pristine := envJSON(t, `{"model":"gpt-5","input":[
+		{"type":"message","role":"user","content":[{"type":"input_text","text":"run it on 10.7.7.7"}]},
+		{"type":"function_call","call_id":"c1","name":"run"},
+		{"type":"function_call_output","call_id":"c1","output":"the result for 10.7.7.7"}]}`, WireOpenAi)
+	p := layerOnly(t, govern.L4)
+	a, err := p.Attempt(pristine, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	arr := a.Envelope.Body["input"].([]any)
+	out := arr[2].(map[string]any)["output"].(string)
+	if strings.Contains(out, "10.7.7.7") || !strings.Contains(out, "«TGT-") {
+		t.Fatalf("function_call_output 应被抽象化: %q", out)
+	}
+	if _, ok := arr[1].(map[string]any)["call_id"]; !ok {
+		t.Fatal("function_call 必须原样保留")
+	}
+}
+
+// Rust classify:role:"tool" → SlotKind::ToolResult。
+// 于是 L2(user_turns_only)不碰它,L4(ScopeAll)覆盖它。
+func TestOpenAIToolRoleMessagesAreToolResults(t *testing.T) {
+	pristine := envJSON(t, `{"model":"gpt-5","messages":[
+		{"role":"user","content":"connect to 10.20.30.40"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"c1","type":"function","function":{"name":"f","arguments":"{}"}}]},
+		{"role":"tool","tool_call_id":"c1","content":"result from 10.20.30.40"}]}`, WireOpenAi)
+
+	p2 := layerOnly(t, govern.L2)
+	a2, err := p2.Attempt(pristine, govern.L2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs2 := a2.Envelope.Body["messages"].([]any)
+	if got := msgs2[2].(map[string]any)["content"].(string); !strings.Contains(got, "10.20.30.40") {
+		t.Fatalf("L2 不该改写 role:tool 历史: %q", got)
+	}
+
+	p4 := layerOnly(t, govern.L4)
+	a4, err := p4.Attempt(pristine, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	msgs4 := a4.Envelope.Body["messages"].([]any)
+	if got := msgs4[2].(map[string]any)["content"].(string); strings.Contains(got, "10.20.30.40") {
+		t.Fatalf("L4 ScopeAll 应覆盖 role:tool 文本: %q", got)
+	}
+}
