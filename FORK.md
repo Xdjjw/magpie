@@ -24,7 +24,7 @@ Codex / Claude Code / … ──► magpie(:3425,方言互转 + 切换 + 账号�
 | 补丁 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | `internal/provider/presets.go`:内置 `xkeysmith` preset(KindLocal,NoKey,Chat+Responses 双方言 base) | ✅ |
-| 2 | xkeysmith 侧:`/v1/models` 透传端点(xp-provider `list_models` + xp-server 路由),让 magpie 自动列出真实上游模型 | ✅ |
+| 2 | ~~xkeysmith 侧 `/v1/models` 透传~~ —— 已撤销:迁移是**单向**的,magpie fork 不依赖也不改动 xkeysmith 仓库。模型清单用 `magpie provider add xkeysmith models=…` 手填。 | 撤销 |
 | 3 | sidecar 生命周期(`xksidecar.go`):仅对默认端口 8787 或显式 `XKEYSMITH_BIN` 探活/拉起,**绝不对其他回环地址发探活**(会消耗上游请求) | ✅ |
 | 4 | 状态透出:`x-xkeysmith-layer` / `-escalated` / `-stop` 响应头,客户端据此关联审计记录 | ✅ |
 
