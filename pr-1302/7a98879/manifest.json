@@ -1,0 +1,54 @@
+{
+  "summary": "Agents 页列表底部多了一条管理栏：原有折叠控件旁新增「管理」按钮，点开一个批量管理对话框，可搜索 Agent、全选/反选搜索结果、选择未接入项、清空选择，并批量隐藏或取消隐藏所选 Agent。另外插件页的 npm 搜索结果改为在原位置重绘，避免答案到达时点掉正在按下的卡片。",
+  "scenes": [
+    {
+      "title": "Agents 底部的批量管理入口",
+      "shots": [
+        {
+          "file": "01-manage-bar.png",
+          "caption": "Agents 列表底部：折叠控件旁边新增的「管理」按钮",
+          "width": 2492
+        },
+        {
+          "file": "02-manage-dialog.png",
+          "caption": "批量管理对话框：搜索框、批量选择按钮与 Agent 勾选行",
+          "width": 2560
+        },
+        {
+          "file": "03-search-filtered.png",
+          "caption": "输入后的对话框内容",
+          "width": 2560
+        }
+      ]
+    },
+    {
+      "title": "批量隐藏所选 Agent",
+      "shots": [
+        {
+          "file": "04-two-selected.png",
+          "caption": "勾选两行后底部的选择计数与按钮状态",
+          "width": 2560
+        },
+        {
+          "file": "05-after-hide.png",
+          "caption": "批量隐藏后对话框里显示的内容",
+          "width": 2560
+        },
+        {
+          "file": "06-agents-after-hide.png",
+          "caption": "关闭后的 Agents 列表与底部管理栏",
+          "width": 2496
+        }
+      ]
+    }
+  ],
+  "video": "preview.mp4",
+  "poster": "poster.png",
+  "errors": [],
+  "leak": false,
+  "skipped": null,
+  "mismatch": "",
+  "unseen": "插件页搜索结果的原地重绘是时序修复，界面上看不出差别；保存失败时保留选择、保存中禁止关闭，以及更窄窗口（约 360px）下的底部栏换行，需要接口报错或改窗口宽度，这次 1280×800 的录制无法展示。",
+  "interactive": true,
+  "pages": 1
+}

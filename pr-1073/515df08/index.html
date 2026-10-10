@@ -1,0 +1,14 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1073 界面预览 · 515df08</title>
+<style>:root{color-scheme:light dark;--bg:#f6f6f7;--fg:#1d1d1f;--muted:#6e6e73;--card:#fff;--line:#e5e5ea}
+@media (prefers-color-scheme:dark){:root{--bg:#111113;--fg:#f2f2f4;--muted:#9a9aa0;--card:#1c1c1f;--line:#2c2c30}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+main{max-width:1100px;margin:0 auto;padding:28px 16px 60px}h1{font-size:20px;margin:0 0 4px}.m{color:var(--muted);font-size:13px;margin:0 0 20px}
+video,img{display:block;width:100%;border-radius:10px;border:1px solid var(--line);background:var(--card)}figure{margin:0 0 28px}figcaption{color:var(--muted);font-size:13px;margin-top:8px}
+a{color:inherit}</style>
+<main><h1>#1073 界面预览</h1><p class="m">commit 515df08 · <a href="https://github.com/yetone/magpie/pull/1073">回到 PR</a> · 该 diff 把设置里三处模型选择（Codex 会话标题、图片识别、图片生成）保存时的校验从 provider.Resolve 换成各自选择器列出的清单：选了不在清单里的模型会返回 400 并保留原来的已存值；图片生成的候选清单被抽成 imageGens()，内容与改动前一样。</p>
+<figure><video src="preview.mp4" controls autoplay muted playsinline poster="poster.png"></video><figcaption>红线是鼠标走过的轨迹，红色圆环是一次点击；底部文字是这一步在做什么。空格暂停，← → 逐段查看。</figcaption></figure>
+<figure><img src="01-settings-codex-titles-row.png" alt="设置 · 常规：Codex 会话标题一行"><figcaption>设置里的 Codex 会话标题选择 · 设置 · 常规：Codex 会话标题一行</figcaption></figure>
+<figure><img src="02-codex-titles-picker.png" alt="选择器里列出的模型与路由组：保存时就在这份列表里校验"><figcaption>设置里的 Codex 会话标题选择 · 选择器里列出的模型与路由组：保存时就在这份列表里校验</figcaption></figure>
+<figure><img src="03-settings-models-tab.png" alt="模型页：图片识别与图片生成所用的模型"><figcaption>设置 · 模型页的图片相关选择 · 模型页：图片识别与图片生成所用的模型</figcaption></figure>
+</main></html>

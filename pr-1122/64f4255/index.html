@@ -1,0 +1,17 @@
+<!doctype html><html lang="zh"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>#1122 界面预览 · 64f4255</title>
+<style>:root{color-scheme:light dark;--bg:#f6f6f7;--fg:#1d1d1f;--muted:#6e6e73;--card:#fff;--line:#e5e5ea}
+@media (prefers-color-scheme:dark){:root{--bg:#111113;--fg:#f2f2f4;--muted:#9a9aa0;--card:#1c1c1f;--line:#2c2c30}}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.6 -apple-system,"Segoe UI","PingFang SC","Noto Sans CJK SC",sans-serif}
+main{max-width:1100px;margin:0 auto;padding:28px 16px 60px}h1{font-size:20px;margin:0 0 4px}.m{color:var(--muted);font-size:13px;margin:0 0 20px}
+video,img{display:block;width:100%;border-radius:10px;border:1px solid var(--line);background:var(--card)}figure{margin:0 0 28px}figcaption{color:var(--muted);font-size:13px;margin-top:8px}
+a{color:inherit}</style>
+<main><h1>#1122 界面预览</h1><p class="m">commit 64f4255 · <a href="https://github.com/yetone/magpie/pull/1122">回到 PR</a> · 供应商页新增 Google Vertex AI 预设：添加/编辑它的编辑器不再要 API 密钥，而是「项目 ID / 位置 / 凭据文件 / 服务账号」，端点显示由项目和位置拼出的地址，供应商行的 pill 显示服务账号、凭据文件或 Google 默认凭据（未填项目时显示「需要项目」）；用量页请求列表也能把 Vertex AI 的 streamGenerateContent 标为 Gemini。</p>
+<figure><video src="preview.mp4" controls autoplay muted playsinline poster="poster.png"></video><figcaption>红线是鼠标走过的轨迹，红色圆环是一次点击；底部文字是这一步在做什么。空格暂停，← → 逐段查看。</figcaption></figure>
+<figure><img src="01-add-sheet-presets.png" alt="添加面板里的预设列表，Google Vertex AI 与 Google Gemini 并列"><figcaption>添加 Google Vertex AI 供应商 · 添加面板里的预设列表，Google Vertex AI 与 Google Gemini 并列</figcaption></figure>
+<figure><img src="02-vertex-editor-blank.png" alt="Vertex AI 编辑器的字段：没有 API 密钥，只有项目 ID、位置、凭据文件、服务账号"><figcaption>添加 Google Vertex AI 供应商 · Vertex AI 编辑器的字段：没有 API 密钥，只有项目 ID、位置、凭据文件、服务账号</figcaption></figure>
+<figure><img src="03-vertex-endpoints-typed.png" alt="填了项目后出现的 Endpoints 一行，地址由项目与默认位置 global 拼出"><figcaption>添加 Google Vertex AI 供应商 · 填了项目后出现的 Endpoints 一行，地址由项目与默认位置 global 拼出</figcaption></figure>
+<figure><img src="04-vertex-endpoints-us-central1.png" alt="位置改为 us-central1 后的地址与四个字段的内容"><figcaption>添加 Google Vertex AI 供应商 · 位置改为 us-central1 后的地址与四个字段的内容</figcaption></figure>
+<figure><img src="05-vertex-save-refused.png" alt="没有项目时保存被拒的提示与焦点落回「项目 ID」"><figcaption>保存前的校验与用量页的 Gemini 标签 · 没有项目时保存被拒的提示与焦点落回「项目 ID」</figcaption></figure>
+<figure><img src="06-usage-requests-protocol.png" alt="请求列表里每条请求的协议标签"><figcaption>保存前的校验与用量页的 Gemini 标签 · 请求列表里每条请求的协议标签</figcaption></figure>
+</main></html>

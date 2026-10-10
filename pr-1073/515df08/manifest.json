@@ -1,0 +1,39 @@
+{
+  "summary": "该 diff 把设置里三处模型选择（Codex 会话标题、图片识别、图片生成）保存时的校验从 provider.Resolve 换成各自选择器列出的清单：选了不在清单里的模型会返回 400 并保留原来的已存值；图片生成的候选清单被抽成 imageGens()，内容与改动前一样。",
+  "scenes": [
+    {
+      "title": "设置里的 Codex 会话标题选择",
+      "shots": [
+        {
+          "file": "01-settings-codex-titles-row.png",
+          "caption": "设置 · 常规：Codex 会话标题一行",
+          "width": 2492
+        },
+        {
+          "file": "02-codex-titles-picker.png",
+          "caption": "选择器里列出的模型与路由组：保存时就在这份列表里校验",
+          "width": 2560
+        }
+      ]
+    },
+    {
+      "title": "设置 · 模型页的图片相关选择",
+      "shots": [
+        {
+          "file": "03-settings-models-tab.png",
+          "caption": "模型页：图片识别与图片生成所用的模型",
+          "width": 2560
+        }
+      ]
+    }
+  ],
+  "video": "preview.mp4",
+  "poster": "poster.png",
+  "errors": [],
+  "leak": false,
+  "skipped": null,
+  "mismatch": "描述里说「每个选择现在检查自己的选择器所提供的那份列表」，并强调图片生成的候选来自新的 imageGens（gateway.Drawers）；但 diff 只是把原来那段循环搬进 imageGens()，选择器实际列出的模型与改动前完全相同，diff 也没有给任何选择器加候选、加提示文案或加错误提示的 UI 代码。",
+  "unseen": "沙盒里三处选择器只列出 magpie 实际提供的模型（DeepSeek、Sub2API Relay、Acme Cloud、Codex 及路由组），也没有「供应商停服后留下的陈旧值」，因此「选了清单外的模型 → 保存 400 → 界面上的报错提示」这一步在真实界面里无法复现；这是后端保存校验的改动，界面上能看到的就是原来的选择器列表和保存后的状态。",
+  "interactive": true,
+  "pages": 1
+}
