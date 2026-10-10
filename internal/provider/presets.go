@@ -496,6 +496,17 @@ var presets = []PresetDef{
 	{ID: "mlx-serve", Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:11234/v1", Responses: "http://localhost:11234/v1", Anthropic: "http://localhost:11234",
 		Note: "local server on :11234", Website: "https://github.com/ddalcu/mlx-serve"},
+	// xkeysmith (fork addition): a local semantic gateway between magpie and
+	// the real upstream. It fronts whatever provider is configured inside
+	// xkeysmith itself with an L0-L4 rewrite ladder, refusal detection and
+	// an audit trail; both OpenAI dialects are relayed to it untouched, so
+	// what it sees — and what its audit records — is the client's own
+	// request shape. A key only if xkeysmith's own config set server.token;
+	// its port is 8787 unless changed there. It serves no /models list yet:
+	// give the models with `magpie provider add xkeysmith models=…`.
+	{ID: "xkeysmith", Name: "xkeysmith", Icon: "generic", Kind: KindLocal, NoKey: true,
+		Chat: "http://127.0.0.1:8787/v1", Responses: "http://127.0.0.1:8787/v1",
+		Note: "local semantic pipeline: rewrite ladder, refusal detection, audit"},
 }
 
 func bedrockChat(region string) string {
