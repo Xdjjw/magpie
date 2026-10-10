@@ -43,10 +43,10 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
 
 ## 阶段计划(每阶段以语料为验收契约)
 
-1. **detect + govern + audit**(纯函数三件套)——✅ 已完成(写侧):
+1. **detect + govern + audit**(纯函数三件套)——✅ 已完成(含读侧):
    detect(82 条语料全绿,`409c4fe4`)、govern 33 测试(`ba51641d`)、
-   audit 写侧(记录/脱敏/JSONL 落盘轮转/计数,reader 的 explain/replay
-   随接入展示 UI 时移植)。合计 71 个 Go 测试与 Rust 侧一一对应。
+   audit 写侧(记录/脱敏/JSONL 落盘轮转/计数)+ **读侧**
+   (explain 阶梯表 / stats / tail / **replay 配置漂移检测**)。
 2. **rewrite L1-L3**(文本槽上的确定性变换)——✅ 已完成:
    fence 代码感知切分(保护 fenced/行内代码与 URL)、L1 上下文伪装
    (指令上限/伪装轮次工具配对保护/Responses 的 instructions 分支)、
