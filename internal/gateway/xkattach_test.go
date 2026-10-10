@@ -198,3 +198,21 @@ func TestXkeysmithUpstreamErrorPassesThrough(t *testing.T) {
 		t.Fatalf("body=%s", body)
 	}
 }
+
+func TestXkeysmithTraceHeaders(t *testing.T) {
+	fake := &xkFake{refuseUntil: 1} // L0 拒 → L1 采纳(升级过)
+	xkSetup(t, fake)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+		`{"model":"xkeysmith/gpt-5","messages":[{"role":"user","content":"hi"}]}`))
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code=%d", rec.Code)
+	}
+	if got := rec.Header().Get("x-xkeysmith-layer"); got != "L1" {
+		t.Fatalf("layer 头=%q want L1", got)
+	}
+	if got := rec.Header().Get("x-xkeysmith-escalated"); got != "1" {
+		t.Fatalf("escalated 头=%q want 1", got)
+	}
+}

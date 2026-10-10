@@ -24,9 +24,15 @@ Codex / Claude Code / … ──► magpie(:3425,方言互转 + 切换 + 账号�
 | 补丁 | 内容 | 状态 |
 | --- | --- | --- |
 | 1 | `internal/provider/presets.go`:内置 `xkeysmith` preset(KindLocal,NoKey,Chat+Responses 双方言 base) | ✅ |
-| 2(规划) | xkeysmith 侧:`/v1/models` 透传端点,让 magpie 自动列出真实上游模型 | 未做 |
-| 3(规划) | sidecar 生命周期:复用 `internal/plugin/host.go` 的模式拉起/守护 xkeysmith 二进制 | 未做 |
-| 4(规划) | 状态透出:xkeysmith 的 trace 头(`x-xkeysmith-trace/layer/escalated`)透传给客户端,GUI 显示语义层状态 | 未做 |
+| 2 | xkeysmith 侧:`/v1/models` 透传端点(xp-provider `list_models` + xp-server 路由),让 magpie 自动列出真实上游模型 | ✅ |
+| 3 | sidecar 生命周期(`xksidecar.go`):仅对默认端口 8787 或显式 `XKEYSMITH_BIN` 探活/拉起,**绝不对其他回环地址发探活**(会消耗上游请求) | ✅ |
+| 4 | 状态透出:`x-xkeysmith-layer` / `-escalated` / `-stop` 响应头,客户端据此关联审计记录 | ✅ |
+
+## 语义平面(内置,替代 sidecar 的常态)
+
+fork 内置了完整语义平面(见 `docs/xkeysmith-migration.md`),provider 为
+`xkeysmith` 时走 `serveXkeysmith` 通路:判定 → 升层(L0→L4)→ 还原 → 审计,
+工具轮由网关自己执行。外部 sidecar 只在用户想复用官方二进制时才需要。
 
 ## 关键设计事实(改码前先读)
 

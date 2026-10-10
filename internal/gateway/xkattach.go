@@ -91,6 +91,13 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 		return writeError(w, from, 502, msg), msg
 	}
 
+	// 补丁 3:外部 xkeysmith(如果用户用官方二进制而不是本内置核心)。
+	// 探活/拉起失败都不阻塞——内置核心仍能接管整条通路。
+	if s.xkSide == nil {
+		s.xkSide = newXkSidecar()
+	}
+	s.xkSide.Ensure(xkSidecarURL(p))
+
 	env, err := xkEnvelope(from, body)
 	if err != nil {
 		msg := "xkeysmith: bad request body: " + err.Error()
@@ -151,6 +158,10 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 
 	// 审计:每条 attempt 一条记录。
 	s.xkRecord(settings, r, p, model, from, stream, latency, result)
+
+	// trace 头透出:客户端据此把这次响应与审计记录对上
+	// (xkeysmith 的 explain 用同一个 trace)。
+	xkAttachTraceHeaders(w, result)
 
 	if !result.Accepted {
 		// 不伪造成功:全层耗尽给明确错误(503),上游故障透传原响应。

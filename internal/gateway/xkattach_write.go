@@ -13,9 +13,36 @@ import (
 
 	"github.com/yetone/magpie/internal/gateway/xk/attach"
 	"github.com/yetone/magpie/internal/gateway/xk/audit"
+	"github.com/yetone/magpie/internal/gateway/xk/govern"
 	"github.com/yetone/magpie/internal/gateway/xk/rewrite"
 	"github.com/yetone/magpie/internal/provider"
 )
+
+// xkAttachTraceHeaders 把语义层的结论挂在响应头上,与 xkeysmith 的
+// 头名保持一致(x-xkeysmith-trace / -layer / -escalated),于是同一套
+// 客户端工具与审计解释两边通用。
+func xkAttachTraceHeaders(w http.ResponseWriter, result *attach.LadderResult) {
+	if result == nil {
+		return
+	}
+	if result.Attempt != nil {
+		// 采纳层(或停止时的最后一层)。
+		w.Header().Set("x-xkeysmith-layer", result.Attempt.UpTo.Label())
+	}
+	if result.Accepted {
+		w.Header().Set("x-xkeysmith-escalated", boolFlag(result.AcceptedLayer != govern.L0))
+	} else {
+		w.Header().Set("x-xkeysmith-escalated", "1")
+		w.Header().Set("x-xkeysmith-stop", string(result.StopReason))
+	}
+}
+
+func boolFlag(v bool) string {
+	if v {
+		return "1"
+	}
+	return "0"
+}
 
 // xkWriteProbe writes a non-streaming (or buffered) probe reply, with L4
 // restoration applied to every string in it.

@@ -335,6 +335,8 @@ type Server struct {
 	xkOnce     sync.Once
 	xkErr      error
 	xkSettings *xkSettings
+	// 外部 xkeysmith 进程(可选,补丁 3);由 XKEYSMITH_BIN 打开。
+	xkSide *xkSidecar
 }
 
 // New makes a gateway.
