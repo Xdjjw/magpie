@@ -1,0 +1,216 @@
+package tools
+
+import (
+	"bufio"
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+)
+
+// Streamable HTTP 传输(MCP 2025-06-18)。
+//
+// 一次 POST 发一条 JSON-RPC;服务器可以两种方式回答:
+//   - content-type: application/json —— 直接就是响应体;
+//   - content-type: text/event-stream —— 用 SSE 回,可能夹带通知/进度事件,
+//     要一直读到 **id 匹配**的那一条为止。
+//
+// 会话:服务器在 Mcp-Session-Id 响应头里给会话 id,之后每个请求都要带回去。
+// 刻意**不**实现 legacy SSE(2024-11-05 的 GET /sse + POST /message):
+// 配置里没有对应取值,因此不存在「配了却不生效」。
+
+const sessionHeader = "Mcp-Session-Id"
+
+type httpClient struct {
+	server    string
+	url       string
+	headers   map[string]string
+	client    *http.Client
+	sessionID string
+	nextID    int
+}
+
+func newHTTPClient(cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
+	if cfg.Command != "" && cfg.Transport == "http" {
+		return nil, fmt.Errorf("http 传输不接受 command")
+	}
+	if !strings.HasPrefix(cfg.URL, "http") {
+		return nil, fmt.Errorf("http 传输但 url `%s` 不是 http(s) 地址", cfg.URL)
+	}
+	timeout := time.Duration(timeoutMS) * time.Millisecond
+	if timeout < time.Second {
+		timeout = time.Second
+	}
+	c := &httpClient{
+		server: cfg.Name, url: cfg.URL, headers: cfg.Headers,
+		client: &http.Client{Timeout: timeout}, nextID: 1,
+	}
+	if _, err := c.request("initialize", map[string]any{
+		"protocolVersion": "2025-06-18",
+		"capabilities":    map[string]any{},
+		"clientInfo":      map[string]any{"name": "magpie-xkeysmith", "version": "1"},
+	}); err != nil {
+		return nil, err
+	}
+	if err := c.notify("notifications/initialized"); err != nil {
+		return nil, err
+	}
+	return c, nil
+}
+
+func (c *httpClient) request(method string, params any) (json.RawMessage, error) {
+	c.nextID++
+	id := c.nextID - 1
+	payload := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
+	if params != nil {
+		payload["params"] = params
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("content-type", "application/json")
+	req.Header.Set("accept", "application/json, text/event-stream")
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
+	}
+	if c.sessionID != "" {
+		req.Header.Set(sessionHeader, c.sessionID)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("MCP HTTP 请求失败: %w", err)
+	}
+	defer resp.Body.Close()
+	if c.sessionID == "" {
+		if sid := resp.Header.Get(sessionHeader); sid != "" {
+			c.sessionID = sid
+		}
+	}
+	ct := resp.Header.Get("content-type")
+	if strings.Contains(ct, "text/event-stream") {
+		return c.readSSE(resp.Body, id)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+	if err != nil {
+		return nil, err
+	}
+	return extractResult(raw)
+}
+
+func (c *httpClient) notify(method string) error {
+	payload := map[string]any{"jsonrpc": "2.0", "method": method}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("content-type", "application/json")
+	for k, v := range c.headers {
+		req.Header.Set(k, v)
+	}
+	if c.sessionID != "" {
+		req.Header.Set(sessionHeader, c.sessionID)
+	}
+	resp, err := c.client.Do(req)
+	if err != nil {
+		return err
+	}
+	_ = resp.Body.Close()
+	return nil
+}
+
+// readSSE 一直读到 id 匹配的那一条(中间的进度/通知事件跳过)。
+func (c *httpClient) readSSE(body io.Reader, wantID int) (json.RawMessage, error) {
+	scanner := bufio.NewScanner(body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 8<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		var probe struct {
+			ID *int `json:"id"`
+		}
+		if json.Unmarshal([]byte(data), &probe) != nil {
+			continue
+		}
+		if probe.ID == nil || *probe.ID != wantID {
+			continue // 通知或别的请求的应答
+		}
+		return extractResult([]byte(data))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return nil, fmt.Errorf("MCP SSE 流结束但没等到 id=%d 的应答", wantID)
+}
+
+func extractResult(raw []byte) (json.RawMessage, error) {
+	var resp struct {
+		Result json.RawMessage `json:"result"`
+		Error  *struct {
+			Code    int    `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return nil, fmt.Errorf("MCP 应答不是合法 JSON: %w", err)
+	}
+	if resp.Error != nil {
+		return nil, fmt.Errorf("MCP 错误 %d: %s", resp.Error.Code, resp.Error.Message)
+	}
+	return resp.Result, nil
+}
+
+func (c *httpClient) ListTools() ([]McpTool, error) {
+	raw, err := c.request("tools/list", map[string]any{})
+	if err != nil {
+		return nil, err
+	}
+	var out struct {
+		Tools []McpTool `json:"tools"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out.Tools, nil
+}
+
+func (c *httpClient) CallTool(name string, arguments json.RawMessage) (string, bool, error) {
+	var args any
+	if len(arguments) > 0 {
+		_ = json.Unmarshal(arguments, &args)
+	}
+	raw, err := c.request("tools/call", map[string]any{"name": name, "arguments": args})
+	if err != nil {
+		return "", true, err
+	}
+	var out struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return string(raw), false, nil
+	}
+	var text string
+	for _, part := range out.Content {
+		if part.Type == "text" {
+			text += part.Text
+		}
+	}
+	return text, out.IsError, nil
+}
+
+func (c *httpClient) Close() {}

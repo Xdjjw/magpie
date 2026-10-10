@@ -33,7 +33,7 @@ func ConnectMcp(cfg McpServerCfg, timeoutMS uint64) (McpClient, error) {
 	case "stdio", "":
 		return newStdioClient(cfg, timeoutMS)
 	case "http", "streamable-http":
-		return nil, fmt.Errorf("MCP http 传输尚未移植(阶段④后续)")
+		return newHTTPClient(cfg, timeoutMS)
 	default:
 		return nil, fmt.Errorf("未知 MCP 传输: %s", cfg.Transport)
 	}

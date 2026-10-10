@@ -277,3 +277,95 @@ func TestPlaneSummarizesVerdict(t *testing.T) {
 func ptr[T any](v T) *T { return &v }
 
 func nowUTC() time.Time { return time.Now().UTC() }
+
+// ─────────────────────────── reader(阶段③收尾) ───────────────────────────
+
+func TestReaderExplainBuildsLadder(t *testing.T) {
+	dir := t.TempDir()
+	plane, err := Build(func() Config { c := DefaultConfig(); c.Dir = dir; return c }())
+	if err != nil {
+		t.Fatal(err)
+	}
+	trace := NewTraceID()
+	// 两条记录:L0 拒绝 → L1 采纳
+	for i, layer := range []govern.LayerID{govern.L0, govern.L1} {
+		outcome := "refused"
+		decision := "escalate:L1"
+		if i == 1 {
+			outcome, decision = "accepted", "accept"
+		}
+		rec := testRecord(outcome)
+		rec.Trace = trace
+		rec.Seq = uint32(i)
+		rec.Layer = layer
+		rec.Decision = decision
+		rec.Rules = []string{"l1.lab-instructions"}
+		rec.Verdict = VerdictSummary{Outcome: outcome, Confidence: 0.72, Signals: []string{"prefix:r.cannot-assist"}}
+		if err := plane.Sink.Write(&rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = plane.Sink.Flush()
+
+	r := NewReader(dir)
+	// 短 id 也能匹配
+	ex := r.Explain(trace.Short())
+	if ex == nil {
+		t.Fatal("explain 找不到 trace")
+	}
+	if len(ex.Steps) != 2 || ex.Steps[0].Layer != "L0" || ex.Steps[1].Layer != "L1" {
+		t.Fatalf("steps=%+v", ex.Steps)
+	}
+	if ex.Outcome != "accepted" {
+		t.Fatalf("outcome=%s", ex.Outcome)
+	}
+	if !strings.Contains(ex.Rendered, "L0") || !strings.Contains(ex.Rendered, "escalate:L1") {
+		t.Fatalf("rendered=%s", ex.Rendered)
+	}
+	if len(ex.Rules) != 1 || ex.Rules[0] != "l1.lab-instructions" {
+		t.Fatalf("rules=%v", ex.Rules)
+	}
+}
+
+func TestReaderStatsAndTail(t *testing.T) {
+	dir := t.TempDir()
+	plane, _ := Build(func() Config { c := DefaultConfig(); c.Dir = dir; return c }())
+	_ = plane.Sink.Write(ptr(testRecord("accepted")))
+	_ = plane.Sink.Write(ptr(testRecord("refused")))
+	_ = plane.Sink.Write(ptr(testRecord("refused")))
+	_ = plane.Sink.Flush()
+
+	r := NewReader(dir)
+	stats := r.Stats(8)
+	if stats.Records != 3 || stats.ByOutcome["refused"] != 2 || stats.ByOutcome["accepted"] != 1 {
+		t.Fatalf("stats=%+v", stats)
+	}
+	if stats.Traces != 3 {
+		t.Fatalf("traces=%d", stats.Traces)
+	}
+	if !strings.Contains(stats.Render(), "refused") {
+		t.Fatalf("render=%s", stats.Render())
+	}
+	if got := r.Tail(2); len(got) != 2 {
+		t.Fatalf("tail=%d", len(got))
+	}
+}
+
+func TestReaderExplainMissingReturnsNil(t *testing.T) {
+	if ex := NewReader(t.TempDir()).Explain("deadbeef"); ex != nil {
+		t.Fatal("不存在的 trace 应返回 nil")
+	}
+}
+
+func TestReaderToleratesHalfLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audit-x.jsonl")
+	good, _ := json.Marshal(ptr(testRecord("accepted")))
+	// 半行(进程被杀)不该让整个审计不可读
+	if err := os.WriteFile(path, append(append(good, '\n'), []byte(`{"trace":"trunc`)...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := NewReader(dir).Tail(10); len(got) != 1 {
+		t.Fatalf("半行必须跳过,剩余记录仍可读: %d", len(got))
+	}
+}

@@ -10,12 +10,15 @@ import (
 
 // McpServerCfg 与 xp-core 对齐(阶段④只用到 stdio 传输)。
 type McpServerCfg struct {
-	Name       string
-	Enabled    bool
-	Transport  string // stdio | http
-	Command    string
-	Args       []string
-	Cwd        string
+	Name      string
+	Enabled   bool
+	Transport string // stdio | http
+	Command   string
+	Args      []string
+	Cwd       string
+	// http 传输:端点 URL 与额外请求头(例如 Authorization)。
+	URL        string
+	Headers    map[string]string
 	AllowTools []string // 非空 = 只暴露列出的工具
 	Env        map[string]string
 }

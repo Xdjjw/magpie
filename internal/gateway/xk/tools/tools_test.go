@@ -2,11 +2,17 @@ package tools
 
 import (
 	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func itoa(n int) string { return strconv.Itoa(n) }
 
 // 与 xp-tools 的 guard.rs / exec.rs / lib.rs 测试对应。
 
@@ -342,3 +348,88 @@ func TestIsGatewayTool(t *testing.T) {
 }
 
 var _ = json.Marshal
+
+// ─────────────────────────── MCP Streamable HTTP ───────────────────────────
+
+func TestMcpHTTPJsonAndSession(t *testing.T) {
+	var sawSession string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if sid := r.Header.Get("Mcp-Session-Id"); sid != "" {
+			sawSession = sid
+		}
+		w.Header().Set("content-type", "application/json")
+		switch req.Method {
+		case "initialize":
+			w.Header().Set("Mcp-Session-Id", "sess-1")
+			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-06-18"}}`)
+		case "tools/list":
+			io.WriteString(w, `{"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{"tools":[{"name":"http_ping","description":"d","inputSchema":{"type":"object"}}]}}`)
+		case "tools/call":
+			io.WriteString(w, `{"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{"content":[{"type":"text","text":"http-pong"}],"isError":false}}`)
+		default:
+			io.WriteString(w, `{"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{}}`)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	p := Build(cfg, skillsFixture(), []McpServerCfg{{
+		Name: "web", Enabled: true, Transport: "http", URL: srv.URL,
+	}})
+	defer p.Close()
+
+	status := p.McpStatus()
+	if len(status) != 1 || status[0].Error != "" || status[0].Tools != 1 {
+		t.Fatalf("status=%+v", status)
+	}
+	if sawSession != "sess-1" {
+		t.Fatalf("会话 id 必须带回去: %q", sawSession)
+	}
+	res := p.Execute(ToolCall{Name: "xk__mcp__web__http_ping", Arguments: map[string]any{}})
+	if res.IsError || res.Content != "http-pong" {
+		t.Fatalf("res=%+v", res)
+	}
+}
+
+func TestMcpHTTPSSEResponse(t *testing.T) {
+	// 服务器用 SSE 回,且**先发一条通知**(id 不匹配),再发真正的应答。
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		w.Header().Set("content-type", "text/event-stream")
+		io.WriteString(w, "data: {\"jsonrpc\":\"2.0\",\"method\":\"notifications/progress\"}\n\n")
+		switch req.Method {
+		case "initialize":
+			io.WriteString(w, `data: {"jsonrpc":"2.0","id":1,"result":{}}`+"\n\n")
+		case "tools/list":
+			io.WriteString(w, `data: {"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{"tools":[{"name":"sse_ping","inputSchema":{}}]}}`+"\n\n")
+		case "tools/call":
+			io.WriteString(w, `data: {"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{"content":[{"type":"text","text":"sse-pong"}]}}`+"\n\n")
+		default:
+			io.WriteString(w, `data: {"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{}}`+"\n\n")
+		}
+	}))
+	defer srv.Close()
+
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	p := Build(cfg, skillsFixture(), []McpServerCfg{{
+		Name: "sse", Enabled: true, Transport: "http", URL: srv.URL,
+	}})
+	defer p.Close()
+	res := p.Execute(ToolCall{Name: "xk__mcp__sse__sse_ping", Arguments: map[string]any{}})
+	if res.IsError || res.Content != "sse-pong" {
+		t.Fatalf("SSE 应答必须被读到 id 匹配那条: %+v", res)
+	}
+}
