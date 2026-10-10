@@ -31,6 +31,15 @@ func xkWriteProbe(w http.ResponseWriter, attempt *rewrite.Attempt, res attach.Pr
 	return status, ""
 }
 
+// xkWriteRestored writes a JSON reply with L4 restoration applied.
+func xkWriteRestored(w http.ResponseWriter, attempt *rewrite.Attempt, body []byte, from provider.Protocol) (int, string) {
+	restored := attach.RestoreJSON(attempt, body)
+	w.Header().Set("content-type", "application/json")
+	w.WriteHeader(200)
+	_, _ = w.Write(restored)
+	return 200, ""
+}
+
 // xkWriteStream relays an SSE reply through the incremental restorer: a
 // placeholder split across chunks is never sent half-restored.
 func xkWriteStream(w http.ResponseWriter, result *attach.LadderResult, from provider.Protocol) (int, string) {

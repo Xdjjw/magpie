@@ -163,11 +163,85 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 		return code, msg
 	}
 
-	// 采纳层:响应侧的 L4 还原。
+	// 采纳层:先看模型是否发起了**网关工具调用**(B 档)。有则网关自己执行、
+	// 回填、再调上游,直到模型给出最终答复;触到闸门给明确错误。
+	if settings.tools != nil && settings.tools.IsActive() && !xkIsSSE(result.Probe) {
+		final, err := s.xkRunToolRounds(settings, r, p, model, from, result, sessionKey)
+		if err != nil {
+			msg := "xkeysmith tool loop: " + err.Error()
+			return writeError(w, from, 502, msg), msg
+		}
+		if final.StopReason != "" {
+			// 闸门触顶 = 明确错误,绝不把客户端执行不了的 xk__ 调用交还。
+			msg := "xkeysmith tool rounds exhausted"
+			w.Header().Set("x-xkeysmith-error", string(final.StopReason))
+			code := writeError(w, from, 503, msg)
+			return code, msg
+		}
+		// 解锁集写回会话(技能门控的持久化)。
+		if len(final.Unlocked) > 0 {
+			settings.sessions.RecordUnlocks(sessionKey, &settings.pipeCfg, nil, final.Unlocked)
+		}
+		body, _ := json.Marshal(final.FinalBody)
+		return xkWriteRestored(w, result.Attempt, body, from)
+	}
+
+	// 响应侧的 L4 还原。
 	if stream && xkIsSSE(result.Probe) {
 		return xkWriteStream(w, result, from)
 	}
 	return xkWriteProbe(w, result.Attempt, result.Probe, from)
+}
+
+// xkRunToolRounds 执行工具轮:模型发起 xk__ 调用 → 网关执行 → 回填 → 再调上游。
+func (s *Server) xkRunToolRounds(settings *xkSettings, r *http.Request, p provider.Provider, model string, from provider.Protocol, result *attach.LadderResult, sessionKey string) (*attach.ToolLoopResult, error) {
+	dialect := tools.DialectChat
+	switch {
+	case from == provider.Anthropic:
+		dialect = tools.DialectAnthropic
+	case from == provider.Responses:
+		dialect = tools.DialectResponses
+	}
+	budget := govern.NewBudget(settings.limits)
+	cfg := &attach.ToolLoopConfig{
+		Plane:     settings.tools,
+		Dialect:   dialect,
+		MaxRounds: 4,
+		Budget:    budget,
+	}
+	// 第一轮的响应已经在阶梯里拿到了,直接作为循环的起点。
+	request, _ := json.Marshal(result.Attempt.Envelope.Body)
+	var reqBody map[string]any
+	_ = json.Unmarshal(request, &reqBody)
+
+	first := true
+	roundTrip := func(body map[string]any) (map[string]any, error) {
+		if first {
+			first = false
+			// 复用阶梯的探测结果作为第一轮响应。
+			var resp map[string]any
+			if err := json.Unmarshal(result.Probe.Body, &resp); err != nil {
+				return nil, err
+			}
+			return resp, nil
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		res, err := s.forward(r.Context(), p, from, upstreamPath(p, from, model), raw, r.Header)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
+		payload, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+		var resp map[string]any
+		if err := json.Unmarshal(payload, &resp); err != nil {
+			return nil, err
+		}
+		return resp, nil
+	}
+	return attach.RunToolLoop(cfg, reqBody, roundTrip)
 }
 
 // xkProto maps magpie's protocol to the ladder's dialect name.
