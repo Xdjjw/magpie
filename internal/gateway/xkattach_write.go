@@ -67,6 +67,26 @@ func xkWriteRestored(w http.ResponseWriter, attempt *rewrite.Attempt, body []byt
 	return 200, ""
 }
 
+// xkWriteSynthesizedStream 把非流式探针的完整响应翻译成 SSE 下发,
+// 并对文本做 L4 还原。
+func xkWriteSynthesizedStream(w http.ResponseWriter, result *attach.LadderResult, from provider.Protocol) (int, string) {
+	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
+	w.Header().Set("cache-control", "no-cache")
+	w.WriteHeader(200)
+	var restore func(string) string
+	if result.Attempt != nil && result.Attempt.Vault != nil && !result.Attempt.Vault.IsEmpty() {
+		vault := result.Attempt.Vault
+		restore = func(s string) string { return vault.Restore(s) }
+	}
+	if _, err := w.Write(synthesizeSSE(result.Probe.Body, restore)); err != nil {
+		return 499, "client gone"
+	}
+	if f, ok := w.(http.Flusher); ok {
+		f.Flush()
+	}
+	return 200, ""
+}
+
 // xkWriteStream relays an SSE reply through the incremental restorer: a
 // placeholder split across chunks is never sent half-restored.
 func xkWriteStream(w http.ResponseWriter, result *attach.LadderResult, from provider.Protocol) (int, string) {

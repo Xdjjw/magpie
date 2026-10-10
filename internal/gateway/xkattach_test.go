@@ -216,3 +216,47 @@ func TestXkeysmithTraceHeaders(t *testing.T) {
 		t.Fatalf("escalated 头=%q want 1", got)
 	}
 }
+
+// 流式客户端 + 非流式探针:必须翻译成真 SSE,而不是把 JSON 塞给期待 SSE 的客户端。
+// (上游静默忽略 stream 是常见现象,xkeysmith 为此专门做过协议修复。)
+func TestXkeysmithStreamClientGetsRealSSE(t *testing.T) {
+	fake := &xkFake{refuseUntil: 0} // 直接采纳 L0
+	xkSetup(t, fake)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+		`{"model":"xkeysmith/gpt-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	New().Handler().ServeHTTP(rec, req)
+	if rec.Code != 200 {
+		t.Fatalf("code=%d body=%s", rec.Code, rec.Body.String())
+	}
+	ct := rec.Header().Get("content-type")
+	body := rec.Body.String()
+	if !strings.Contains(ct, "text/event-stream") {
+		t.Fatalf("流式客户端必须收到 SSE,实际 content-type=%q body=%s", ct, body)
+	}
+	if !strings.Contains(body, "data:") {
+		t.Fatalf("SSE 正文缺少 data 行: %s", body)
+	}
+}
+
+// 流式 + L4:合成的 SSE 里也必须把占位符还原成真值。
+func TestXkeysmithStreamRestoresPlaceholders(t *testing.T) {
+	fake := &xkFake{refuseUntil: 4, maskEcho: true} // 一路升到 L4
+	xkSetup(t, fake)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(
+		`{"model":"xkeysmith/gpt-5","stream":true,"messages":[{"role":"user","content":"connect to 10.20.30.40"}]}`))
+	New().Handler().ServeHTTP(rec, req)
+	body := rec.Body.String()
+	if !strings.Contains(rec.Header().Get("content-type"), "text/event-stream") {
+		t.Fatalf("必须是 SSE: %q", rec.Header().Get("content-type"))
+	}
+	if strings.Contains(body, "«TGT-") {
+		t.Fatalf("SSE 里不得残留占位符: %s", body)
+	}
+	if !strings.Contains(body, "10.20.30.40") {
+		t.Fatalf("SSE 里必须还原成真值: %s", body)
+	}
+}

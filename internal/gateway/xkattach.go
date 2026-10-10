@@ -198,8 +198,13 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 	}
 
 	// 响应侧的 L4 还原。
-	if stream && xkIsSSE(result.Probe) {
-		return xkWriteStream(w, result, from)
+	if stream {
+		if xkIsSSE(result.Probe) {
+			return xkWriteStream(w, result, from)
+		}
+		// 探针是非流式的,但客户端要流:按协议把完整响应翻译成 SSE
+		// (期待 delta 的 SDK 完全无感)——协议修复而不是协议假设。
+		return xkWriteSynthesizedStream(w, result, from)
 	}
 	return xkWriteProbe(w, result.Attempt, result.Probe, from)
 }
