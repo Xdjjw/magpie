@@ -52,9 +52,17 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
    (指令上限/伪装轮次工具配对保护/Responses 的 instructions 分支)、
    L2 词面改写(只改用户轮次、跳代码)、L3 中立化重述(确定性映射表)、
    Pipeline 累积执行 + 深拷贝隔离。22 个测试,与 Rust 侧一一对应。
-3. **升级循环接线 + L4 流式还原**(最难):attempt 内重试 + 占位符保险库 + 滑窗还原。
-   验收:端到端(Codex→magpie→模拟拒绝上游)阶梯完整;replay 指纹与 Rust 版一致。
-4. **skills/tools/MCP 平面**(最大新工程,届时再设计)。
+3. **升级循环接线 + L4 流式还原**——✅ 已完成:
+   L4 目标抽象化 + 占位符保险库(不可碰撞 nonce / 去重 / 保护清单)+
+   跨 chunk 滑窗流式还原器;attach 包实现阶梯运行器(判定→升层→重试,
+   预算封顶,上游故障不升级)与响应侧还原(非流式整体 / 流式增量);
+   网关接线:provider 为 xkeysmith 时走语义通路(serveXkeysmith),
+   每条 attempt 一条审计记录。attach 9 测试 + rewrite 29 测试。
+4. **skills/tools/MCP 平面**——✅ 已完成:
+   skills 包(SKILL.md 解析,含块状列表/注释/行内注释边界)+
+   tools 包(xk__ 命名空间、审批闸门 + glob、渐进式披露门控、
+   **整轮交还**判定、技能加载执行器、MCP stdio 桥含 cwd 预检与 allow_tools 白名单);
+   技能注入 L1、工具 schema 按解锁状态注入请求体(三方言形状)。19 测试。
 
 ## 双真源纪律("按需更新"的工程化)
 

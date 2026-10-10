@@ -139,6 +139,34 @@ func (s *Set) UnlocksFor(name string) []string {
 	return nil
 }
 
+// Unlocks 返回所有技能 unlocks 的并集(工具平面的门控模式)。
+func (s *Set) Unlocks() []string {
+	var out []string
+	for _, sk := range s.skills {
+		for _, p := range sk.Unlocks {
+			found := false
+			for _, x := range out {
+				if x == p {
+					found = true
+					break
+				}
+			}
+			if !found {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// Body 返回某技能的正文(供 xk__skill_load 按需加载)。
+func (s *Set) Body(name string) (string, bool) {
+	if sk := s.Get(name); sk != nil {
+		return sk.Body, true
+	}
+	return "", false
+}
+
 // HasGating 是否有任何技能声明了 unlocks(决定工具是否需要门控)。
 func (s *Set) HasGating() bool {
 	for _, sk := range s.skills {

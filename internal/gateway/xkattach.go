@@ -13,14 +13,20 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/yetone/magpie/internal/settings"
 
 	"github.com/yetone/magpie/internal/gateway/xk/attach"
 	"github.com/yetone/magpie/internal/gateway/xk/audit"
 	"github.com/yetone/magpie/internal/gateway/xk/detect"
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
 	"github.com/yetone/magpie/internal/gateway/xk/rewrite"
+	"github.com/yetone/magpie/internal/gateway/xk/skills"
+	"github.com/yetone/magpie/internal/gateway/xk/tools"
 	"github.com/yetone/magpie/internal/provider"
 )
 
@@ -35,6 +41,9 @@ type xkSettings struct {
 	pipeCfg  govern.PipelineConfig
 	sessions *govern.SessionRegistry
 	audit    *audit.Plane
+	// 能力平面(A 档技能 + B/C 档工具),由环境变量/配置决定是否启用。
+	skills *skills.Set
+	tools  *tools.Plane
 }
 
 // xk returns the ladder settings, building them on first use.
@@ -53,6 +62,8 @@ func (s *Server) xk() *xkSettings {
 			// 审计失败不该让语义通路整体不可用:退化为 NullSink。
 			plane, _ = audit.Build(func() audit.Config { c := cfg; c.Enabled = false; return c }())
 		}
+		skillSet := xkLoadSkills()
+		toolsPlane := xkLoadTools(skillSet)
 		s.xkSettings = &xkSettings{
 			pipeline: pipeline,
 			detector: detect.DefaultOrPanic(),
@@ -60,6 +71,8 @@ func (s *Server) xk() *xkSettings {
 			pipeCfg:  govern.DefaultPipelineConfig(),
 			sessions: govern.NewSessionRegistry(limits),
 			audit:    plane,
+			skills:   skillSet,
+			tools:    toolsPlane,
 		}
 	})
 	if s.xkErr != nil {
@@ -87,6 +100,22 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 	proto := xkProto(from)
 	stream := streamOf(body)
 	sessionKey := xkSessionKey(r, env, model)
+
+	// A 档:技能索引/全文注入到 L1。注入发生在 L1,所以 L0 仍是 pristine。
+	if settings.skills != nil && settings.skills.Len() > 0 {
+		payload := settings.skills.Payload(skills.ModeIndex, 6000, 12000)
+		if payload != "" {
+			settings.pipeline.SetSkills(payload, settings.skills.Names(), "index")
+		}
+	}
+	// B/C 档:把当前解锁状态下可见的工具 schema 交给调用方注入(见 xkInjectTools)。
+	unlock := tools.UnlockSet{}
+	if settings.tools != nil {
+		if s2, p2 := settings.sessions.UnlockSet(sessionKey); len(s2) > 0 || len(p2) > 0 {
+			unlock = tools.UnlockSet{Skills: s2, Patterns: p2}
+		}
+		env = xkInjectTools(env, settings.tools, unlock)
+	}
 
 	cfg := &attach.LadderConfig{
 		Pipeline:    settings.pipeline,
@@ -327,4 +356,115 @@ func usageOf(body []byte) (uint64, uint64) {
 	in := doc.Usage.PromptTokens + doc.Usage.InputTokens
 	out := doc.Usage.CompletionTokens + doc.Usage.OutputTokens
 	return in, out
+}
+
+// ─────────────────────────── 能力平面装载 ───────────────────────────
+
+// xkLoadSkills 从环境变量指定的目录加载技能(默认 ~/.magpie/xkeysmith/skills)。
+// 技能正文是第三方文本,默认**不注入**——由配置显式打开。
+func xkLoadSkills() *skills.Set {
+	dir := os.Getenv("XKEYSMITH_SKILLS_DIR")
+	if dir == "" {
+		dir = filepath.Join(settings.Dir(), "xkeysmith", "skills")
+	}
+	set, err := skills.Load(dir)
+	if err != nil {
+		return skills.Empty()
+	}
+	return set
+}
+
+// xkLoadTools 构建工具平面(默认关闭;由 XKEYSMITH_TOOLS=1 打开)。
+//
+// 与 Rust 版一致的默认:approval 代码默认 allow(零配置即用),
+// 范围控制的主力是**注入侧**(哪些工具会被下发)。
+func xkLoadTools(skillSet *skills.Set) *tools.Plane {
+	cfg := tools.DefaultToolsConfig()
+	cfg.Enabled = os.Getenv("XKEYSMITH_TOOLS") == "1"
+	if v := os.Getenv("XKEYSMITH_APPROVAL"); v == "deny" {
+		cfg.Approval = tools.ApprovalDeny
+	}
+	if v := os.Getenv("XKEYSMITH_ALLOWLIST"); v != "" {
+		for _, p := range strings.Split(v, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				cfg.Allowlist = append(cfg.Allowlist, p)
+			}
+		}
+	}
+	return tools.Build(cfg, skillSet, xkLoadMcpServers())
+}
+
+// xkLoadMcpServers 读 MCP 服务器配置(JSON,由桌面端或用户提供)。
+func xkLoadMcpServers() []tools.McpServerCfg {
+	raw := os.Getenv("XKEYSMITH_MCP_SERVERS")
+	if raw == "" {
+		return nil
+	}
+	var servers []tools.McpServerCfg
+	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
+		return nil
+	}
+	// 展开 ${VAR} 与相对 cwd(与 xp-core 的 expand_env/绝对化同义)。
+	base := settings.Dir()
+	for i := range servers {
+		servers[i].Command = tools.EnvExpand(servers[i].Command)
+		for j := range servers[i].Args {
+			servers[i].Args[j] = tools.EnvExpand(servers[i].Args[j])
+		}
+		servers[i].Cwd = tools.AbsCwd(tools.EnvExpand(servers[i].Cwd), base)
+	}
+	return servers
+}
+
+// xkInjectTools 把可见的 xk__ 工具 schema 注入请求体。
+//
+// 方言差异在这里吸收:Chat 走顶层 tools;Anthropic 走顶层 tools
+// (input_schema 形状);Responses 走顶层 tools(扁平形状)。
+// 渐进式披露:只注入**当前解锁状态下可见**的工具。
+func xkInjectTools(env *rewrite.Envelope, plane *tools.Plane, unlock tools.UnlockSet) *rewrite.Envelope {
+	if plane == nil || !plane.IsActive() {
+		return env
+	}
+	visible := plane.VisibleDefs(unlock)
+	if len(visible) == 0 {
+		return env
+	}
+	switch env.Dialect {
+	case rewrite.DialectResponses:
+		var list []any
+		for _, d := range visible {
+			list = append(list, map[string]any{
+				"type": "function", "name": d.Name,
+				"description": d.Description, "parameters": d.Schema,
+			})
+		}
+		env.Body["tools"] = appendTools(env.Body["tools"], list)
+	default:
+		if env.Wire == rewrite.WireAnthropic {
+			var list []any
+			for _, d := range visible {
+				list = append(list, map[string]any{
+					"name": d.Name, "description": d.Description, "input_schema": d.Schema,
+				})
+			}
+			env.Body["tools"] = appendTools(env.Body["tools"], list)
+		} else {
+			var list []any
+			for _, d := range visible {
+				list = append(list, map[string]any{
+					"type": "function",
+					"function": map[string]any{
+						"name": d.Name, "description": d.Description, "parameters": d.Schema,
+					},
+				})
+			}
+			env.Body["tools"] = appendTools(env.Body["tools"], list)
+		}
+	}
+	return env
+}
+
+func appendTools(existing any, add []any) []any {
+	list, _ := existing.([]any)
+	return append(list, add...)
 }
