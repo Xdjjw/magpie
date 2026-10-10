@@ -10,6 +10,7 @@ import (
 
 	"github.com/yetone/magpie/internal/gateway/xk/detect"
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
+	"github.com/yetone/magpie/internal/gateway/xk/rewrite"
 )
 
 // 与 xp-audit 的 redact.rs / record.rs / sink.rs / lib.rs 测试一一对应。
@@ -367,5 +368,191 @@ func TestReaderToleratesHalfLine(t *testing.T) {
 	}
 	if got := NewReader(dir).Tail(10); len(got) != 1 {
 		t.Fatalf("半行必须跳过,剩余记录仍可读: %d", len(got))
+	}
+}
+
+// ─────────────────────────── replay(配置漂移检测) ───────────────────────────
+
+func TestReplayVerifiesWhenConfigUnchanged(t *testing.T) {
+	dir := t.TempDir()
+	pipeline, err := rewrite.NewPipeline(rewrite.DefaultRewriteConfig(), govern.AllLayers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := rewrite.NewEnvelope(map[string]any{
+		"model":    "gpt-5",
+		"messages": []any{map[string]any{"role": "user", "content": "explain the crack tool"}},
+	}, rewrite.WireOpenAi)
+
+	// 按当前管线记录两层,raw_capture 打开(有原文才能复算)。
+	plane, _ := Build(func() Config {
+		c := DefaultConfig()
+		c.Dir = dir
+		c.RawCapture = true
+		return c
+	}())
+	trace := NewTraceID()
+	for i, layer := range []govern.LayerID{govern.L0, govern.L2} {
+		attempt, err := pipeline.Attempt(env, layer)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw := string(mustJSONString(attempt.Envelope.Body))
+		rec := testRecord("accepted")
+		rec.Trace = trace
+		rec.Seq = uint32(i)
+		rec.Layer = layer
+		rec.Decision = "accept"
+		rec.RequestHash = attempt.RequestHash()
+		rec.RawRequest = &raw
+		for _, e := range attempt.Vault.Entries() {
+			rec.MaskedTargets = append(rec.MaskedTargets, MaskedTarget{
+				Kind: string(e.Kind), Placeholder: e.Placeholder, Original: e.Original,
+			})
+		}
+		if err := plane.Sink.Write(&rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = plane.Sink.Flush()
+
+	r := NewReader(dir)
+	rep, err := r.Replay(trace.String(), pipeline, govern.AllLayers, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !rep.Verified {
+		t.Fatalf("配置未变时必须可复现: %+v", rep.Steps)
+	}
+	for _, s := range rep.Steps {
+		if s.Verdict != VerdictMatch {
+			t.Fatalf("step=%+v", s)
+		}
+	}
+	if !strings.Contains(rep.Rendered, "replay verified") {
+		t.Fatalf("rendered=%s", rep.Rendered)
+	}
+}
+
+func TestReplayDetectsDriftWhenRulesChange(t *testing.T) {
+	dir := t.TempDir()
+	// 记录时用「原始」规则(不改词面)。
+	recPipeline, _ := rewrite.NewPipeline(rewrite.DefaultRewriteConfig(), []govern.LayerID{govern.L0})
+	env := rewrite.NewEnvelope(map[string]any{
+		"model":    "gpt-5",
+		"messages": []any{map[string]any{"role": "user", "content": "the crack tool"}},
+	}, rewrite.WireOpenAi)
+	plane, _ := Build(func() Config { c := DefaultConfig(); c.Dir = dir; c.RawCapture = true; return c }())
+	trace := NewTraceID()
+	attempt, _ := recPipeline.Attempt(env, govern.L2)
+	raw := string(mustJSONString(attempt.Envelope.Body))
+	rec := testRecord("accepted")
+	rec.Trace = trace
+	rec.Layer = govern.L2
+	rec.RequestHash = attempt.RequestHash()
+	rec.RawRequest = &raw
+	_ = plane.Sink.Write(&rec)
+	_ = plane.Sink.Flush()
+
+	// 用**改了规则**的管线复算 → 应检出漂移。
+	cfg := rewrite.DefaultRewriteConfig()
+	cfg.TamperRules[0].Replacement = "SOMETHING-ELSE"
+	driftPipeline, err := rewrite.NewPipeline(cfg, govern.AllLayers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rep, err := NewReader(dir).Replay(trace.String(), driftPipeline, govern.AllLayers, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.Verified {
+		t.Fatal("规则改了必须检出漂移")
+	}
+	if rep.Steps[0].Verdict != VerdictDrift {
+		t.Fatalf("step=%+v", rep.Steps[0])
+	}
+	if !strings.Contains(rep.Rendered, "无法复现") {
+		t.Fatalf("rendered=%s", rep.Rendered)
+	}
+}
+
+func TestReplayUnverifiableWithoutRaw(t *testing.T) {
+	// 做过抽象化又没留原文 → 必须如实标 unverifiable,不能谎报漂移。
+	dir := t.TempDir()
+	pipeline, _ := rewrite.NewPipeline(rewrite.DefaultRewriteConfig(), govern.AllLayers)
+	plane, _ := Build(func() Config { c := DefaultConfig(); c.Dir = dir; c.RawCapture = true; return c }())
+	trace := NewTraceID()
+	// L0 有原文(供 pristine 重建);L4 无原文且做过抽象化 → unverifiable。
+	env := rewrite.NewEnvelope(map[string]any{
+		"model": "gpt-5", "messages": []any{map[string]any{"role": "user", "content": "connect to 10.0.0.1"}},
+	}, rewrite.WireOpenAi)
+	l0, _ := pipeline.Attempt(env, govern.L0)
+	raw := string(mustJSONString(l0.Envelope.Body))
+	base := testRecord("accepted")
+	base.Trace = trace
+	base.Seq = 0
+	base.Layer = govern.L0
+	base.RequestHash = l0.RequestHash()
+	base.RawRequest = &raw
+	_ = plane.Sink.Write(&base)
+
+	rec := testRecord("accepted")
+	rec.Trace = trace
+	rec.Seq = 1
+	rec.Layer = govern.L4
+	rec.Decision = "accept"
+	rec.RequestHash = "deadbeefdeadbeef"
+	rec.MaskedTargets = []MaskedTarget{{Kind: "ipv4", Placeholder: "«TGT-ABCD1234-0»", Original: "10.0.0.1"}}
+	_ = plane.Sink.Write(&rec)
+	_ = plane.Sink.Flush()
+
+	rep, err := NewReader(dir).Replay(trace.String(), pipeline, govern.AllLayers, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := rep.Steps[len(rep.Steps)-1]
+	if last.Verdict != VerdictUnverifiable {
+		t.Fatalf("无原文且做过抽象化应标 unverifiable: %+v", last)
+	}
+	if strings.Contains(rep.Rendered, "DRIFT") {
+		t.Fatal("不得谎报漂移")
+	}
+}
+
+func TestReplaySkipsDerivedRecords(t *testing.T) {
+	dir := t.TempDir()
+	pipeline, _ := rewrite.NewPipeline(rewrite.DefaultRewriteConfig(), govern.AllLayers)
+	env := rewrite.NewEnvelope(map[string]any{
+		"model": "gpt-5", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, rewrite.WireOpenAi)
+	plane, _ := Build(func() Config { c := DefaultConfig(); c.Dir = dir; c.RawCapture = true; return c }())
+	trace := NewTraceID()
+	attempt, _ := pipeline.Attempt(env, govern.L0)
+	raw := string(mustJSONString(attempt.Envelope.Body))
+	rec := testRecord("accepted")
+	rec.Trace = trace
+	rec.Layer = govern.L0
+	rec.RequestHash = attempt.RequestHash()
+	rec.RawRequest = &raw
+	_ = plane.Sink.Write(&rec)
+	// 派生记录:工具调用
+	tool := testRecord("accepted")
+	tool.Trace = trace
+	tool.Seq = 1000
+	tool.Layer = govern.L0
+	tool.Decision = "tool_call"
+	tool.ToolCall = &ToolCallRecord{Tool: "xk__skill_load", Round: 1}
+	_ = plane.Sink.Write(&tool)
+	_ = plane.Sink.Flush()
+
+	rep, err := NewReader(dir).Replay(trace.String(), pipeline, govern.AllLayers, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.SkippedDerived != 1 {
+		t.Fatalf("派生记录必须跳过并计数: %+v", rep)
+	}
+	if !rep.Verified {
+		t.Fatalf("跳过派生记录后应可复现: %+v", rep.Steps)
 	}
 }
