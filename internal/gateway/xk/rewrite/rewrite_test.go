@@ -336,3 +336,109 @@ func TestL3NeutralizesOutsideCodeOnly(t *testing.T) {
 		t.Fatalf("正文应被中立化: %q", text)
 	}
 }
+
+// ─────────────────────────── L4 / vault(阶段③) ───────────────────────────
+
+func TestL4MasksAndRestoresRoundTrip(t *testing.T) {
+	p := layerOnly(t, govern.L4)
+	pristine := envMap(t, userMsg("connect to 10.20.30.40 and fetch https://evil.example.net/x"))
+	a, err := p.Attempt(pristine, govern.L4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	masked := a.Envelope.Body["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if strings.Contains(masked, "10.20.30.40") || strings.Contains(masked, "evil.example.net") {
+		t.Fatalf("目标未被抽象化: %q", masked)
+	}
+	if !strings.Contains(masked, "«TGT-") {
+		t.Fatalf("缺少占位符: %q", masked)
+	}
+	if got := a.Restore(masked); !strings.Contains(got, "10.20.30.40") || !strings.Contains(got, "https://evil.example.net/x") {
+		t.Fatalf("还原不完整: %q", got)
+	}
+}
+
+func TestL4DeduplicatesRepeatedTargets(t *testing.T) {
+	p := layerOnly(t, govern.L4)
+	pristine := envMap(t, userMsg("ping 10.1.2.3 then 10.1.2.3 again, and 10.1.2.3"))
+	a, _ := p.Attempt(pristine, govern.L4)
+	if a.Vault.Len() != 1 {
+		t.Fatalf("同一目标应只占一个槽位, 实际 %d", a.Vault.Len())
+	}
+}
+
+func TestL4PlaceholdersAreUncollidableAcrossRequests(t *testing.T) {
+	p := layerOnly(t, govern.L4)
+	pristine := envMap(t, userMsg("ping 10.1.2.3"))
+	a, _ := p.Attempt(pristine, govern.L4)
+	b, _ := p.Attempt(pristine, govern.L4)
+	if a.Vault.Nonce() == b.Vault.Nonce() {
+		t.Fatal("nonce 必须每请求随机")
+	}
+	// 归一化 nonce 后请求体必须逐字节相同(可重放)
+	if a.RequestHashNormalized() != b.RequestHashNormalized() {
+		t.Fatal("归一化后哈希必须一致")
+	}
+}
+
+func TestL4ProtectListIsHonored(t *testing.T) {
+	p := layerOnly(t, govern.L4)
+	pristine := envMap(t, userMsg("call http://localhost:8787/v1 and http://10.9.9.9/x"))
+	a, _ := p.Attempt(pristine, govern.L4)
+	masked := a.Envelope.Body["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(masked, "localhost:8787") {
+		t.Fatalf("保护清单里的字面量不得被抽象化: %q", masked)
+	}
+	if strings.Contains(masked, "10.9.9.9") {
+		t.Fatalf("非保护目标应被抽象化: %q", masked)
+	}
+}
+
+func TestL4RestoreValueCoversStructuredFields(t *testing.T) {
+	// 模型可能把被抽象化的目标放进工具参数里,漏还原会让工具调用拿到假地址。
+	p := layerOnly(t, govern.L4)
+	pristine := envMap(t, userMsg("scan 10.7.7.7"))
+	a, _ := p.Attempt(pristine, govern.L4)
+	placeholder := a.Vault.Entries()[0].Placeholder
+	doc := map[string]any{
+		"tool_use": map[string]any{"input": map[string]any{"target": placeholder}},
+	}
+	restored := a.Vault.RestoreValue(doc).(map[string]any)
+	got := restored["tool_use"].(map[string]any)["input"].(map[string]any)["target"]
+	if got != "10.7.7.7" {
+		t.Fatalf("结构化字段未还原: %v", got)
+	}
+}
+
+func TestStreamRestorerHoldsSplitPlaceholders(t *testing.T) {
+	p := layerOnly(t, govern.L4)
+	a, _ := p.Attempt(envMap(t, userMsg("scan 10.5.5.5")), govern.L4)
+	placeholder := a.Vault.Entries()[0].Placeholder
+	r := a.Restorer()
+
+	// 把占位符切成三块投喂,任何一块都不能吐出半个占位符
+	third := len(placeholder) / 3
+	var out strings.Builder
+	out.WriteString(r.Push("target is " + placeholder[:third]))
+	if strings.Contains(out.String(), "«TGT") {
+		t.Fatalf("不得下发半个占位符: %q", out.String())
+	}
+	out.WriteString(r.Push(placeholder[third : 2*third]))
+	out.WriteString(r.Push(placeholder[2*third:]))
+	out.WriteString(r.Push(" done"))
+	out.WriteString(r.Finish())
+	if !strings.Contains(out.String(), "10.5.5.5") || strings.Contains(out.String(), "«TGT") {
+		t.Fatalf("流式还原不完整: %q", out.String())
+	}
+}
+
+func TestStreamRestorerUnclosedPlaceholderIsFlushedAtCap(t *testing.T) {
+	// 异常:迟迟不闭合的 « 不能无限缓存。
+	r := (&PlaceholderVault{prefix: "TGT", nonce: "N", byOriginal: map[string]int{}}).Restorer()
+	r.pairs = [][2]string{{"«TGT-N-0»", "10.0.0.1"}}
+	r.holdCap = 8
+	out := r.Push("«TGT-N-0-with-a-very-long-unclosed-tail")
+	if out == "" {
+		t.Fatal("超过 hold_cap 后必须放行,不能无限缓存")
+	}
+}

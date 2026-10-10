@@ -5,12 +5,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
 )
 
-// RewriteConfig 与 xp-core RewriteCfg 对齐(阶段②只用到 L1-L3 的部分;
-// placeholder 配置属于阶段③的 L4)。
+// RewriteConfig 与 xp-core RewriteCfg 对齐。
 type RewriteConfig struct {
 	LabInstructions    string
 	PrimerTurns        []PrimerTurn
@@ -19,6 +19,10 @@ type RewriteConfig struct {
 	BridgePreamble     string
 	BridgeMap          []MapRule
 	MaxInjectedChars   int
+	// L4 占位符配置。
+	PlaceholderPrefix string
+	MaskTargets       []TargetRule
+	Protect           []string
 }
 
 // DefaultLabInstructions 与 xp-core 的 DEFAULT_LAB_INSTRUCTIONS 逐字一致。
@@ -37,6 +41,12 @@ func DefaultRewriteConfig() RewriteConfig {
 		BridgePreamble:     "[local-audit-lab] restated as neutral systems-engineering wording: ",
 		BridgeMap:          defaultNeutralMap(),
 		MaxInjectedChars:   4096,
+		PlaceholderPrefix:  "TGT",
+		MaskTargets:        DefaultTargetRules(),
+		Protect: []string{
+			"127.0.0.1", "0.0.0.0", "localhost", "example.com",
+			"192.0.2.", "198.51.100.", "203.0.113.",
+		},
 	}
 }
 
@@ -102,9 +112,16 @@ func defaultNeutralMap() []MapRule {
 type Attempt struct {
 	UpTo          govern.LayerID
 	Envelope      *Envelope
+	Vault         *PlaceholderVault
 	Reports       []*LayerReport
 	PristineBytes int
 }
+
+// Restore 非流式路径:整体还原。
+func (a *Attempt) Restore(text string) string { return a.Vault.Restore(text) }
+
+// Restorer 流式路径:增量还原器。
+func (a *Attempt) Restorer() *StreamRestorer { return a.Vault.Restorer() }
 
 func (a *Attempt) Applied() []govern.LayerID {
 	var out []govern.LayerID
@@ -133,6 +150,18 @@ func (a *Attempt) RequestHash() string {
 		return ""
 	}
 	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}
+
+// RequestHashNormalized 把 nonce 归一化后再哈希:跨请求比对(重放校验)用它,
+// 因为 nonce 每请求随机,原始哈希必然不同。
+func (a *Attempt) RequestHashNormalized() string {
+	b, err := json.Marshal(a.Envelope.Body)
+	if err != nil {
+		return ""
+	}
+	normalized := strings.ReplaceAll(string(b), a.Vault.Nonce(), "N")
+	sum := sha256.Sum256([]byte(normalized))
 	return hex.EncodeToString(sum[:8])
 }
 
@@ -195,6 +224,13 @@ func NewPipeline(cfg RewriteConfig, enabled []govern.LayerID) (*Pipeline, error)
 		}
 		layers = append(layers, bridge)
 	}
+	if has(govern.L4) {
+		abstraction, err := NewTargetAbstraction(cfg.MaskTargets, cfg.Protect)
+		if err != nil {
+			return nil, err
+		}
+		layers = append(layers, abstraction)
+	}
 	return &Pipeline{cfg: cfg, layers: layers}, nil
 }
 
@@ -220,27 +256,32 @@ func (p *Pipeline) MaxExecutableLayer() govern.LayerID {
 	return max
 }
 
-// Attempt 生成一次尝试。**纯函数**:同输入必同输出(不含 L4 的 nonce)。
+// Attempt 生成一次尝试。**纯函数**:同输入必同输出(L4 的 nonce 每请求随机,
+// 归一化后逐字节相同——见 RequestHashNormalized)。
 func (p *Pipeline) Attempt(pristine *Envelope, upTo govern.LayerID) (*Attempt, error) {
 	pristineBytes := pristine.ByteLen()
 	envelope, err := cloneEnvelope(pristine)
 	if err != nil {
 		return nil, err
 	}
+	vault := NewPlaceholderVault(p.cfg.PlaceholderPrefix)
 	reports := make([]*LayerReport, 0, len(p.layers))
 	for _, layer := range p.layers {
 		if layer.ID() > upTo {
 			break
 		}
 		before := envelope.ByteLen()
-		report, err := layer.Apply(envelope, uint8(upTo))
+		report, err := layer.Apply(envelope, &LayerCtx{Vault: vault, Attempt: uint8(upTo)})
 		if err != nil {
 			return nil, fmt.Errorf("layer %s: %w", layer.ID().Label(), err)
 		}
 		report.BytesDelta = envelope.ByteLen() - before
 		reports = append(reports, report)
 	}
-	return &Attempt{UpTo: upTo, Envelope: envelope, Reports: reports, PristineBytes: pristineBytes}, nil
+	return &Attempt{
+		UpTo: upTo, Envelope: envelope, Vault: vault,
+		Reports: reports, PristineBytes: pristineBytes,
+	}, nil
 }
 
 func cloneEnvelope(e *Envelope) (*Envelope, error) {

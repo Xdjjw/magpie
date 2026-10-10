@@ -331,6 +331,10 @@ type Server struct {
 	requestLimits requestLimits
 	// what a restart would cut short (busy.go)
 	busyCounters
+	// xk 是 xkeysmith 语义通路的惰性配置(阶梯/判定/审计),见 xkattach.go
+	xkOnce     sync.Once
+	xkErr      error
+	xkSettings *xkSettings
 }
 
 // New makes a gateway.
@@ -2627,6 +2631,14 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	if from == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {
 		body = orphanedToolOutputs(body)
 		body = pairToolItems(body)
+	}
+	// xkeysmith: the local semantic gateway runs its own ladder (judge,
+	// escalate L0→L4, restore). It is taken before the vendor-specific
+	// branches below, which don't apply to a local relay.
+	if xkEnabled(p) {
+		call.To = from
+		status, msg := s.serveXkeysmith(w, r, from, p, model, body, &call.Usage)
+		return status, msg
 	}
 	// every request to the provider goes through its own proxy, if it has
 	// one (#237)

@@ -44,10 +44,16 @@ func (r *LayerReport) Summary() string {
 		r.Layer.Label(), r.SlotsTouched, r.TargetsMasked, len(r.Rules))
 }
 
+// LayerCtx 是层执行上下文:唯一可变的共享物是占位符保险库。
+type LayerCtx struct {
+	Vault   *PlaceholderVault
+	Attempt uint8
+}
+
 // Layer 是一层改写。apply 就地修改 envelope,并回报它做了什么。
 type Layer interface {
 	ID() govern.LayerID
-	Apply(env *Envelope, attempt uint8) (*LayerReport, error)
+	Apply(env *Envelope, ctx *LayerCtx) (*LayerReport, error)
 }
 
 // ─────────────────────────── L0 直通 ───────────────────────────
@@ -55,7 +61,7 @@ type Layer interface {
 type Passthrough struct{}
 
 func (Passthrough) ID() govern.LayerID { return govern.L0 }
-func (Passthrough) Apply(_ *Envelope, _ uint8) (*LayerReport, error) {
+func (Passthrough) Apply(_ *Envelope, _ *LayerCtx) (*LayerReport, error) {
 	return NewLayerReport(govern.L0), nil
 }
 
@@ -74,7 +80,7 @@ type ContextInjection struct {
 
 func (l *ContextInjection) ID() govern.LayerID { return govern.L1 }
 
-func (l *ContextInjection) Apply(env *Envelope, _ uint8) (*LayerReport, error) {
+func (l *ContextInjection) Apply(env *Envelope, _ *LayerCtx) (*LayerReport, error) {
 	report := NewLayerReport(govern.L1)
 
 	if l.InjectSystem && strings.TrimSpace(l.Instructions) != "" {
@@ -185,7 +191,7 @@ func NewLexicalTamper(rules []TamperRule) (*LexicalTamper, error) {
 
 func (l *LexicalTamper) ID() govern.LayerID { return govern.L2 }
 
-func (l *LexicalTamper) Apply(env *Envelope, _ uint8) (*LayerReport, error) {
+func (l *LexicalTamper) Apply(env *Envelope, _ *LayerCtx) (*LayerReport, error) {
 	report := NewLayerReport(govern.L2)
 	l.applyGroup(env, ScopeUserTurns, true, report)
 	l.applyGroup(env, ScopeAll, false, report)
@@ -279,7 +285,7 @@ func (b *NeutralBridge) neutralize(text string) string {
 	})
 }
 
-func (b *NeutralBridge) Apply(env *Envelope, _ uint8) (*LayerReport, error) {
+func (b *NeutralBridge) Apply(env *Envelope, _ *LayerCtx) (*LayerReport, error) {
 	report := NewLayerReport(govern.L3)
 
 	// 前言只加一次,加在**最后一条用户消息**上:那才是本次真正的指令。

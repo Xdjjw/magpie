@@ -263,6 +263,11 @@ func (e *Envelope) forEachTextMut(scope Scope, f func(ctx SlotCtx, text *string)
 	}
 }
 
+// ForEachTextRef 只读遍历(导出给网关接线用:会话键取首条用户文本)。
+func (e *Envelope) ForEachTextRef(scope Scope, f func(ctx SlotCtx, text string)) {
+	e.forEachTextRef(scope, f)
+}
+
 // forEachTextRef 只读遍历。
 func (e *Envelope) forEachTextRef(scope Scope, f func(ctx SlotCtx, text string)) {
 	for _, s := range e.textSlots() {
