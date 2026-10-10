@@ -43,9 +43,10 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
 
 ## 阶段计划(每阶段以语料为验收契约)
 
-1. **detect + govern + audit**(纯函数三件套):把 `xp-detect/tests/corpus.rs`
-   的 82 条(29 必拒/21 陷阱/32 覆盖面)翻成 Go 表驱动测试,先测后码。
-   验收:corpus 全绿 + explain 表格输出与 Rust 版逐字段一致。
+1. **detect + govern + audit**(纯函数三件套)——✅ 已完成(写侧):
+   detect(82 条语料全绿,`409c4fe4`)、govern 33 测试(`ba51641d`)、
+   audit 写侧(记录/脱敏/JSONL 落盘轮转/计数,reader 的 explain/replay
+   随接入展示 UI 时移植)。合计 71 个 Go 测试与 Rust 侧一一对应。
 2. **rewrite L1-L3**(IR Text parts 上的确定性变换)。
    验收:与 Rust 版对同一输入的输出逐字节一致(oracle diff)。
 3. **升级循环接线 + L4 流式还原**(最难):attempt 内重试 + 占位符保险库 + 滑窗还原。
