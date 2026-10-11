@@ -496,17 +496,18 @@ var presets = []PresetDef{
 	{ID: "mlx-serve", Name: "MLX-Serve", Icon: "mlx-serve", Kind: KindLocal, NoKey: true,
 		Chat: "http://localhost:11234/v1", Responses: "http://localhost:11234/v1", Anthropic: "http://localhost:11234",
 		Note: "local server on :11234", Website: "https://github.com/ddalcu/mlx-serve"},
-	// xkeysmith (fork addition): a local semantic gateway between magpie and
-	// the real upstream. It fronts whatever provider is configured inside
-	// xkeysmith itself with an L0-L4 rewrite ladder, refusal detection and
-	// an audit trail; both OpenAI dialects are relayed to it untouched, so
-	// what it sees — and what its audit records — is the client's own
-	// request shape. A key only if xkeysmith's own config set server.token;
-	// its port is 8787 unless changed there. It serves no /models list yet:
-	// give the models with `magpie provider add xkeysmith models=…`.
-	{ID: "xkeysmith", Name: "xkeysmith", Icon: "generic", Kind: KindLocal, NoKey: true,
-		Chat: "http://127.0.0.1:8787/v1", Responses: "http://127.0.0.1:8787/v1",
-		Note: "local semantic pipeline: rewrite ladder, refusal detection, audit"},
+	// xkeysmith (fork addition): the semantic pipeline applied IN PLACE on
+	// the provider's own upstream — not a second proxy hop. The base URL the
+	// user types is the real upstream (a relay, an official API); the L0-L4
+	// rewrite ladder, refusal detection and audit trail wrap each request to
+	// it inside magpie's own process. The upstream's key is this provider's
+	// key. No /models list of its own: give the models with
+	// `magpie provider add xkeysmith models=…`.
+	{ID: "xkeysmith", Name: "xkeysmith · semantic pipeline", Icon: "generic", Kind: KindLocal,
+		Endpoint:       "https://your-relay.example.com/v1",
+		EndpointHint:   "真上游的地址(中转站或官方 API)。magpie 在发往它之前就地应用 L0–L4 改写、拒绝判定与审计——不再需要单独的 xkeysmith 网关进程。",
+		EndpointNeeded: "上游地址是必须的(xkeysmith 在它之上加语义管线)",
+		Note:           "任意上游 + 本地语义管线(改写阶梯、拒绝判定、审计)"},
 }
 
 func bedrockChat(region string) string {
