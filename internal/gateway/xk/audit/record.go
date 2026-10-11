@@ -10,12 +10,13 @@ import (
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
 )
 
-// Wire 与 xp-core 的 WireFormat 线型一致("openai" / "anthropic")。
+// Wire 与 xp-core 的 WireFormat 线型一致。
 type Wire string
 
 const (
 	WireOpenAi    Wire = "openai"
 	WireAnthropic Wire = "anthropic"
+	WireGemini    Wire = "gemini"
 )
 
 // TraceID 是请求级关联 id(UUID v7,时间有序)。
@@ -118,7 +119,7 @@ type TraceRecord struct {
 	RequestBytes  int    `json:"request_bytes"`
 	ResponseBytes int    `json:"response_bytes"`
 
-	// 脱敏后的预览(始终存在);未脱敏原文仅 RawCapture 开启时存在。
+	// IncludeBodies 开启时写脱敏预览;未脱敏原文仅 RawCapture 开启时存在。
 	RequestPreview  *string `json:"request_preview"`
 	ResponsePreview *string `json:"response_preview"`
 	RawRequest      *string `json:"raw_request"`

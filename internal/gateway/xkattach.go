@@ -11,7 +11,7 @@ package gateway
 
 import (
 	"encoding/json"
-	"io"
+	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -64,6 +64,9 @@ func (s *Server) xk() *xkSettings {
 		}
 		skillSet := xkLoadSkills()
 		toolsPlane := xkLoadTools(skillSet)
+		if skillSet.Len() > 0 {
+			pipeline.SetSkills(skillSet.Payload(skills.ModeIndex, 6000, 12000), skillSet.Names(), "index")
+		}
 		s.xkSettings = &xkSettings{
 			pipeline: pipeline,
 			detector: detect.DefaultOrPanic(),
@@ -84,188 +87,206 @@ func (s *Server) xk() *xkSettings {
 // serveXkeysmith runs the semantic ladder for one request and writes the
 // reply. It returns (status, message) like attempt does; message is empty
 // on success.
-func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, u *Usage) (int, string) {
+func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, call *Call) (int, string) {
 	settings := s.xk()
 	if settings == nil {
 		msg := "xkeysmith ladder unavailable"
 		return writeError(w, from, 502, msg), msg
 	}
-
-	// 补丁 3:外部 xkeysmith(如果用户用官方二进制而不是本内置核心)。
-	// 探活/拉起失败都不阻塞——内置核心仍能接管整条通路。
-	if s.xkSide == nil {
-		s.xkSide = newXkSidecar()
-	}
-	s.xkSide.Ensure(xkSidecarURL(p))
-
+	r, state, cancel := xkRequest(r, settings.limits)
+	defer cancel()
 	env, err := xkEnvelope(from, body)
 	if err != nil {
 		msg := "xkeysmith: bad request body: " + err.Error()
 		return writeError(w, from, 400, msg), msg
 	}
-
-	proto := xkProto(from)
-	stream := streamOf(body)
+	stream := streamOf(body) || from == provider.Gemini && strings.Contains(r.URL.Path, "streamGenerateContent")
 	sessionKey := xkSessionKey(r, env, model)
-
-	// A 档:技能索引/全文注入到 L1。注入发生在 L1,所以 L0 仍是 pristine。
-	if settings.skills != nil && settings.skills.Len() > 0 {
-		payload := settings.skills.Payload(skills.ModeIndex, 6000, 12000)
-		if payload != "" {
-			settings.pipeline.SetSkills(payload, settings.skills.Names(), "index")
-		}
-	}
-	// B/C 档:把当前解锁状态下可见的工具 schema 交给调用方注入(见 xkInjectTools)。
 	unlock := tools.UnlockSet{}
 	if settings.tools != nil {
-		if s2, p2 := settings.sessions.UnlockSet(sessionKey); len(s2) > 0 || len(p2) > 0 {
-			unlock = tools.UnlockSet{Skills: s2, Patterns: p2}
-		}
+		names, patterns := settings.sessions.UnlockSet(sessionKey)
+		unlock = tools.UnlockSet{Skills: names, Patterns: patterns}
 		env = xkInjectTools(env, settings.tools, unlock)
 	}
-
 	cfg := &attach.LadderConfig{
-		Pipeline:    settings.pipeline,
-		Detector:    settings.detector,
-		Limits:      settings.limits,
-		PipelineCfg: settings.pipeCfg,
-		EntryLayer:  govern.L0,
-		MaxLayer:    govern.L4,
-		Proto:       proto,
-		SessionKey:  sessionKey,
-		Sessions:    settings.sessions,
+		Pipeline: settings.pipeline, Detector: settings.detector, Limits: settings.limits,
+		PipelineCfg: settings.pipeCfg, EntryLayer: govern.L0, MaxLayer: govern.L4,
+		Proto: xkProto(from), SessionKey: sessionKey, Sessions: settings.sessions,
+		Budget: state.budget, Context: r.Context(),
 	}
-
+	var headers http.Header
+	var last attach.ProbeResult
 	forward := func(probe []byte) attach.ProbeResult {
-		// 探测一律非流式:流式客户端走 probe_then_replay,采纳后再重放。
-		res, err := s.forward(r.Context(), p, from, upstreamPath(p, from, model), xkNonStream(probe), r.Header)
-		if err != nil {
-			return attach.ProbeResult{Err: err}
-		}
-		defer res.Body.Close()
-		raw, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-		in, out := usageOf(raw)
-		return attach.ProbeResult{Status: res.StatusCode, Body: raw, InputTokens: in, OutputTokens: out}
+		var native Call
+		last, headers = s.xkNativeProbe(r, from, p, model, probe, &native)
+		call.To = native.To
+		xkSumUsage(&call.Usage, native.Usage)
+		return last
 	}
-
-	start := time.Now()
 	result, err := attach.Run(cfg, env, forward, xkObservation)
 	if err != nil {
 		msg := "xkeysmith ladder: " + err.Error()
 		return writeError(w, from, 502, msg), msg
 	}
-	latency := time.Since(start).Milliseconds()
-
-	// 审计:每条 attempt 一条记录。
-	s.xkRecord(settings, r, p, model, from, stream, latency, result)
-
-	// trace 头透出:客户端据此把这次响应与审计记录对上
-	// (xkeysmith 的 explain 用同一个 trace)。
+	result.Trace = state.trace
+	defer func() { s.xkRecord(settings, r, p, model, sessionKey, from, stream, result) }()
 	xkAttachTraceHeaders(w, result)
-
 	if !result.Accepted {
-		// 不伪造成功:全层耗尽给明确错误(503),上游故障透传原响应。
 		if result.StopReason == govern.StopUpstreamError {
+			xkCopyHeaders(w, headers)
+			if result.Probe.Err != nil {
+				msg := result.Probe.Err.Error()
+				return writeError(w, from, 502, msg), msg
+			}
 			return xkWriteProbe(w, result.Attempt, result.Probe, from)
 		}
 		msg := "xkeysmith exhausted its rewrite ladder"
 		w.Header().Set("x-xkeysmith-error", string(result.StopReason))
-		code := writeError(w, from, 503, msg)
-		return code, msg
+		return writeError(w, from, 503, msg), msg
 	}
-
-	// 采纳层:先看模型是否发起了**网关工具调用**(B 档)。有则网关自己执行、
-	// 回填、再调上游,直到模型给出最终答复;触到闸门给明确错误。
-	if settings.tools != nil && settings.tools.IsActive() && !xkIsSSE(result.Probe) {
-		final, err := s.xkRunToolRounds(settings, r, p, model, from, result, sessionKey)
+	if from != provider.Gemini && settings.tools != nil && settings.tools.IsActive() {
+		reply, err := xkToolBody(from, result.Probe)
 		if err != nil {
-			msg := "xkeysmith tool loop: " + err.Error()
-			return writeError(w, from, 502, msg), msg
+			return writeError(w, from, 502, err.Error()), err.Error()
 		}
-		if final.StopReason != "" {
-			// 闸门触顶 = 明确错误,绝不把客户端执行不了的 xk__ 调用交还。
-			msg := "xkeysmith tool rounds exhausted"
-			w.Header().Set("x-xkeysmith-error", string(final.StopReason))
-			code := writeError(w, from, 503, msg)
-			return code, msg
+		calls := tools.ExtractToolCalls(xkToolDialect(from), reply)
+		gatewayCalls := false
+		for _, c := range calls {
+			gatewayCalls = gatewayCalls || tools.IsGatewayTool(c.Name)
 		}
-		// 解锁集写回会话(技能门控的持久化)。
-		if len(final.Unlocked) > 0 {
-			settings.sessions.RecordUnlocks(sessionKey, &settings.pipeCfg, nil, final.Unlocked)
+		if gatewayCalls {
+			scoped := settings.tools.ForRequest(unlock)
+			first := true
+			roundTrip := func(doc map[string]any) (map[string]any, error) {
+				if first {
+					first = false
+					return reply, nil
+				}
+				envelope := rewrite.NewEnvelope(doc, env.Wire)
+				envelope = xkInjectTools(envelope, settings.tools, scoped.Unlocks())
+				request, err := json.Marshal(envelope.Body)
+				if err != nil {
+					return nil, err
+				}
+				began := time.Now()
+				last = forward(request)
+				result.Records = append(result.Records, attach.AttemptRecord{
+					Layer: result.Attempt.UpTo, Decision: "tool:continue", Reason: "native reply after gateway tools",
+					RequestBody: request, ResponseBody: last.Body, RequestHash: audit.ShortHash(request),
+					Usage:     audit.UsageSummary{InputTokens: last.InputTokens, OutputTokens: last.OutputTokens, TotalTokens: last.InputTokens + last.OutputTokens},
+					Outcome:   "tool_reply",
+					LatencyMS: uint64(time.Since(began).Milliseconds()),
+				})
+				if last.Err != nil {
+					return nil, last.Err
+				}
+				if last.Status >= 400 {
+					return nil, fmt.Errorf("upstream returned %d: %s", last.Status, provider.APIError(last.Body, http.StatusText(last.Status)))
+				}
+				return xkToolBody(from, last)
+			}
+			final, err := attach.RunToolLoop(&attach.ToolLoopConfig{
+				Plane: scoped, Dialect: xkToolDialect(from), MaxRounds: settings.tools.Config().MaxToolRounds,
+				Budget: state.budget, Context: r.Context(), Tokens: func(map[string]any) uint64 { return last.InputTokens + last.OutputTokens },
+				OnTool: func(round int, c tools.ToolCall, out tools.ToolResult) {
+					if !out.Denied {
+						state.acted.Store(true)
+					}
+					args, _ := json.Marshal(c.Arguments)
+					result.Records = append(result.Records, attach.AttemptRecord{Layer: result.Attempt.UpTo, Decision: "tool:execute", Outcome: "tool_result", ToolCall: &audit.ToolCallRecord{
+						Tool: c.Name, Round: uint32(round), ArgsHash: audit.ShortHash(args), ResultChars: len([]rune(out.Content)), IsError: out.IsError, Denied: out.Denied, DurationMS: out.DurationMS, Unlocked: out.Unlocked,
+					}})
+				},
+			}, result.Attempt.Envelope.Body, roundTrip)
+			if final != nil && len(final.Unlocked) > 0 {
+				unlocked := scoped.Unlocks()
+				settings.sessions.RecordUnlocks(sessionKey, &settings.pipeCfg, unlocked.Skills, unlocked.Patterns)
+			}
+			if err != nil {
+				if last.Status >= 400 {
+					xkCopyHeaders(w, headers)
+					return xkWriteProbe(w, result.Attempt, last, from)
+				}
+				msg := "xkeysmith tool loop: " + err.Error()
+				return writeError(w, from, 502, msg), msg
+			}
+			if final.StopReason != "" {
+				msg := "xkeysmith tool rounds exhausted"
+				w.Header().Set("x-xkeysmith-error", string(final.StopReason))
+				return writeError(w, from, 503, msg), msg
+			}
+			result.Probe = last
 		}
-		body, _ := json.Marshal(final.FinalBody)
-		return xkWriteRestored(w, result.Attempt, body, from)
 	}
-
-	// 响应侧的 L4 还原。
+	xkCopyHeaders(w, headers)
 	if stream {
-		if xkIsSSE(result.Probe) {
+		if result.Probe.Stream || xkIsSSE(result.Probe) {
 			return xkWriteStream(w, result, from)
 		}
-		// 探针是非流式的,但客户端要流:按协议把完整响应翻译成 SSE
-		// (期待 delta 的 SDK 完全无感)——协议修复而不是协议假设。
 		return xkWriteSynthesizedStream(w, result, from)
+	}
+	if result.Probe.Stream || xkIsSSE(result.Probe) {
+		reply, err := xkReply(from, result.Probe)
+		if err != nil {
+			return writeError(w, from, 502, err.Error()), err.Error()
+		}
+		request, _ := parse(from, body)
+		result.Probe.Body = render(from, reply, request)
+		result.Probe.Stream = false
 	}
 	return xkWriteProbe(w, result.Attempt, result.Probe, from)
 }
 
-// xkRunToolRounds 执行工具轮:模型发起 xk__ 调用 → 网关执行 → 回填 → 再调上游。
-func (s *Server) xkRunToolRounds(settings *xkSettings, r *http.Request, p provider.Provider, model string, from provider.Protocol, result *attach.LadderResult, sessionKey string) (*attach.ToolLoopResult, error) {
-	dialect := tools.DialectChat
-	switch {
-	case from == provider.Anthropic:
-		dialect = tools.DialectAnthropic
-	case from == provider.Responses:
-		dialect = tools.DialectResponses
+func xkToolDialect(from provider.Protocol) tools.Dialect {
+	switch from {
+	case provider.Anthropic:
+		return tools.DialectAnthropic
+	case provider.Responses:
+		return tools.DialectResponses
+	default:
+		return tools.DialectChat
 	}
-	budget := govern.NewBudget(settings.limits)
-	cfg := &attach.ToolLoopConfig{
-		Plane:     settings.tools,
-		Dialect:   dialect,
-		MaxRounds: 4,
-		Budget:    budget,
-	}
-	// 第一轮的响应已经在阶梯里拿到了,直接作为循环的起点。
-	request, _ := json.Marshal(result.Attempt.Envelope.Body)
-	var reqBody map[string]any
-	_ = json.Unmarshal(request, &reqBody)
+}
 
-	first := true
-	roundTrip := func(body map[string]any) (map[string]any, error) {
-		if first {
-			first = false
-			// 复用阶梯的探测结果作为第一轮响应。
-			var resp map[string]any
-			if err := json.Unmarshal(result.Probe.Body, &resp); err != nil {
-				return nil, err
-			}
-			return resp, nil
-		}
-		raw, err := json.Marshal(body)
+func xkToolBody(from provider.Protocol, probe attach.ProbeResult) (map[string]any, error) {
+	payload := probe.Body
+	if probe.Stream || xkIsSSE(probe) {
+		reply, err := xkReply(from, probe)
 		if err != nil {
 			return nil, err
 		}
-		res, err := s.forward(r.Context(), p, from, upstreamPath(p, from, model), raw, r.Header)
-		if err != nil {
-			return nil, err
-		}
-		defer res.Body.Close()
-		payload, _ := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-		var resp map[string]any
-		if err := json.Unmarshal(payload, &resp); err != nil {
-			return nil, err
-		}
-		return resp, nil
+		payload = render(from, reply, &Request{Model: reply.Model})
 	}
-	return attach.RunToolLoop(cfg, reqBody, roundTrip)
+	var doc map[string]any
+	err := json.Unmarshal(payload, &doc)
+	return doc, err
+}
+
+func xkCopyHeaders(w http.ResponseWriter, headers http.Header) {
+	for key, values := range headers {
+		switch http.CanonicalHeaderKey(key) {
+		case "Content-Length", "Content-Encoding", "Transfer-Encoding":
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(key), "x-xkeysmith-") {
+			continue
+		}
+		w.Header()[key] = append([]string(nil), values...)
+	}
 }
 
 // xkProto maps magpie's protocol to the ladder's dialect name.
 func xkProto(from provider.Protocol) string {
-	if from == provider.Anthropic {
+	switch from {
+	case provider.Anthropic:
 		return "anthropic"
+	case provider.Responses:
+		return "responses"
+	case provider.Gemini:
+		return "gemini"
+	default:
+		return "chat"
 	}
-	return "chat"
 }
 
 // xkEnvelope builds a rewrite envelope from the client's body.
@@ -277,6 +298,8 @@ func xkEnvelope(from provider.Protocol, body []byte) (*rewrite.Envelope, error) 
 	wire := rewrite.WireOpenAi
 	if from == provider.Anthropic {
 		wire = rewrite.WireAnthropic
+	} else if from == provider.Gemini {
+		wire = rewrite.WireGemini
 	}
 	return rewrite.NewEnvelope(doc, wire), nil
 }
@@ -284,143 +307,67 @@ func xkEnvelope(from provider.Protocol, body []byte) (*rewrite.Envelope, error) 
 // xkSessionKey derives the session key the same way xkeysmith does:
 // an explicit header wins, else wire+model+first user text.
 func xkSessionKey(r *http.Request, env *rewrite.Envelope, model string) string {
-	for _, h := range []string{"x-session-id", "x-xkeysmith-session", "x-conversation-id", "conversation_id"} {
+	for _, h := range []string{"x-magpie-session", "x-session-id", "x-xkeysmith-session", "x-conversation-id", "conversation_id"} {
 		if v := strings.TrimSpace(r.Header.Get(h)); v != "" {
 			return v
 		}
 	}
 	first := ""
+	if env == nil {
+		return "auto:" + audit.ShortHash([]byte(model))
+	}
 	env.ForEachTextRef(rewrite.ScopeUserTurns, func(_ rewrite.SlotCtx, text string) {
 		if first == "" {
 			first = text
 		}
 	})
-	if len(first) > 512 {
-		first = string([]rune(first)[:512])
+	if chars := []rune(first); len(chars) > 512 {
+		first = string(chars[:512])
 	}
 	return "auto:" + audit.ShortHash([]byte(model+"\x1f"+first))
 }
 
 // xkObservation translates a probe response into the judge's input,
 // absorbing the dialect differences (Chat / Anthropic / Responses).
-func xkObservation(proto string, res attach.ProbeResult) *detect.Observation {
-	obs := &detect.Observation{Status: res.Status}
-	if res.Err != nil {
-		obs.ErrorMessage = res.Err.Error()
+func xkObservation(proto string, probe attach.ProbeResult) *detect.Observation {
+	obs := &detect.Observation{Status: probe.Status}
+	if probe.Err != nil {
+		obs.ErrorMessage = probe.Err.Error()
 		return obs
 	}
-	if proto == "anthropic" {
-		var doc struct {
-			StopReason string `json:"stop_reason"`
-			Content    []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-			Error *struct {
-				Type    string `json:"type"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if err := json.Unmarshal(res.Body, &doc); err == nil {
-			obs.FinishReason = doc.StopReason
-			for _, c := range doc.Content {
-				if c.Type == "text" {
-					obs.Text += c.Text
-				}
-			}
-			if doc.Error != nil {
-				obs.ErrorCode = doc.Error.Type
-				obs.ErrorMessage = doc.Error.Message
-			}
-		}
+	if probe.Status >= 400 {
+		obs.ErrorCode = provider.ErrorType(probe.Body)
+		obs.ErrorMessage = provider.APIError(probe.Body, http.StatusText(probe.Status))
 		return obs
 	}
-	// OpenAI Chat / Responses.
-	var doc struct {
-		Choices []struct {
-			FinishReason string `json:"finish_reason"`
-			Message      struct {
-				Content   any    `json:"content"`
-				Refusal   string `json:"refusal"`
-				ToolCalls []any  `json:"tool_calls"`
-			} `json:"message"`
-		} `json:"choices"`
-		Output []struct {
-			Type    string `json:"type"`
-			Content []struct {
-				Type string `json:"type"`
-				Text string `json:"text"`
-			} `json:"content"`
-		} `json:"output"`
-		Status string `json:"status"`
-		Error  *struct {
-			Code    string `json:"code"`
-			Message string `json:"message"`
-		} `json:"error"`
+	protocol := provider.Chat
+	switch proto {
+	case "anthropic":
+		protocol = provider.Anthropic
+	case "responses":
+		protocol = provider.Responses
+	case "gemini":
+		protocol = provider.Gemini
 	}
-	if err := json.Unmarshal(res.Body, &doc); err != nil {
+	reply, err := xkReply(protocol, probe)
+	if err != nil {
+		obs.ErrorMessage = err.Error()
 		return obs
 	}
-	if len(doc.Choices) > 0 {
-		c := doc.Choices[0]
-		obs.FinishReason = c.FinishReason
-		obs.RefusalField = c.Message.Refusal
-		obs.Text = xkTextOf(c.Message.Content)
-		obs.ToolCalls = len(c.Message.ToolCalls)
+	obs.FinishReason = reply.Stop
+	obs.RefusalField = xkRefusal(protocol, probe)
+	if reply.Stop == "filter" {
+		obs.FinishReason = "content_filter"
 	}
-	for _, item := range doc.Output {
-		if item.Type == "message" {
-			for _, c := range item.Content {
-				if c.Type == "output_text" {
-					obs.Text += c.Text
-				}
-			}
+	for _, part := range reply.Parts {
+		switch part.Kind {
+		case Text:
+			obs.Text += part.Text
+		case ToolCall:
+			obs.ToolCalls++
 		}
-	}
-	if doc.Error != nil {
-		obs.ErrorCode = doc.Error.Code
-		obs.ErrorMessage = doc.Error.Message
-	}
-	if doc.Status == "incomplete" {
-		obs.FinishReason = "incomplete"
 	}
 	return obs
-}
-
-// xkTextOf flattens a Chat content field (string or parts).
-func xkTextOf(v any) string {
-	switch t := v.(type) {
-	case string:
-		return t
-	case []any:
-		var b strings.Builder
-		for _, part := range t {
-			if m, ok := part.(map[string]any); ok {
-				if s, ok := m["text"].(string); ok {
-					b.WriteString(s)
-				}
-			}
-		}
-		return b.String()
-	default:
-		return ""
-	}
-}
-
-// xkNonStream forces stream:false on a probe so the reply is one JSON body.
-func xkNonStream(body []byte) []byte {
-	var doc map[string]any
-	if err := json.Unmarshal(body, &doc); err != nil {
-		return body
-	}
-	if _, ok := doc["stream"]; ok {
-		doc["stream"] = false
-	}
-	out, err := json.Marshal(doc)
-	if err != nil {
-		return body
-	}
-	return out
 }
 
 // xkIsSSE reports whether a probe reply is a stream (some upstreams ignore
@@ -430,28 +377,11 @@ func xkIsSSE(res attach.ProbeResult) bool {
 		strings.Contains(string(res.Body), "\ndata: ")
 }
 
-// usageOf reads token usage from a reply body, tolerating both dialects.
-func usageOf(body []byte) (uint64, uint64) {
-	var doc struct {
-		Usage *struct {
-			PromptTokens     uint64 `json:"prompt_tokens"`
-			CompletionTokens uint64 `json:"completion_tokens"`
-			InputTokens      uint64 `json:"input_tokens"`
-			OutputTokens     uint64 `json:"output_tokens"`
-		} `json:"usage"`
-	}
-	if err := json.Unmarshal(body, &doc); err != nil || doc.Usage == nil {
-		return 0, 0
-	}
-	in := doc.Usage.PromptTokens + doc.Usage.InputTokens
-	out := doc.Usage.CompletionTokens + doc.Usage.OutputTokens
-	return in, out
-}
-
 // ─────────────────────────── 能力平面装载 ───────────────────────────
 
 // xkLoadSkills 从环境变量指定的目录加载技能(默认 ~/.magpie/xkeysmith/skills)。
-// 技能正文是第三方文本,默认**不注入**——由配置显式打开。
+// xk() 会把受限长度的技能索引注入 L1;完整正文仍通过 xk__skill_load
+// 按需读取,并由工具平面的启用与解锁状态控制。
 func xkLoadSkills() *skills.Set {
 	dir := os.Getenv("XKEYSMITH_SKILLS_DIR")
 	if dir == "" {
@@ -512,7 +442,7 @@ func xkLoadMcpServers() []tools.McpServerCfg {
 // (input_schema 形状);Responses 走顶层 tools(扁平形状)。
 // 渐进式披露:只注入**当前解锁状态下可见**的工具。
 func xkInjectTools(env *rewrite.Envelope, plane *tools.Plane, unlock tools.UnlockSet) *rewrite.Envelope {
-	if plane == nil || !plane.IsActive() {
+	if env.Wire == rewrite.WireGemini || plane == nil || !plane.IsActive() {
 		return env
 	}
 	visible := plane.VisibleDefs(unlock)
@@ -556,5 +486,16 @@ func xkInjectTools(env *rewrite.Envelope, plane *tools.Plane, unlock tools.Unloc
 
 func appendTools(existing any, add []any) []any {
 	list, _ := existing.([]any)
-	return append(list, add...)
+	var kept []any
+	for _, entry := range list {
+		item, _ := entry.(map[string]any)
+		name, _ := item["name"].(string)
+		if function, ok := item["function"].(map[string]any); ok {
+			name, _ = function["name"].(string)
+		}
+		if !tools.IsGatewayTool(name) {
+			kept = append(kept, entry)
+		}
+	}
+	return append(kept, add...)
 }

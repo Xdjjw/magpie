@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,7 +9,7 @@ import (
 	"time"
 )
 
-// McpServerCfg 与 xp-core 对齐(阶段④只用到 stdio 传输)。
+// McpServerCfg 与 xp-core 对齐,支持 stdio 与 Streamable HTTP 传输。
 type McpServerCfg struct {
 	Name      string
 	Enabled   bool
@@ -169,11 +170,8 @@ const (
 	TurnNotOurs TurnDisposition = iota
 	// TurnAllOurs 全是 xk__ 工具 → 网关逐个执行。
 	TurnAllOurs
-	// TurnHandBack 混入客户端工具 → **整轮原样交还**。
-	//
-	// 如果模型在同一轮里既要调客户端工具、又要调网关工具,我们不能只执行
-	// 一半:客户端的 agent loop 期望看到完整的 assistant 轮。这条规则让
-	// 「谁执行」永远是确定的。
+	// TurnHandBack is a mixed turn. The loop defers client calls before
+	// exposing a response, executes gateway calls and asks the model again.
 	TurnHandBack
 )
 
@@ -202,7 +200,24 @@ func (p *Plane) Disposition(calls []ToolCall) TurnDisposition {
 // Execute 执行一个网关工具调用。审批拒绝也是**一种结果**(denied=true),
 // 不是错误:回填给模型,它就能改策略。
 func (p *Plane) Execute(call ToolCall) ToolResult {
+	return p.executeVisible(context.Background(), call, visibleNames(p.VisibleDefs(UnlockSet{})))
+}
+
+func (p *Plane) executeVisible(ctx context.Context, call ToolCall, visible map[string]bool) ToolResult {
 	start := time.Now()
+	if !p.cfg.Enabled {
+		return ToolResult{ID: call.ID, Name: call.Name, Content: "gateway tools are disabled", IsError: true, Denied: true}
+	}
+	known := false
+	for _, def := range p.defs {
+		known = known || def.Name == call.Name
+	}
+	if !known {
+		return ToolResult{ID: call.ID, Name: call.Name, Content: fmt.Sprintf("未知工具 `%s`(网关没有注册它)", call.Name), IsError: true, Denied: true}
+	}
+	if !visible[call.Name] {
+		return ToolResult{ID: call.ID, Name: call.Name, Content: "tool is not available in this request; load its skill first", IsError: true, Denied: true}
+	}
 	if !p.guard.Allows(call.Name) {
 		return ToolResult{
 			ID: call.ID, Name: call.Name,
@@ -213,7 +228,16 @@ func (p *Plane) Execute(call ToolCall) ToolResult {
 		if !e.Handles(call.Name) {
 			continue
 		}
-		content, isError, err := e.Call(call.Name, call.Arguments)
+		var content string
+		var isError bool
+		var err error
+		if contextual, ok := e.(interface {
+			CallContext(context.Context, string, any) (string, bool, error)
+		}); ok {
+			content, isError, err = contextual.CallContext(ctx, call.Name, call.Arguments)
+		} else {
+			content, isError, err = e.Call(call.Name, call.Arguments)
+		}
 		if err != nil {
 			content = err.Error()
 			isError = true
@@ -222,7 +246,7 @@ func (p *Plane) Execute(call ToolCall) ToolResult {
 			ID: call.ID, Name: call.Name, Content: content,
 			IsError: isError, DurationMS: uint64(time.Since(start).Milliseconds()),
 		}
-		if loader, ok := e.(*SkillLoadExecutor); ok {
+		if loader, ok := e.(*SkillLoadExecutor); ok && !res.IsError {
 			res.Unlocked, res.UnlockedBy = loader.UnlocksFrom(call)
 		}
 		return res
@@ -232,6 +256,58 @@ func (p *Plane) Execute(call ToolCall) ToolResult {
 		Content: fmt.Sprintf("未知工具 `%s`(网关没有注册它)", call.Name),
 		IsError: true, DurationMS: uint64(time.Since(start).Milliseconds()),
 	}
+}
+
+func visibleNames(defs []ToolDef) map[string]bool {
+	out := map[string]bool{}
+	for _, def := range defs {
+		out[def.Name] = true
+	}
+	return out
+}
+
+// RequestPlane snapshots the tools advertised in each round. Skill loads
+// unlock tools for the next request, never for guessed calls in the same reply.
+type RequestPlane struct {
+	plane   *Plane
+	unlock  UnlockSet
+	visible map[string]bool
+}
+
+func (p *Plane) ForRequest(unlock UnlockSet) *RequestPlane {
+	r := &RequestPlane{plane: p, unlock: UnlockSet{Skills: append([]string(nil), unlock.Skills...), Patterns: append([]string(nil), unlock.Patterns...)}}
+	r.BeginRound()
+	return r
+}
+
+func (r *RequestPlane) BeginRound()    { r.visible = visibleNames(r.plane.VisibleDefs(r.unlock)) }
+func (r *RequestPlane) IsActive() bool { return r.plane.IsActive() }
+func (r *RequestPlane) Disposition(calls []ToolCall) TurnDisposition {
+	return r.plane.Disposition(calls)
+}
+func (r *RequestPlane) Truncate(content string) string { return r.plane.Truncate(content) }
+func (r *RequestPlane) Unlocks() UnlockSet {
+	return UnlockSet{Skills: append([]string(nil), r.unlock.Skills...), Patterns: append([]string(nil), r.unlock.Patterns...)}
+}
+func (r *RequestPlane) Execute(call ToolCall) ToolResult {
+	return r.ExecuteContext(context.Background(), call)
+}
+
+func (r *RequestPlane) ExecuteContext(ctx context.Context, call ToolCall) ToolResult {
+	ctx, cancel := context.WithTimeout(ctx, time.Duration(r.plane.cfg.CallTimeoutMS)*time.Millisecond)
+	defer cancel()
+	result := r.plane.executeVisible(ctx, call, r.visible)
+	if !result.IsError && !result.Denied {
+		for _, pattern := range result.Unlocked {
+			if !containsStr(r.unlock.Patterns, pattern) {
+				r.unlock.Patterns = append(r.unlock.Patterns, pattern)
+			}
+		}
+		if result.UnlockedBy != "" && !containsStr(r.unlock.Skills, result.UnlockedBy) {
+			r.unlock.Skills = append(r.unlock.Skills, result.UnlockedBy)
+		}
+	}
+	return result
 }
 
 // Truncate 按字符上限截断工具结果,并**明确标注**被截断。

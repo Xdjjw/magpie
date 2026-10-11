@@ -222,8 +222,11 @@ func pristineFrom(rec *TraceRecord) (*rewrite.Envelope, error) {
 		return nil, fmt.Errorf("记录里的原文不是合法 JSON: %w", err)
 	}
 	wire := rewrite.WireOpenAi
-	if rec.Wire == WireAnthropic {
+	switch rec.Wire {
+	case WireAnthropic:
 		wire = rewrite.WireAnthropic
+	case WireGemini:
+		wire = rewrite.WireGemini
 	}
 	return rewrite.NewEnvelope(body, wire), nil
 }

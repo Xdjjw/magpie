@@ -9,7 +9,7 @@ import (
 )
 
 // 与 xp-rewrite 的 fence.rs / l1_context / l2_lexical / l3_bridge / lib.rs
-// 测试一一对应。L4 属于阶段③,本轮不含其用例。
+// 测试一一对应;L4 的 vault 用例也在本文件后半段。
 
 func env(t *testing.T, raw string) *Envelope {
 	t.Helper()

@@ -99,6 +99,53 @@ func ExtractToolCalls(d Dialect, body map[string]any) []ToolCall {
 	}
 }
 
+// GatewayOnlyResponse keeps non-call content and the gateway calls for an
+// internal mixed turn. Deferred client calls have never been exposed or run.
+func GatewayOnlyResponse(d Dialect, body map[string]any) map[string]any {
+	encoded, _ := json.Marshal(body)
+	var out map[string]any
+	_ = json.Unmarshal(encoded, &out)
+	filter := func(items []any, typ, nameField string) []any {
+		var kept []any
+		for _, item := range items {
+			obj, ok := item.(map[string]any)
+			if !ok {
+				kept = append(kept, item)
+				continue
+			}
+			if kind, _ := obj["type"].(string); kind == typ {
+				name, _ := obj[nameField].(string)
+				if nameField == "function" {
+					fn, _ := obj["function"].(map[string]any)
+					name, _ = fn["name"].(string)
+				}
+				if !IsGatewayTool(name) {
+					continue
+				}
+			}
+			kept = append(kept, item)
+		}
+		return kept
+	}
+	switch d {
+	case DialectResponses:
+		items, _ := out["output"].([]any)
+		out["output"] = filter(items, "function_call", "name")
+	case DialectAnthropic:
+		items, _ := out["content"].([]any)
+		out["content"] = filter(items, "tool_use", "name")
+	default:
+		choices, _ := out["choices"].([]any)
+		if len(choices) > 0 {
+			choice, _ := choices[0].(map[string]any)
+			msg, _ := choice["message"].(map[string]any)
+			calls, _ := msg["tool_calls"].([]any)
+			msg["tool_calls"] = filter(calls, "function", "function")
+		}
+	}
+	return out
+}
+
 // AssistantTurn 从上游响应里取出「assistant 那一轮」,追加回去。
 //
 // 原样追加而不是重建:上游可能带了我们没建模的字段(例如 reasoning_content),

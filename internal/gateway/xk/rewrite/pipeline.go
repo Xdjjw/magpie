@@ -189,8 +189,8 @@ type Pipeline struct {
 // NewPipeline 按配置构建。enabled 之外的层不会被构造,其正则也不会被编译。
 // L0 是保真度基线,任何配置下都存在。
 //
-// L4(占位符抽象化)属于阶段③,本阶段不构造——attempt 到 L4 会停在 L3,
-// maxExecutableLayer 如实反映这一点。
+// L4(占位符抽象化)与前面的层一样按 enabled 构造;未启用的层不会进入
+// attempt,因此 maxExecutableLayer 反映当前管线真正可执行的最高层。
 func NewPipeline(cfg RewriteConfig, enabled []govern.LayerID) (*Pipeline, error) {
 	has := func(l govern.LayerID) bool {
 		for _, e := range enabled {

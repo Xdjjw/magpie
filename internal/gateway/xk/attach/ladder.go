@@ -3,9 +3,10 @@
 //
 // 设计要点(与 xkeysmith 的引擎一致):
 //   - **递进是决策,不是循环**:每一轮问 govern.Plan 该采纳 / 升层 / 停止;
-//   - **probe_then_replay**:判定用非流式探测,采纳后再以流式重放该层
-//     (xkeysmith 文档化的流式策略之一,代价是最坏 N+1 次上游调用);
-//   - **L4 还原在响应侧**:非流式整体还原,流式用滑动窗口增量还原;
+//   - 每层保留原生请求的 stream 设置;缓冲判定后释放被采纳的响应,
+//     不另发一次请求重放;
+//   - **L4 还原在响应侧**:非流式整体还原;有占位符的流式响应由网关解码、
+//     整体还原后重新编码,避免占位符跨 SSE 事件边界;
 //   - **审计每 attempt 一条**,包括被跳过层与失败层的自述。
 //
 // 本包不依赖 magpie 内部:上游调用以 Forward 函数注入,因此整条阶梯
@@ -14,9 +15,11 @@ package attach
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/gateway/xk/audit"
 	"github.com/yetone/magpie/internal/gateway/xk/detect"
@@ -31,9 +34,10 @@ type ProbeResult struct {
 	Err          error
 	InputTokens  uint64
 	OutputTokens uint64
+	Stream       bool
 }
 
-// Forward 发一次**非流式**探测。body 是已经改写好的一层请求体。
+// Forward 发一次原生调用并缓冲响应。body 是已经改写好的一层请求体。
 type Forward func(body []byte) ProbeResult
 
 // Observation 把一次探测的原始响应翻译成判定器的输入。
@@ -54,6 +58,8 @@ type LadderConfig struct {
 	// SessionMemoryKey 非空时启用会话记忆(「上次成功的层」直接起步)。
 	SessionKey string
 	Sessions   *govern.SessionRegistry
+	Budget     *govern.Budget
+	Context    context.Context
 }
 
 // AttemptRecord 是一条审计记录(与 audit.TraceRecord 的字段对应)。
@@ -70,6 +76,10 @@ type AttemptRecord struct {
 	LatencyMS     uint64
 	Outcome       string
 	StopReason    string
+	RequestBody   []byte
+	ResponseBody  []byte
+	Usage         audit.UsageSummary
+	ToolCall      *audit.ToolCallRecord
 }
 
 // LadderResult 是整条阶梯的结局。
@@ -83,6 +93,7 @@ type LadderResult struct {
 	StopReason    govern.StopReason
 	// Reason 是给用户/审计的一句话结论。
 	Reason string
+	Trace  audit.TraceID
 }
 
 // LayerNone 表示没有采纳任何层。
@@ -93,7 +104,10 @@ const LayerNone govern.LayerID = 255
 // 返回的 Attempt 是**被采纳的那一层**的改写结果(调用方用它做 L4 还原);
 // 未采纳时返回最后一层的改写结果,以便如实回报。
 func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe Observation) (*LadderResult, error) {
-	budget := govern.NewBudget(cfg.Limits)
+	budget := cfg.Budget
+	if budget == nil {
+		budget = govern.NewBudget(cfg.Limits)
+	}
 	entry := cfg.EntryLayer
 	if cfg.Sessions != nil && cfg.SessionKey != "" {
 		entry = cfg.Sessions.EntryLayer(cfg.SessionKey, &cfg.PipelineCfg, cfg.EntryLayer)
@@ -108,8 +122,20 @@ func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe
 			return nil, fmt.Errorf("rewrite at %s: %w", layer.Label(), err)
 		}
 
-		res := forward(mustJSON(attempt.Envelope.Body))
-		budget.NoteCall(res.InputTokens+res.OutputTokens, res.InputTokens+res.OutputTokens)
+		if cfg.Context != nil && cfg.Context.Err() != nil {
+			reason := govern.StopClientGone
+			if cfg.Context.Err() == context.DeadlineExceeded {
+				reason = govern.StopWallClockExhausted
+			}
+			return &LadderResult{Attempt: attempt, Records: records, StopReason: reason, Reason: cfg.Context.Err().Error()}, nil
+		}
+		if reason, ok := budget.Check(); !ok {
+			return &LadderResult{Attempt: attempt, Records: records, StopReason: reason, Reason: string(reason)}, nil
+		}
+		request := mustJSON(attempt.Envelope.Body)
+		started := time.Now()
+		res := forward(request)
+		budget.NoteCall(res.InputTokens + res.OutputTokens)
 
 		obs := observe(cfg.Proto, res)
 		verdict := cfg.Detector.Judge(obs)
@@ -132,6 +158,9 @@ func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe
 			RequestHash:   attempt.RequestHash(),
 			MaskedTargets: maskedTargets(attempt),
 			Outcome:       outcomeOf(verdict, plan.Decision),
+			RequestBody:   request, ResponseBody: res.Body,
+			Usage:     audit.UsageSummary{InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, TotalTokens: res.InputTokens + res.OutputTokens},
+			LatencyMS: uint64(time.Since(started).Milliseconds()),
 		}
 		for _, r := range attempt.Reports {
 			rec.Rules = append(rec.Rules, r.Rules...)

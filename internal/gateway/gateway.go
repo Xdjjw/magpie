@@ -335,8 +335,6 @@ type Server struct {
 	xkOnce     sync.Once
 	xkErr      error
 	xkSettings *xkSettings
-	// 外部 xkeysmith 进程(可选,补丁 3);由 XKEYSMITH_BIN 打开。
-	xkSide *xkSidecar
 }
 
 // New makes a gateway.
@@ -1769,6 +1767,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	kept := &keptAlive{proto: from}
 	var sentMs int64 // ms from the request to its answering try going to the vendor
 	streams := streamOf(body)
+	if xkMasterEnabled() && slices.ContainsFunc(cands, func(c candidate) bool { return c.p.Semantic || xkEnabled(c.p) }) {
+		if settings := s.xk(); settings != nil {
+			var cancel context.CancelFunc
+			r, _, cancel = xkRequest(r, settings.limits)
+			defer cancel()
+		}
+	}
 	if from == provider.Gemini {
 		streams = strings.Contains(r.URL.Path, "streamGenerateContent")
 	}
@@ -2054,6 +2059,11 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			break
 		}
 		hw.settle()
+		if xkActed(r.Context()) {
+			// A gateway tool already ran. Commit this outcome before any of
+			// the native shape, account or provider retries can replay it.
+			hw.release()
+		}
 		if hw.passing {
 			clientResponseID = call.Usage.ResponseID
 		}
@@ -2628,20 +2638,33 @@ func sinceStart(before, d time.Duration) int64 {
 // attempt sends a request to one provider. call.To stays empty when the
 // provider has no endpoint to send it to.
 func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, call *Call) (int, string) {
+	if (p.Semantic || xkEnabled(p)) && xkMasterEnabled() {
+		return s.serveXkeysmith(w, r, from, p, model, body, call)
+	}
+	state, _ := r.Context().Value(xkRequestKey{}).(*xkRequestState)
+	if state != nil {
+		if reason, ok := state.budget.Check(); !ok {
+			w.Header().Set("x-xkeysmith-error", string(reason))
+			msg := "xkeysmith request budget exhausted"
+			return writeError(w, from, 503, msg), msg
+		}
+	}
+	status, msg := s.attemptNative(w, r, from, p, model, body, call)
+	if state != nil {
+		state.budget.NoteCall(uint64(max(call.Usage.prompt(), 0) + max(call.Usage.Output, 0)))
+	}
+	return status, msg
+}
+
+// attemptNative is the provider's complete transport path. Semantic retries
+// call it too, so routing aliases, account adapters and protocol translation
+// have one implementation.
+func (s *Server) attemptNative(w http.ResponseWriter, r *http.Request, from provider.Protocol, p provider.Provider, model string, body []byte, call *Call) (int, string) {
 	// Normalize for the actual destination, separately on each fallback.
 	// Native ChatGPT accounts accept standalone tool outputs themselves.
 	if from == provider.Responses && (p.Account == nil || p.Account.Agent != "codex") {
 		body = orphanedToolOutputs(body)
 		body = pairToolItems(body)
-	}
-	// xkeysmith: the local semantic gateway runs its own ladder (judge,
-	// escalate L0→L4, restore). It is taken before the vendor-specific
-	// branches below, which don't apply to a local relay.
-	// 总开关关 = 所有请求原样直连(per-provider 的 semantic 标记被忽略)。
-	if (p.Semantic || xkEnabled(p)) && xkMasterEnabled() {
-		call.To = from
-		status, msg := s.serveXkeysmith(w, r, from, p, model, body, &call.Usage)
-		return status, msg
 	}
 	// every request to the provider goes through its own proxy, if it has
 	// one (#237)

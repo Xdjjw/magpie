@@ -151,9 +151,10 @@ func TestDispositionHandsBackMixedTurns(t *testing.T) {
 	if got := p.Disposition([]ToolCall{{Name: SkillLoad}}); got != TurnAllOurs {
 		t.Fatal("全是网关工具 → 网关执行")
 	}
-	// 混入客户端工具 → **整轮交还**(客户端 agent loop 期望完整 assistant 轮)
+	// 混入客户端工具 → 标记为混合轮;工具轮会先执行网关调用,
+	// 回填后再让模型重新请求客户端工具。
 	if got := p.Disposition([]ToolCall{{Name: SkillLoad}, {Name: "read_file"}}); got != TurnHandBack {
-		t.Fatal("混合轮必须整轮交还")
+		t.Fatal("混合轮必须交给内部工具轮拆分处理")
 	}
 }
 

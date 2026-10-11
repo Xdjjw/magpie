@@ -77,6 +77,8 @@ var Vars = []string{
 	// Droid's home, Windsurf's API server, ZCode's credential seed: what
 	// makes an account or an installation visible that the test didn't make
 	"FACTORY_HOME_OVERRIDE", "WINDSURF_API_SERVER_URL", "ZCODE_CREDENTIAL_SECRET",
+	// xkeysmith's optional semantic-plane skills and tool configuration
+	"XKEYSMITH_SKILLS_DIR", "XKEYSMITH_TOOLS", "XKEYSMITH_APPROVAL", "XKEYSMITH_ALLOWLIST", "XKEYSMITH_MCP_SERVERS",
 }
 
 // NotPaths are the Vars that name no folder or file under the working

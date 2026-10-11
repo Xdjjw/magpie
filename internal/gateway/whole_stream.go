@@ -37,6 +37,11 @@ func wholeEvents(proto provider.Protocol, b []byte) []wholeEvent {
 		return responsesWholeEvents(b)
 	case provider.Anthropic:
 		return anthropicWholeEvents(b)
+	case provider.Gemini:
+		var reply obj
+		if json.Unmarshal(b, &reply) == nil && (reply["candidates"] != nil || reply["promptFeedback"] != nil) {
+			return []wholeEvent{{"", reply}}
+		}
 	}
 	return nil
 }

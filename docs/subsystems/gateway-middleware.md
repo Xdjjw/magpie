@@ -21,13 +21,13 @@ plugins.json is the source of truth for which middleware is installed and on, in
 ## Runtime path
 
 1. `serveAgent` establishes the [gateway session identity and optional recording](gateway-sessions.md), then calls `middleware.Begin` with the request's protocol, model, stream flag, path and agent. With no middleware it calls `serve` directly.
-2. `Run.Request` passes the agent's body, in its own API, to each `onRequest` in turn. An object returned is the body the next middleware and the gateway get; `undefined` keeps the bytes as they were. `ctx.reject(status, message)` stops the chain, and the agent gets that error in its API's shape (`writeError`).
+2. `Run.Request` passes the agent's body, in its own API, to each `onRequest` in turn. An object returned is the body the next middleware and the gateway get; `undefined` keeps the bytes as they were. `ctx.reject(status, message)` stops the chain, and the agent gets that error in its API's shape (`writeError`). The semantic plane is therefore downstream of middleware: a provider with `Semantic` enabled enters `serveXkeysmith` only after this request hook has completed.
 3. `Run.Wrap` wraps the response writer when some middleware has `onEvent` or `onResponse`. An SSE reply is split into events. Each event whose data is a JSON object goes to every `onEvent` that wants its name (`export const events`): an object replaces it, `null` drops it, and `undefined` writes the original bytes. `data: [DONE]` and other non-object data pass by. A whole JSON reply is buffered for `onResponse`, with `ctx.status` set. A reply with a `Content-Encoding` passes as-is.
 4. `Run.End` returns the runtimes to their pools.
 
 Each middleware gets one runtime for the whole request, so its hooks share `ctx.state`. Runtimes come from a per-middleware `sync.Pool` and modules are compiled once per load.
 
-Only requests agents send go through `serveAgent`. magpie's own requests (thread titles, the router's classifier, the search and vision stand-ins) call `serve` directly. Middleware sees bodies before redaction, which still applies upstream.
+Only requests agents send go through `serveAgent`. magpie's own requests (thread titles, the router's classifier, the search and vision stand-ins) call `serve` directly. Middleware sees bodies before redaction, which still applies upstream. It does not run once per semantic probe or gateway-tool round; those are internal calls that reuse the already transformed request and the shared request context.
 
 ## Constraints and failure behavior
 

@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -10,10 +11,12 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // MCP 桥(C 档):工具实现留在 MCP 侧,网关只负责转发。
-// 本轮实现 stdio 传输;Streamable HTTP 在需要时补(接口已留好)。
+// 支持 stdio 和 Streamable HTTP 两种传输。
 
 type McpTool struct {
 	Name        string `json:"name"`
@@ -45,6 +48,7 @@ type stdioClient struct {
 	cmd     *exec.Cmd
 	stdin   io.WriteCloser
 	stdout  *bufio.Reader
+	output  io.ReadCloser
 	mu      sync.Mutex
 	nextID  int
 	timeout time.Duration
@@ -61,7 +65,7 @@ func newStdioClient(cfg McpServerCfg, timeoutMS uint64) (*stdioClient, error) {
 			return nil, fmt.Errorf("cwd `%s` 不是存在的目录(检查它是否写成了未定义的环境变量)", cfg.Cwd)
 		}
 	}
-	cmd := exec.Command(cfg.Command, cfg.Args...)
+	cmd := proc.Command(cfg.Command, cfg.Args...)
 	if cfg.Cwd != "" {
 		cmd.Dir = cfg.Cwd
 	}
@@ -85,17 +89,29 @@ func newStdioClient(cfg McpServerCfg, timeoutMS uint64) (*stdioClient, error) {
 		return nil, fmt.Errorf("启动 MCP 服务器失败: %w", err)
 	}
 	c := &stdioClient{
-		cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20),
+		cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), output: stdout,
 		timeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
 	if err := c.initialize(); err != nil {
-		_ = cmd.Process.Kill()
+		c.abort()
+		_ = cmd.Wait()
 		return nil, err
 	}
 	return c, nil
 }
 
 func (c *stdioClient) send(method string, params any, notify bool) (json.RawMessage, error) {
+	return c.sendContext(context.Background(), method, params, notify)
+}
+
+func (c *stdioClient) sendContext(ctx context.Context, method string, params any, notify bool) (json.RawMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
+	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	stop := context.AfterFunc(ctx, c.abort)
+	defer stop()
 	req := map[string]any{"jsonrpc": "2.0", "method": method}
 	if params != nil {
 		req["params"] = params
@@ -115,13 +131,12 @@ func (c *stdioClient) send(method string, params any, notify bool) (json.RawMess
 		return nil, nil
 	}
 	// 读一行应答(跳过通知:没有 id 的消息)。
-	deadline := time.Now().Add(c.timeout)
 	for {
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("MCP 调用超时: %s", method)
-		}
 		respLine, err := c.stdout.ReadBytes('\n')
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
 			return nil, fmt.Errorf("MCP 连接断开: %w", err)
 		}
 		var resp struct {
@@ -135,7 +150,7 @@ func (c *stdioClient) send(method string, params any, notify bool) (json.RawMess
 		if err := json.Unmarshal(respLine, &resp); err != nil {
 			continue
 		}
-		if resp.ID == nil {
+		if resp.ID == nil || *resp.ID != c.nextID {
 			continue // 通知,不是我们的应答
 		}
 		if resp.Error != nil {
@@ -177,7 +192,13 @@ func (c *stdioClient) ListTools() ([]McpTool, error) {
 }
 
 func (c *stdioClient) CallTool(name string, arguments json.RawMessage) (string, bool, error) {
-	c.mu.Lock()
+	return c.CallToolContext(context.Background(), name, arguments)
+}
+
+func (c *stdioClient) CallToolContext(ctx context.Context, name string, arguments json.RawMessage) (string, bool, error) {
+	if err := lockMCP(ctx, &c.mu); err != nil {
+		return "", true, err
+	}
 	defer c.mu.Unlock()
 	var args any
 	if len(arguments) > 0 {
@@ -185,7 +206,7 @@ func (c *stdioClient) CallTool(name string, arguments json.RawMessage) (string, 
 			return "", true, fmt.Errorf("参数不是合法 JSON: %w", err)
 		}
 	}
-	raw, err := c.send("tools/call", map[string]any{"name": name, "arguments": args}, false)
+	raw, err := c.sendContext(ctx, "tools/call", map[string]any{"name": name, "arguments": args}, false)
 	if err != nil {
 		return "", true, err
 	}
@@ -209,13 +230,40 @@ func (c *stdioClient) CallTool(name string, arguments json.RawMessage) (string, 
 }
 
 func (c *stdioClient) Close() {
+	c.abort()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	_ = c.cmd.Wait()
+}
+
+// Cancellation closes the pipes so a blocked ReadBytes ends too. A stdio
+// connection interrupted mid-response cannot safely serve another request.
+func (c *stdioClient) abort() {
 	_ = c.stdin.Close()
+	if c.output != nil {
+		_ = c.output.Close()
+	}
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}
-	_, _ = c.cmd.Process.Wait()
+}
+
+func lockMCP(ctx context.Context, mu *sync.Mutex) error {
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if mu.TryLock() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
 
 // EnvExpand 展开 `command`/`args`/`cwd` 里的 ${VAR} 与 $VAR;

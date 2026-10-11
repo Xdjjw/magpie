@@ -32,7 +32,7 @@ func (f *protoFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		case "anthropic":
 			_, _ = w.Write([]byte(`{"type":"message","stop_reason":"refusal","content":[{"type":"text","text":"I can't help with that."}]}`))
 		default:
-			_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"I can't help with that."}]}]}`))
+			_, _ = w.Write([]byte(`{"id":"resp_fixture","object":"response","model":"m","status":"completed","output":[{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"output_text","text":"I can't help with that."}]}]}`))
 		}
 		return
 	}
@@ -40,7 +40,7 @@ func (f *protoFake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case "anthropic":
 		_, _ = w.Write([]byte(`{"type":"message","stop_reason":"end_turn","content":[{"type":"text","text":"ok from anthropic"}]}`))
 	default:
-		_, _ = w.Write([]byte(`{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"ok from responses"}]}]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_fixture","object":"response","model":"m","status":"completed","output":[{"id":"msg_fixture","type":"message","role":"assistant","content":[{"type":"output_text","text":"ok from responses"}]}]}`))
 	}
 }
 

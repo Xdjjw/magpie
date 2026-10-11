@@ -1599,6 +1599,9 @@ func (h *holdWriter) settle() {
 
 // failed reports a held error another provider could answer instead.
 func (h *holdWriter) failed() bool {
+	if h.ctx != nil && xkActed(h.ctx) {
+		return false
+	}
 	if h.refused {
 		return !h.passing
 	}
@@ -1610,7 +1613,7 @@ func (h *holdWriter) failed() bool {
 func (h *holdWriter) mayAskAgain() bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	return h.hold && !h.passing
+	return h.hold && !h.passing && (h.ctx == nil || !xkActed(h.ctx))
 }
 
 // release sends a held reply after all: nobody else is left to try.

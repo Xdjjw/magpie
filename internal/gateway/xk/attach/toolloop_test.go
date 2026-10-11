@@ -8,7 +8,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway/xk/tools"
 )
 
-// 工具轮循环的验收:执行、回填、闸门、整轮交还。
+// 工具轮循环的验收:执行、回填、闸门、混合调用调度。
 
 type fakePlane struct {
 	active   bool
@@ -122,7 +122,7 @@ func TestToolLoopExecutesAndFeedsBack(t *testing.T) {
 	}
 }
 
-func TestToolLoopHandsBackMixedTurns(t *testing.T) {
+func TestToolLoopDefersClientCallsInMixedTurns(t *testing.T) {
 	plane := &fakePlane{active: true}
 	cfg := &ToolLoopConfig{Plane: plane, Dialect: tools.DialectChat, MaxRounds: 4}
 	// 纯客户端工具轮:不归网关管,原样返回(网关不执行、也不改)。
@@ -136,10 +136,19 @@ func TestToolLoopHandsBackMixedTurns(t *testing.T) {
 		t.Fatalf("客户端工具不该被网关执行: %+v", res)
 	}
 
-	// 混轮:同一轮里既有网关工具又有客户端工具 → **整轮交还**。
+	// 混轮:先处理网关工具,再让模型在完整结果基础上请求客户端工具。
 	plane2 := &fakePlane{active: true}
 	cfg2 := &ToolLoopConfig{Plane: plane2, Dialect: tools.DialectChat, MaxRounds: 4}
+	n := 0
 	res2, err := RunToolLoop(cfg2, chatRequest(), func(b map[string]any) (map[string]any, error) {
+		n++
+		if n == 2 {
+			encoded := string(mustJSON(b))
+			if strings.Contains(encoded, "read_file") || !strings.Contains(encoded, "pong:xk__skill_load") {
+				t.Fatalf("internal history must pair only gateway calls: %s", encoded)
+			}
+			return chatResponseWithCall("read_file", "client-next"), nil
+		}
 		return map[string]any{
 			"choices": []any{map[string]any{
 				"finish_reason": "tool_calls",
@@ -158,8 +167,12 @@ func TestToolLoopHandsBackMixedTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !res2.HandedBack || len(plane2.executed) != 0 {
-		t.Fatalf("混合轮必须整轮交还(网关不执行任何调用): %+v", res2)
+	if len(plane2.executed) != 1 || plane2.executed[0] != "xk__skill_load" || n != 2 || res2.StopReason != "" {
+		t.Fatalf("gateway calls execute before client handback: %+v executed=%v requests=%d", res2, plane2.executed, n)
+	}
+	final := string(mustJSON(res2.FinalBody))
+	if strings.Contains(final, "xk__") || !strings.Contains(final, "read_file") {
+		t.Fatalf("client must receive only its own tools: %s", final)
 	}
 }
 

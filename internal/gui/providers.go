@@ -880,6 +880,8 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 	mux.HandleFunc("POST /api/provider/{action}", func(rw http.ResponseWriter, r *http.Request) {
 		var req struct {
 			provider.Provider
+			// Semantic left out by an older editor keeps the saved value.
+			Semantic *bool `json:"semantic"`
 			// Proxy is the proxy its requests go through (#237), "" to
 			// follow the global one; a save that leaves it out keeps it
 			Proxy *string `json:"proxy"`
@@ -987,6 +989,17 @@ func providerRoutes(mux *http.ServeMux, w Windows) {
 			return
 		}
 		in := req.Provider
+		if req.Semantic != nil {
+			in.Semantic = *req.Semantic
+		} else if r.PathValue("action") == "save" {
+			id := in.ID
+			if req.From != "" {
+				id = req.From
+			}
+			if saved, err := provider.Find(id); err == nil {
+				in.Semantic = saved.Semantic
+			}
+		}
 		if req.Routing != nil {
 			in.Routing = *req.Routing
 		}

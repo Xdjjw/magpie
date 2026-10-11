@@ -1,4 +1,4 @@
-# xkeysmith 语义平面移植设计(fork 内部文档)
+# xkeysmith 语义平面移植与运行架构
 
 前提校准:两个项目"功能类似"只对**传输层**成立(HTTP 服务、SSE、方言、provider 转发),
 而 magpie 的传输层更强(四方言 + IR 互转)——**传输层留 magpie 的,xkeysmith 的
@@ -11,7 +11,7 @@
 | `xp-audit`(JSONL trace/脱敏/explain/replay) | 1343 | `internal/gateway/xk/audit` | 直接移植 |
 | `xp-rewrite`(L0-L4 + 占位符保险库 + 流式还原) | 1737 | `internal/gateway/xk/rewrite` | L1-L3 易;L4 流式还原最难 |
 | `xp-core`(policy 正则集/envelope/hash/ids) | ~1600 相关 | `internal/gateway/xk/policy` | 正则全部 RE2 兼容(已核验,无损) |
-| skills/tools/MCP 平面 | 4251 | 阶段 4 再议 | 依赖 IR 工具形状,最大新工程 |
+| skills/tools/MCP 平面 | 4251 | `internal/gateway/xk/skills`, `xk/tools` | 工具轮、审批、MCP 与渐进披露 |
 
 合计移植面 ≈ 6-7k 行 Rust → Go。**这是重写(port),不是搬运**;Rust 原版降级为
 spec 与 test oracle(参照上游保留旧 WebSocket 网关做 oracle 的惯例)。
@@ -22,24 +22,29 @@ spec 与 test oracle(参照上游保留旧 WebSocket 网关做 oracle 的惯例)
 Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论上可保留单一 Rust
 真源,但流式状态跨边界 + 冷门调试路径,仅作保底研究,不选为主路线。
 
-## 插入点(基于 fork 基点 d81706f9 的侦察)
+## 运行插入点
 
-- **改写(L1-L3)**:magpie IR 的 `Part{Kind, Text, Args json.RawMessage}`
-  (`internal/gateway/ir.go`)天然等价于 `Envelope::for_each_text_mut` 的不变量——
-  只遍历 `Kind==Text` 的 parts,`ToolCall.Args` 不是文本、不可触碰,且一套代码覆盖四方言。
-  钩子:`translate` 路径在 `parse(from, body)`(`gateway.go:4411`)之后;
-  `relay` 路径(原样透传,`gateway.go:2695` 判定)需要按方言的原始 JSON 访问器
-  (xkeysmith envelope 的两种方言解析可直接移植),或在语义开关开启时对目标 provider
-  强制 translate——**设计决策待定,倾向后者(简单、语义清晰,代价是失去原样字节)**。
-- **升级循环**:xkeysmith 的「同 provider 内,判定拒绝→升层→重写→重试」发生在
-  **单次 attempt 内部**(`gateway.go:2624` `s.attempt`),不与 magpie 的候选/故障转移
-  循环(`plan`/`planGroup`)混淆——两层重试正交叠加。
-- **判定**:挂在响应事件流(`internal/gateway/continuation.go:252` streamTranslated
-  的 Event 序列);结构化证据从 HTTP 状态/错误体取,词面证据扫 text events。
-- **审计**:每 attempt 一条记录;`capture.go`/`sniff.go` 已有逐流钩子可挂;
-  落盘遵循 magpie 的 appdir 约定。
-- **L4 流式还原**:跨 chunk 滑动窗口状态对象挂在 streamTranslated 的 per-stream
-  上下文里,算法照移植,事件形状对齐 IR Event。
+- **语义入口**:`internal/gateway/gateway.go` 的 `attempt` 检查
+  `provider.Semantic` 或 `xkeysmith` preset，并转入 `serveXkeysmith`。
+  该入口通过 `xkNativeProbe` 调用 Magpie 唯一的 `attemptNative`，因此保留
+  provider/model 映射、账号适配、协议转换、usage 和 Gemini native stream 路径。
+- **改写(L1-L3)**:`internal/gateway/xk/rewrite.Envelope` 按 wire 访问文本槽：
+  Chat、Anthropic、Responses、Gemini 的 system、user、assistant、tool-result 文本
+  可被规则改写；tool call 的 name、id、arguments 以及 Gemini functionCall 参数
+  不在槽位集合内。L4 用 placeholder vault 保护目标，并在响应 JSON/SSE 上还原。
+- **升级循环**:同一 provider 内的「判定拒绝→升层→重写→重试」由
+  `internal/gateway/xk/attach.Run` 完成，不与 Magpie 的候选/故障转移循环混淆。
+  每次探测先缓冲，只有被采纳的响应才释放；上游错误不会被误判为拒绝。
+- **判定**:`xkObservation` 先用 Magpie 原生 decoder 将 whole JSON 或 SSE 统一
+  成 IR，再读取 finish/stop reason、structured refusal、Gemini
+  `promptFeedback.blockReason`、HTTP policy error 和文本证据交给 detector。
+- **审计**:`internal/gateway/xk/audit` 每 attempt 一条 JSONL 记录，记录
+  trace/session/wire/layer、判定、usage、请求/响应 hash 和脱敏 preview；启用
+  `RawCapture` 时才保留原文。Gemini wire 也可由 replay 重新构造 envelope。
+- **L4 流式还原**:语义探针本身会先缓冲完整响应再判定。采纳的流式响应在有
+  L4 占位符时先解码成 Magpie IR、整体还原并按客户端方言重新编码，避免占位符
+  被切在 SSE 事件之间；没有占位符时直接释放原生事件。这样保持事件形状正确，
+  代价是 L4 流请求的首字节要等判定完成。
 
 ## 阶段计划(每阶段以语料为验收契约)
 
@@ -54,15 +59,17 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
    Pipeline 累积执行 + 深拷贝隔离。22 个测试,与 Rust 侧一一对应。
 3. **升级循环接线 + L4 流式还原**——✅ 已完成:
    L4 目标抽象化 + 占位符保险库(不可碰撞 nonce / 去重 / 保护清单)+
-   跨 chunk 滑窗流式还原器;attach 包实现阶梯运行器(判定→升层→重试,
+   跨事件安全还原;attach 包实现阶梯运行器(判定→升层→重试,
    预算封顶,上游故障不升级)与响应侧还原(非流式整体 / 流式增量);
-   网关接线:provider 为 xkeysmith 时走语义通路(serveXkeysmith),
-   每条 attempt 一条审计记录。attach 9 测试 + rewrite 29 测试。
+   网关接线:provider 的 `semantic` 开关或 xkeysmith preset 走语义通路
+   (`serveXkeysmith`)，每条 attempt 一条审计记录；Chat、Responses、Anthropic、
+   Gemini 均有真实 gateway 回归。attach 9 测试 + rewrite 29 测试。
 4. **skills/tools/MCP 平面**——✅ 已完成:
    skills 包(SKILL.md 解析,含块状列表/注释/行内注释边界)+
    tools 包(xk__ 命名空间、审批闸门 + glob、渐进式披露门控、
-   **整轮交还**判定、技能加载执行器、MCP stdio 桥含 cwd 预检与 allow_tools 白名单);
-   技能注入 L1、工具 schema 按解锁状态注入请求体(三方言形状)。19 测试。
+   混合轮延迟客户端工具并先执行网关工具、技能加载执行器、MCP stdio/Streamable HTTP 桥含 cwd 预检与
+   allow_tools 白名单);技能注入 L1、工具 schema 按解锁状态注入请求体(Chat、Responses、
+   Anthropic)。Gemini 当前保留原生工具轮，不接管网关工具。19 测试。
 
 ## 双真源纪律("按需更新"的工程化)
 

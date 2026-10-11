@@ -174,9 +174,12 @@ func TestCapabilityToolRoundGateIsHonest(t *testing.T) {
 	}
 }
 
-// 整轮交还:混入客户端工具时,网关不执行任何调用,原样返回。
-func TestCapabilityMixedTurnHandedBack(t *testing.T) {
-	fake := &capFake{reply: func(int, map[string]any) map[string]any {
+// 混合轮在网关处理完自身调用后才向客户端提供客户端工具。
+func TestCapabilityMixedTurnDefersClientCalls(t *testing.T) {
+	fake := &capFake{reply: func(call int, req map[string]any) map[string]any {
+		if call > 1 {
+			return capToolCall("read_file", map[string]any{})
+		}
 		// 一轮里既有网关工具又有客户端工具
 		return map[string]any{
 			"choices": []any{map[string]any{
@@ -185,7 +188,7 @@ func TestCapabilityMixedTurnHandedBack(t *testing.T) {
 					"role": "assistant", "content": nil,
 					"tool_calls": []any{
 						map[string]any{"id": "c1", "type": "function",
-							"function": map[string]any{"name": "xk__skill_load", "arguments": "{}"}},
+							"function": map[string]any{"name": "xk__skill_load", "arguments": `{"name":"rev"}`}},
 						map[string]any{"id": "c2", "type": "function",
 							"function": map[string]any{"name": "read_file", "arguments": "{}"}},
 					},
@@ -200,12 +203,11 @@ func TestCapabilityMixedTurnHandedBack(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("code=%d body=%s", code, body)
 	}
-	if len(fake.seen) != 1 {
-		t.Fatalf("整轮交还时不得再调上游,实际 %d 次", len(fake.seen))
+	if len(fake.seen) != 2 {
+		t.Fatalf("gateway result must reach one continuation, calls=%d", len(fake.seen))
 	}
-	// 客户端的工具调用原样交还
-	if !strings.Contains(body, "read_file") {
-		t.Fatalf("客户端工具调用必须原样交还: %s", body)
+	if !strings.Contains(body, "read_file") || strings.Contains(body, "xk__") {
+		t.Fatalf("client received a gateway tool: %s", body)
 	}
 }
 

@@ -3,8 +3,6 @@ package gateway
 // 语义通路的响应写出与审计落盘。
 
 import (
-	"encoding/json"
-	"io"
 	"net/http"
 	"path/filepath"
 	"time"
@@ -25,6 +23,7 @@ func xkAttachTraceHeaders(w http.ResponseWriter, result *attach.LadderResult) {
 	if result == nil {
 		return
 	}
+	w.Header().Set("x-xkeysmith-trace", result.Trace.String())
 	if result.Attempt != nil {
 		// 采纳层(或停止时的最后一层)。
 		w.Header().Set("x-xkeysmith-layer", result.Attempt.UpTo.Label())
@@ -47,6 +46,9 @@ func boolFlag(v bool) string {
 // xkWriteProbe writes a non-streaming (or buffered) probe reply, with L4
 // restoration applied to every string in it.
 func xkWriteProbe(w http.ResponseWriter, attempt *rewrite.Attempt, res attach.ProbeResult, from provider.Protocol) (int, string) {
+	if res.Stream || xkIsSSE(res) {
+		return xkWriteStream(w, &attach.LadderResult{Attempt: attempt, Probe: res}, from)
+	}
 	body := attach.RestoreJSON(attempt, res.Body)
 	status := res.Status
 	if status == 0 {
@@ -58,100 +60,77 @@ func xkWriteProbe(w http.ResponseWriter, attempt *rewrite.Attempt, res attach.Pr
 	return status, ""
 }
 
-// xkWriteRestored writes a JSON reply with L4 restoration applied.
-func xkWriteRestored(w http.ResponseWriter, attempt *rewrite.Attempt, body []byte, from provider.Protocol) (int, string) {
-	restored := attach.RestoreJSON(attempt, body)
-	w.Header().Set("content-type", "application/json")
-	w.WriteHeader(200)
-	_, _ = w.Write(restored)
-	return 200, ""
-}
-
 // xkWriteSynthesizedStream 把非流式探针的完整响应翻译成 SSE 下发,
 // 并对文本做 L4 还原。
 func xkWriteSynthesizedStream(w http.ResponseWriter, result *attach.LadderResult, from provider.Protocol) (int, string) {
+	body := attach.RestoreJSON(result.Attempt, result.Probe.Body)
+	if wholeEvents(from, body) == nil {
+		msg := "upstream reply cannot be rendered as a protocol stream"
+		return writeError(w, from, 502, msg), msg
+	}
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
 	w.WriteHeader(200)
-	var restore func(string) string
-	if result.Attempt != nil && result.Attempt.Vault != nil && !result.Attempt.Vault.IsEmpty() {
-		vault := result.Attempt.Vault
-		restore = func(s string) string { return vault.Restore(s) }
-	}
-	if _, err := w.Write(synthesizeSSE(result.Probe.Body, restore)); err != nil {
-		return 499, "client gone"
-	}
+	wholeAsStream(w, from, body)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
 	return 200, ""
 }
 
-// xkWriteStream relays an SSE reply through the incremental restorer: a
-// placeholder split across chunks is never sent half-restored.
+// xkWriteStream releases the accepted native stream. L4 first decodes the
+// complete reply so a placeholder split across JSON events is restored in
+// the text or arguments, never across serialized event boundaries.
 func xkWriteStream(w http.ResponseWriter, result *attach.LadderResult, from provider.Protocol) (int, string) {
+	if result.Attempt != nil && result.Attempt.Vault != nil && !result.Attempt.Vault.IsEmpty() {
+		reply, err := xkReply(from, result.Probe)
+		if err != nil {
+			return writeError(w, from, 502, err.Error()), err.Error()
+		}
+		copy := *result
+		copy.Probe.Body = render(from, reply, &Request{Model: reply.Model})
+		return xkWriteSynthesizedStream(w, &copy, from)
+	}
 	w.Header().Set("content-type", "text/event-stream; charset=utf-8")
 	w.Header().Set("cache-control", "no-cache")
-	w.WriteHeader(200)
-	restorer := attach.NewRestoringWriter(result.Attempt)
-	// The probe already carries the whole reply (probe_then_replay): replay
-	// it through the restorer rather than holding a second upstream stream.
-	for _, chunk := range xkSplitSSE(result.Probe.Body) {
-		if _, err := w.Write(restorer.Push(chunk)); err != nil {
-			return 499, "client gone"
-		}
+	status := result.Probe.Status
+	if status == 0 {
+		status = 200
 	}
-	if _, err := w.Write(restorer.Finish()); err != nil {
+	w.WriteHeader(status)
+	if _, err := w.Write(result.Probe.Body); err != nil {
 		return 499, "client gone"
 	}
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	return 200, ""
-}
-
-// xkSplitSSE cuts an SSE body into lines, keeping the terminator.
-func xkSplitSSE(body []byte) [][]byte {
-	var out [][]byte
-	rest := body
-	for len(rest) > 0 {
-		i := indexByte(rest, '\n')
-		if i < 0 {
-			out = append(out, rest)
-			break
-		}
-		out = append(out, rest[:i+1])
-		rest = rest[i+1:]
-	}
-	return out
-}
-
-func indexByte(b []byte, c byte) int {
-	for i := range b {
-		if b[i] == c {
-			return i
-		}
-	}
-	return -1
+	return status, ""
 }
 
 // xkRecord appends one audit line per attempt, plus a masked-target table.
-func (s *Server) xkRecord(settings *xkSettings, r *http.Request, p provider.Provider, model string, from provider.Protocol, stream bool, latencyMS int64, result *attach.LadderResult) {
+func (s *Server) xkRecord(settings *xkSettings, r *http.Request, p provider.Provider, model, session string, from provider.Protocol, stream bool, result *attach.LadderResult) {
 	if settings.audit == nil || result == nil {
 		return
 	}
 	wire := audit.WireOpenAi
-	if from == provider.Anthropic {
+	switch from {
+	case provider.Anthropic:
 		wire = audit.WireAnthropic
+	case provider.Gemini:
+		wire = audit.WireGemini
 	}
-	trace := audit.NewTraceID()
-	session := xkSessionKey(r, mustEnvelope(result), model)
+	state, _ := r.Context().Value(xkRequestKey{}).(*xkRequestState)
 	for i, rec := range result.Records {
+		seq := uint32(i)
+		if state != nil {
+			seq = state.seq
+			state.seq++
+		}
 		line := &audit.TraceRecord{
 			TS:            time.Now().UTC(),
-			Trace:         trace,
+			Trace:         result.Trace,
 			Session:       session,
-			Seq:           uint32(i),
+			Seq:           seq,
 			Layer:         rec.Layer,
 			Attempt:       uint8(rec.Layer),
 			Wire:          wire,
@@ -165,8 +144,10 @@ func (s *Server) xkRecord(settings *xkSettings, r *http.Request, p provider.Prov
 			Notes:         rec.Notes,
 			RequestHash:   rec.RequestHash,
 			MaskedTargets: rec.MaskedTargets,
-			LatencyMS:     uint64(latencyMS),
+			LatencyMS:     rec.LatencyMS,
 			Outcome:       rec.Outcome,
+			Usage:         rec.Usage,
+			ToolCall:      rec.ToolCall,
 		}
 		if rec.StopReason != "" {
 			sr := rec.StopReason
@@ -174,10 +155,28 @@ func (s *Server) xkRecord(settings *xkSettings, r *http.Request, p provider.Prov
 		}
 		reason := rec.Reason
 		line.DecisionReason = &reason
-		if body, err := json.Marshal(result.Attempt.Envelope.Body); err == nil {
-			line.RequestBytes = len(body)
-			preview := settings.audit.Redactor.RedactTruncated(string(body), settings.audit.Config.MaxBodyCaptureBytes)
-			line.RequestPreview = &preview
+		if len(rec.RequestBody) > 0 {
+			line.RequestBytes = len(rec.RequestBody)
+			if settings.audit.Config.IncludeBodies {
+				preview := settings.audit.Redactor.RedactTruncated(string(rec.RequestBody), settings.audit.Config.MaxBodyCaptureBytes)
+				line.RequestPreview = &preview
+			}
+			if settings.audit.Config.RawCapture {
+				raw := string(rec.RequestBody)
+				line.RawRequest = &raw
+			}
+		}
+		if len(rec.ResponseBody) > 0 {
+			line.ResponseBytes = len(rec.ResponseBody)
+			line.ResponseHash = audit.ShortHash(rec.ResponseBody)
+			if settings.audit.Config.IncludeBodies {
+				preview := settings.audit.Redactor.RedactTruncated(string(rec.ResponseBody), settings.audit.Config.MaxBodyCaptureBytes)
+				line.ResponsePreview = &preview
+			}
+			if settings.audit.Config.RawCapture {
+				raw := string(rec.ResponseBody)
+				line.RawResponse = &raw
+			}
 		}
 		_ = settings.audit.Sink.Write(line)
 	}
@@ -205,5 +204,3 @@ func xkStatusLine(result *attach.LadderResult) string {
 	}
 	return "xkeysmith: " + result.Reason + " (" + string(result.StopReason) + ")"
 }
-
-var _ = io.Discard

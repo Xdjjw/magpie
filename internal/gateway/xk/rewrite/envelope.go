@@ -20,6 +20,7 @@ type Wire string
 const (
 	WireOpenAi    Wire = "openai"
 	WireAnthropic Wire = "anthropic"
+	WireGemini    Wire = "gemini"
 )
 
 type Dialect int
@@ -27,6 +28,7 @@ type Dialect int
 const (
 	DialectMessages Dialect = iota
 	DialectResponses
+	DialectGemini
 )
 
 // DetectDialect 从报文形状判断方言(不是从路径猜):Responses 没有
@@ -45,6 +47,9 @@ func DetectDialect(body map[string]any) Dialect {
 }
 
 func NewEnvelope(body map[string]any, wire Wire) *Envelope {
+	if wire == WireGemini {
+		return &Envelope{Body: body, Wire: wire, Dialect: DialectGemini}
+	}
 	return &Envelope{Body: body, Wire: wire, Dialect: DetectDialect(body)}
 }
 
@@ -105,11 +110,34 @@ type slot struct {
 // 结构化字段(tool_use.input、tool_result 的 tool_use_id、函数参数)不在枚举范围内。
 func (e *Envelope) textSlots() []*slot {
 	var out []*slot
+	if e.Dialect == DialectGemini {
+		for _, key := range []string{"systemInstruction", "system_instruction"} {
+			if system, ok := e.Body[key].(map[string]any); ok {
+				out = append(out, geminiTextSlots(system, SlotCtx{Kind: SlotSystem, Pointer: "/" + key})...)
+			}
+		}
+		contents, _ := e.Body["contents"].([]any)
+		for i, content := range contents {
+			message, ok := content.(map[string]any)
+			if !ok {
+				continue
+			}
+			role, _ := message["role"].(string)
+			kind := SlotUserText // Gemini permits an omitted user role.
+			if role == "model" {
+				kind = SlotAssistantText
+			}
+			out = append(out, geminiTextSlots(message, SlotCtx{Kind: kind, Role: role, MessageIndex: i + 1, Pointer: fmt.Sprintf("/contents/%d", i)})...)
+		}
+		return out
+	}
 	if e.Dialect == DialectResponses {
 		if _, ok := e.Body["instructions"]; ok {
 			out = append(out, topLevelSlots(e.Body, "instructions", SlotCtx{Kind: SlotSystem, Pointer: "/instructions"})...)
 		}
-		if arr, ok := e.Body["input"].([]any); ok {
+		if _, ok := e.Body["input"].(string); ok {
+			out = append(out, mapSlot(e.Body, "input", SlotCtx{Kind: SlotUserText, Role: "user", MessageIndex: 1, Pointer: "/input"}))
+		} else if arr, ok := e.Body["input"].([]any); ok {
 			for i, item := range arr {
 				obj, ok := item.(map[string]any)
 				if !ok {
@@ -157,6 +185,23 @@ func (e *Envelope) textSlots() []*slot {
 		}
 		ptr := fmt.Sprintf("/messages/%d/content", i)
 		out = append(out, topLevelSlots(obj, "content", SlotCtx{Kind: kind, Role: role, MessageIndex: i + 1, Pointer: ptr})...)
+	}
+	return out
+}
+
+func geminiTextSlots(message map[string]any, base SlotCtx) []*slot {
+	var out []*slot
+	parts, _ := message["parts"].([]any)
+	for i, item := range parts {
+		part, ok := item.(map[string]any)
+		if !ok || part["thought"] == true {
+			continue
+		}
+		if _, ok := part["text"].(string); ok {
+			ctx := base
+			ctx.Pointer = fmt.Sprintf("%s/parts/%d/text", base.Pointer, i)
+			out = append(out, mapSlot(part, "text", ctx))
+		}
 	}
 	return out
 }
@@ -311,6 +356,23 @@ func (e *Envelope) AppendSystemText(text string) bool {
 	if strings.TrimSpace(text) == "" {
 		return false
 	}
+	if e.Dialect == DialectGemini {
+		key := "systemInstruction"
+		if _, ok := e.Body["system_instruction"]; ok {
+			key = "system_instruction"
+		}
+		system, ok := e.Body[key].(map[string]any)
+		if !ok {
+			if e.Body[key] != nil {
+				return false
+			}
+			system = map[string]any{}
+			e.Body[key] = system
+		}
+		parts, _ := system["parts"].([]any)
+		system["parts"] = append(parts, map[string]any{"text": text})
+		return true
+	}
 	if e.Dialect == DialectResponses {
 		switch existing := e.Body["instructions"].(type) {
 		case string:
@@ -382,9 +444,25 @@ func (e *Envelope) PrependPrimerTurns(turns []PrimerTurn) (int, error) {
 	if len(turns) == 0 {
 		return 0, nil
 	}
+	if e.Dialect == DialectGemini {
+		contents, _ := e.Body["contents"].([]any)
+		var prefix []any
+		for _, turn := range turns {
+			role := turn.Role
+			if role == "assistant" {
+				role = "model"
+			}
+			prefix = append(prefix, map[string]any{"role": role, "parts": []any{map[string]any{"text": turn.Text}}})
+		}
+		e.Body["contents"] = append(prefix, contents...)
+		return len(turns), nil
+	}
 	if e.Dialect == DialectResponses {
 		// Responses 的 input 是条目列表:插 user/assistant 消息条目即可。
 		arr, _ := e.Body["input"].([]any)
+		if text, ok := e.Body["input"].(string); ok {
+			arr = []any{map[string]any{"type": "message", "role": "user", "content": []any{map[string]any{"type": "input_text", "text": text}}}}
+		}
 		var prefix []any
 		for _, t := range turns {
 			prefix = append(prefix, map[string]any{

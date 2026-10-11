@@ -6,14 +6,14 @@
 
 ## 目标
 
-把 [xkeysmith](https://github.com/ryfineZ/codex-keysmith)(本地 LLM 语义网关:
-L0–L4 递进改写、拒绝判定、审计重放、预算闸门)接入 magpie 的切换生态:
+把 [xkeysmith](https://github.com/ryfineZ/codex-keysmith) 的语义能力
+(L0–L4 递进改写、拒绝判定、审计重放、预算闸门)直接整合进 Magpie 的网关:
 
 ```
 Codex / Claude Code / … ──► magpie(:3425,方言互转 + 切换 + 账号池)
-                              │ 选中 xkeysmith 这个 provider 时
+                              │ provider.Semantic=true
                               ▼
-                          xkeysmith(:8787,语义管线 + 审计)
+                 L0→L4 语义管线 + 工具轮 + 审计(同一进程)
                               │
                               ▼
                      真上游(sub2api / 官方 API / 订阅)
@@ -23,12 +23,12 @@ Codex / Claude Code / … ──► magpie(:3425,方言互转 + 切换 + 账号�
 
 | 补丁 | 内容 | 状态 |
 | --- | --- | --- |
-| 1 | `internal/provider/presets.go`:内置 `xkeysmith` preset(KindLocal,**endpoint 必填** = 用户自己的真上游;base_url 不再默认 8787,语义管线就地应用、零额外跳) | ✅(v2) |
+| 1 | `internal/provider/presets.go`:内置 `xkeysmith` preset(KindLocal,**endpoint 必填** = 用户自己的真上游;base_url 不再默认 8787) | ✅(v2) |
 | 2 | ~~xkeysmith 侧 `/v1/models` 透传~~ —— 已撤销:迁移是**单向**的,magpie fork 不依赖也不改动 xkeysmith 仓库。模型清单用 `magpie provider add xkeysmith models=…` 手填。 | 撤销 |
-| 3 | sidecar 生命周期(`xksidecar.go`):仅对默认端口 8787 或显式 `XKEYSMITH_BIN` 探活/拉起,**绝不对其他回环地址发探活**(会消耗上游请求) | ✅ |
-| 4 | 状态透出:`x-xkeysmith-layer` / `-escalated` / `-stop` 响应头,客户端据此关联审计记录 | ✅ |
+| 3 | provider 级 `semantic` 开关:任意真上游都能启用内置 L0–L4 管线 | ✅ |
+| 4 | 状态透出:`x-xkeysmith-trace` / `-layer` / `-escalated` / `-stop` 响应头,客户端据此关联审计记录 | ✅ |
 
-## 语义平面(内置,替代 sidecar 的常态)
+## 语义平面(内置)
 
 **semantic 开关(不绑定 provider 名)**:任何 provider 都能加本地语义管线——
 
@@ -43,17 +43,19 @@ magpie codex moonshot/kimi-k2.5  # 切走 = 直连,不过管线
 - GUI 编辑器同样有 semantic 开关;`xkeysmith` 预设(endpoint 必填)只是
   便捷入口,名字不再重要。
 
-fork 内置了完整语义平面(见 `docs/xkeysmith-migration.md`),provider 为
-`xkeysmith` 时走 `serveXkeysmith` 通路:判定 → 升层(L0→L4)→ 还原 → 审计,
-工具轮由网关自己执行。外部 sidecar 只在用户想复用官方二进制时才需要。
+fork 内置了完整语义平面(见 `docs/xkeysmith-migration.md`)。满足
+`provider.Semantic` 或使用 `xkeysmith` preset 的 provider 会走
+`serveXkeysmith`:判定 → 升层(L0→L4) → 还原 → 审计；工具轮由网关自己执行。
 
 ## 关键设计事实(改码前先读)
 
 - magpie 的 provider 是**纯数据**(`internal/provider/provider.go`),无接口无工厂;
   "内置 provider" = `presets.go` 一条数据 + 网关按 vendor 的特判分支。
-- relay 判定在 `internal/gateway/gateway.go:2696` 附近:入站方言 ∈ provider 可用方言
-  且非订阅账号 ⇒ **原样透传**(不经 IR 翻译)。xkeysmith 同时声明 Chat+Responses base,
-  因此两种 OpenAI 方言都以客户端原始形态到达 xkeysmith——审计保真的关键。
+- 语义入口在 `internal/gateway/gateway.go` 的 `attempt`:provider 开启
+  `Semantic`(或是 `xkeysmith`) 后进入 `serveXkeysmith`;其内部复用
+  `attemptNative`，保留 provider/model 映射、账号适配、协议转换和 usage。
+- 每个客户端请求共享一个 budget、deadline、trace 和工具副作用状态；L0–L4
+  的探测属于同一请求，工具已经执行后不会再由 Magpie 的候选循环重放。
 - 本地地址(localhost/127.0.0.1)天然免 key(`provider.go` 的 `keyOptional`)。
 - 上游演进方向是"订阅类 provider 移出核心进插件"(见 AGENTS.md);
   本 fork 的内置 xkeysmith 属私有增强,**不打算回传上游**。

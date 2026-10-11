@@ -4,6 +4,12 @@
 // works. {name} slots are filled by t(str, vars).
 const I18N = {
   zh: {
+    "Semantic pipeline": "语义流水线",
+    "Use semantic pipeline": "启用语义流水线",
+    "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "对这个供应商执行改写与拒绝判定。设置中的总开关控制所有已启用的供应商。",
+    "This preset uses semantic processing while the master switch in Settings is on.": "设置中的总开关开启时，这个预设使用语义处理。",
+    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4 改写、拒绝判定和审计作用于已启用的供应商。关闭后恢复原有转发。",
+
     "You set {value}; the model's {window} comes first": "你设置的是 {value}，但模型的 {window} 优先",
     "Auto-compact": "自动压缩",
     "Prompt cache · main conversation": "提示缓存 · 主对话",
@@ -3981,6 +3987,12 @@ const I18N = {
     "Video · 7 days": "视频 · 7 天",
   },
   "zh-TW": {
+    "Semantic pipeline": "語義處理流程",
+    "Use semantic pipeline": "啟用語義處理流程",
+    "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "對這個供應商執行改寫與拒絕判定。設定中的總開關控制所有已啟用的供應商。",
+    "This preset uses semantic processing while the master switch in Settings is on.": "設定中的總開關開啟時，這個預設使用語義處理。",
+    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4 改寫、拒絕判定與稽核套用於已啟用的供應商。關閉後恢復原有轉送。",
+
     "You set {value}; the model's {window} comes first": "你設定的是 {value}，但模型的 {window} 優先",
     "Auto-compact": "自動壓縮",
     "Prompt cache · main conversation": "提示快取 · 主對話",
@@ -7941,6 +7953,12 @@ const I18N = {
     "Video · 7 days": "影片 · 7 天",
   },
   ja: {
+    "Semantic pipeline": "意味処理パイプライン",
+    "Use semantic pipeline": "意味処理パイプラインを使う",
+    "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "このプロバイダーに書き換えと拒否判定を適用します。設定の全体スイッチは有効にしたすべてのプロバイダーを制御します。",
+    "This preset uses semantic processing while the master switch in Settings is on.": "設定の全体スイッチがオンの間、このプリセットは意味処理を使います。",
+    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "有効にしたプロバイダーに L0–L4 の書き換え、拒否判定、監査を適用します。オフにすると通常の転送に戻ります。",
+
     "You set {value}; the model's {window} comes first": "設定は {value} ですが、モデルの {window} が優先されます",
     "Auto-compact": "自動コンパクト",
     "Prompt cache · main conversation": "プロンプトキャッシュ · メイン会話",
@@ -11903,6 +11921,12 @@ const I18N = {
     "Main navigation": "メインナビゲーション",
   },
   de: {
+    "Semantic pipeline": "Semantische Verarbeitung",
+    "Use semantic pipeline": "Semantische Verarbeitung verwenden",
+    "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "Umschreibung und Ablehnungsprüfung für diesen Anbieter. Der Hauptschalter in Einstellungen steuert alle aktivierten Anbieter.",
+    "This preset uses semantic processing while the master switch in Settings is on.": "Diese Vorlage verwendet die semantische Verarbeitung, solange der Hauptschalter in Einstellungen eingeschaltet ist.",
+    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4-Umschreibung, Ablehnungsprüfung und Protokollierung für aktivierte Anbieter. Aus stellt die normale Weiterleitung wieder her.",
+
     "You set {value}; the model's {window} comes first": "Du hast {value} gesetzt; das Fenster des Modells ({window}) hat Vorrang",
     "Auto-compact": "Auto-Kompaktierung",
     "Prompt cache · main conversation": "Prompt-Cache · Hauptunterhaltung",

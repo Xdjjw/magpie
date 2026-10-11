@@ -37,8 +37,13 @@ func xkMasterPath() string {
 // xkMasterCache 是带 2 秒 TTL 的读缓存:热路径不打盘。
 var xkMasterCache struct {
 	mu      sync.Mutex
-	value   bool
-	expires atomic.Int64 // unix ms
+	current atomic.Pointer[xkMasterSnapshot]
+}
+
+type xkMasterSnapshot struct {
+	enabled bool
+	expires int64
+	path    string
 }
 
 // XkMasterOn 报告总开关当前状态(默认开)。
@@ -46,23 +51,23 @@ func XkMasterOn() bool { return xkMasterEnabled() }
 
 func xkMasterEnabled() bool {
 	now := time.Now().UnixMilli()
-	if now < xkMasterCache.expires.Load() {
-		return xkMasterCache.value
+	path := xkMasterPath()
+	if snapshot := xkMasterCache.current.Load(); snapshot != nil && snapshot.path == path && now < snapshot.expires {
+		return snapshot.enabled
 	}
 	xkMasterCache.mu.Lock()
 	defer xkMasterCache.mu.Unlock()
-	if now < xkMasterCache.expires.Load() {
-		return xkMasterCache.value
+	if snapshot := xkMasterCache.current.Load(); snapshot != nil && snapshot.path == path && now < snapshot.expires {
+		return snapshot.enabled
 	}
 	enabled := xkMasterDefault
-	if data, err := os.ReadFile(xkMasterPath()); err == nil {
+	if data, err := os.ReadFile(path); err == nil {
 		var state xkMasterState
 		if json.Unmarshal(data, &state) == nil {
 			enabled = state.Enabled
 		}
 	}
-	xkMasterCache.value = enabled
-	xkMasterCache.expires.Store(now + 2000)
+	xkMasterCache.current.Store(&xkMasterSnapshot{enabled: enabled, expires: now + 2000, path: path})
 	return enabled
 }
 
@@ -77,15 +82,22 @@ func SetXkMaster(on bool) error {
 		return err
 	}
 	// 原子写:临时文件 + rename,半行状态不会被当成开关。
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".xkeysmith-master-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
 		return err
 	}
 	// 立刻失效缓存:拨了开关马上生效。
-	xkMasterCache.expires.Store(0)
+	xkMasterCache.current.Store(nil)
 	return nil
 }

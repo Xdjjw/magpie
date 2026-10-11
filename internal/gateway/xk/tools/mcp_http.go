@@ -3,11 +3,13 @@ package tools
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -31,6 +33,7 @@ type httpClient struct {
 	client    *http.Client
 	sessionID string
 	nextID    int
+	mu        sync.Mutex
 }
 
 func newHTTPClient(cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
@@ -62,6 +65,14 @@ func newHTTPClient(cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
 }
 
 func (c *httpClient) request(method string, params any) (json.RawMessage, error) {
+	return c.requestContext(context.Background(), method, params)
+}
+
+func (c *httpClient) requestContext(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if err := lockMCP(ctx, &c.mu); err != nil {
+		return nil, err
+	}
+	defer c.mu.Unlock()
 	c.nextID++
 	id := c.nextID - 1
 	payload := map[string]any{"jsonrpc": "2.0", "id": id, "method": method}
@@ -69,7 +80,7 @@ func (c *httpClient) request(method string, params any) (json.RawMessage, error)
 		payload["params"] = params
 	}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
@@ -186,11 +197,15 @@ func (c *httpClient) ListTools() ([]McpTool, error) {
 }
 
 func (c *httpClient) CallTool(name string, arguments json.RawMessage) (string, bool, error) {
+	return c.CallToolContext(context.Background(), name, arguments)
+}
+
+func (c *httpClient) CallToolContext(ctx context.Context, name string, arguments json.RawMessage) (string, bool, error) {
 	var args any
 	if len(arguments) > 0 {
 		_ = json.Unmarshal(arguments, &args)
 	}
-	raw, err := c.request("tools/call", map[string]any{"name": name, "arguments": args})
+	raw, err := c.requestContext(ctx, "tools/call", map[string]any{"name": name, "arguments": args})
 	if err != nil {
 		return "", true, err
 	}

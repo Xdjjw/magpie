@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -105,17 +106,39 @@ func allowlisted(patterns []string, tool string) bool {
 }
 
 func (e *McpExecutor) Handles(name string) bool {
-	prefix := "xk__mcp__" + e.Server.Name + "__"
-	return strings.HasPrefix(name, prefix)
+	for _, def := range e.Defs() {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *McpExecutor) Call(name string, args any) (string, bool, error) {
+	return e.CallContext(context.Background(), name, args)
+}
+
+func (e *McpExecutor) CallContext(ctx context.Context, name string, args any) (string, bool, error) {
+	if !e.Handles(name) {
+		return "", true, fmt.Errorf("MCP tool %q is not registered or allowlisted", name)
+	}
 	tool := strings.TrimPrefix(name, "xk__mcp__"+e.Server.Name+"__")
+	if len(e.Server.AllowTools) > 0 && !allowlisted(e.Server.AllowTools, tool) {
+		return "", true, fmt.Errorf("MCP tool %q is not allowlisted", tool)
+	}
 	raw, err := json.Marshal(args)
 	if err != nil {
 		return "", true, fmt.Errorf("参数序列化失败: %w", err)
 	}
-	text, isError, err := e.Client.CallTool(tool, raw)
+	var text string
+	var isError bool
+	if client, ok := e.Client.(interface {
+		CallToolContext(context.Context, string, json.RawMessage) (string, bool, error)
+	}); ok {
+		text, isError, err = client.CallToolContext(ctx, tool, raw)
+	} else {
+		text, isError, err = e.Client.CallTool(tool, raw)
+	}
 	if err != nil {
 		return err.Error(), true, nil
 	}
