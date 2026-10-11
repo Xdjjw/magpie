@@ -2637,7 +2637,8 @@ func (s *Server) attempt(w http.ResponseWriter, r *http.Request, from provider.P
 	// xkeysmith: the local semantic gateway runs its own ladder (judge,
 	// escalate L0→L4, restore). It is taken before the vendor-specific
 	// branches below, which don't apply to a local relay.
-	if p.Semantic || xkEnabled(p) {
+	// 总开关关 = 所有请求原样直连(per-provider 的 semantic 标记被忽略)。
+	if (p.Semantic || xkEnabled(p)) && xkMasterEnabled() {
 		call.To = from
 		status, msg := s.serveXkeysmith(w, r, from, p, model, body, &call.Usage)
 		return status, msg
