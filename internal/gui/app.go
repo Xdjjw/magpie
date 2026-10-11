@@ -21,6 +21,7 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/autostart"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/omarchy"
 	"github.com/yetone/magpie/internal/proc"
@@ -379,6 +380,19 @@ func Run(version string, showMain bool, link string) error {
 	menu := h.app.NewMenu()
 	open := menu.Add(labels.open).OnClick(func(*application.Context) { h.ShowMain("") })
 	menu.AddSeparator()
+	// 语义管线总开关:xkeysmith 的 L0-L4 一拨即断/即启,不用重启。
+	xkItem := menu.Add(xkTrayLabel(trayLang(settings.Load().Lang, systemLang), gateway.XkMasterOn()))
+	xkItem.OnClick(func(*application.Context) {
+		if err := gateway.SetXkMaster(!gateway.XkMasterOn()); err != nil {
+			log.Println("xkeysmith master:", err)
+			return
+		}
+		application.InvokeSync(func() {
+			xkItem.SetLabel(xkTrayLabel(trayLang(settings.Load().Lang, systemLang), gateway.XkMasterOn()))
+			menu.Update()
+		})
+	})
+	menu.AddSeparator()
 	ver := menu.Add(labels.version).SetEnabled(false)
 	restart := menu.Add(labels.restart).SetHidden(true)
 	restart.OnClick(func(*application.Context) {
@@ -407,6 +421,7 @@ func Run(version string, showMain bool, link string) error {
 			l.restart = trayRestartNow(trayLang(settings.Load().Lang, systemLang), b)
 		}
 		open.SetLabel(l.open)
+		xkItem.SetLabel(xkTrayLabel(trayLang(settings.Load().Lang, systemLang), gateway.XkMasterOn()))
 		ver.SetLabel(l.version)
 		restart.SetLabel(l.restart)
 		quit.SetLabel(l.quit)

@@ -691,6 +691,25 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	})
 	omarchyRoutes(mux, w)
 	fontRoutes(mux, isWeb(w) || !fonts.Available, fonts.List)
+	// xkeysmith 语义管线的总开关:设置页的开关与 `magpie xk on|off` 读写
+	// 同一份状态(2 秒缓存),关 = 所有请求原样直连。
+	mux.HandleFunc("GET /api/xk", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn()})
+	})
+	mux.HandleFunc("POST /api/xk", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Enabled bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := gateway.SetXkMaster(in.Enabled); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn()})
+	})
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
 		// the panel and its model picker load from here: an account still
 		// without its vendor's list (one whose try at start-up failed) is

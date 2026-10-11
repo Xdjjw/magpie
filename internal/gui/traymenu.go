@@ -10,6 +10,9 @@ import (
 // trayZh is the tray menu in Chinese; the page has its own words
 // (i18n.js), and these few are all the menu shows (#301).
 var trayZh = map[string]string{
+	"Xkeysmith Semantic Pipeline":          "xkeysmith 语义管线",
+	"On":                                   "开",
+	"Off":                                  "关",
 	"Open magpie":                          "打开 magpie",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重启以更新",
@@ -21,6 +24,9 @@ var trayZh = map[string]string{
 
 // trayZhTW is the tray menu in Traditional Chinese, with Taiwan's words.
 var trayZhTW = map[string]string{
+	"Xkeysmith Semantic Pipeline":          "xkeysmith 語義管線",
+	"On":                                   "開",
+	"Off":                                  "關",
 	"Open magpie":                          "開啟 magpie",
 	"Version %s":                           "版本 %s",
 	"Restart to Update":                    "重新啟動以更新",
@@ -32,6 +38,9 @@ var trayZhTW = map[string]string{
 
 // trayJa is the tray menu in Japanese.
 var trayJa = map[string]string{
+	"Xkeysmith Semantic Pipeline":          "xkeysmith セマンティックパイプライン",
+	"On":                                   "オン",
+	"Off":                                  "オフ",
 	"Open magpie":                          "magpie を開く",
 	"Version %s":                           "バージョン %s",
 	"Restart to Update":                    "再起動してアップデート",
@@ -43,6 +52,9 @@ var trayJa = map[string]string{
 
 // trayDe is the tray menu in German.
 var trayDe = map[string]string{
+	"Xkeysmith Semantic Pipeline":          "xkeysmith semantische Pipeline",
+	"On":                                   "An",
+	"Off":                                  "Aus",
 	"Open magpie":                          "magpie öffnen",
 	"Version %s":                           "Version %s",
 	"Restart to Update":                    "Zum Aktualisieren neu starten",
@@ -132,6 +144,15 @@ func trayMenuLabels(lang, version, update string) trayLabels {
 		l.restart = trayText(lang, "Restart to Update to %s", update)
 	}
 	return l
+}
+
+// xkTrayLabel 是语义管线开关的菜单文案:名称 + 当前状态(开/关)。
+func xkTrayLabel(lang string, on bool) string {
+	state := trayText(lang, "Off")
+	if on {
+		state = trayText(lang, "On")
+	}
+	return trayText(lang, "Xkeysmith Semantic Pipeline") + ": " + state
 }
 
 // trayRestartNow is the restart item while a restart waits for the

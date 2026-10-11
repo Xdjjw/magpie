@@ -18532,6 +18532,25 @@ function renderUpdateMirror(r, s) {
   queueMicrotask(() => { if (i.isConnected && document.activeElement !== i) i.focus({ preventScroll: true }); });
 }
 
+
+// xkeysmith 语义管线的总开关行:读当前状态,Off/On 分段,点击即 POST。
+// API 不可用(浏览器预览)时整行隐藏,不留一个永远空着的控件。
+async function refreshXkRow() {
+  const row = $("#xkRow");
+  try {
+    const res = await fetch("/api/xk").then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
+    row.hidden = false;
+    $("#xkSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], res.enabled ? "on" : "off", async (pick) => {
+      const enabled = pick === "on";
+      const r = await fetch("/api/xk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) }).catch(() => null);
+      if (!r || !r.ok) return;
+      await refreshXkRow();
+    }));
+  } catch {
+    row.hidden = true;
+  }
+}
+
 function renderSettings() {
   const s = prefs;
   const keep = prefsKeep(s);
@@ -18540,6 +18559,7 @@ function renderSettings() {
   $("#themeSegs").replaceChildren(segs(THEMES.map(([id, name]) => [id, t(name)]), s.theme, (theme) => savePrefs({ ...keep, theme })));
   $("#langSegs").replaceChildren(segs(LOCALES.map(([id, name]) => [id, t(name)]), s.lang, (lang) => savePrefs({ ...keep, lang })));
   renderGatewayMode(s);
+  refreshXkRow();
   // a browser tab has its own zoom, and magpie leaves it to it
   $("#textSizeRow").hidden = web;
   $("#textSizeSub").textContent = t("Everything in magpie's windows, larger; {keys} too", { keys: textSizeKeys() });
