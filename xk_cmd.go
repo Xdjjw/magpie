@@ -12,6 +12,10 @@ import (
 )
 
 func xkCmd(args []string) error {
+	// 与 providerCmd 同约定:args[0] 是命令名本身,剥掉。
+	if len(args) > 0 && args[0] == "xk" {
+		args = args[1:]
+	}
 	if len(args) == 0 {
 		state := "on"
 		if !gateway.XkMasterOn() {

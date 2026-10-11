@@ -6,3 +6,7 @@
 /rsrc_windows_*.syso
 /magpie-dev-backend
 /magpie-dev.new
+magpie
+magpie.app/
+magpie-cli
+xkeysmith-magpie-*

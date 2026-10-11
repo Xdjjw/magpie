@@ -299,6 +299,8 @@ func run(args []string) error {
 		return providers()
 	case "presets":
 		return presets()
+	case "xk":
+		return xkCmd(args)
 	case "provider":
 		return providerCmd(args)
 	case "models":
