@@ -1,0 +1,80 @@
+name: xkeysmith build
+
+# 本 fork 的桌面包构建:macOS 菜单栏应用(GUI,cgo + 系统/webview)
+# + 全平台 headless CLI(nogui,CGO_ENABLED=0 交叉编译)。
+# 签名只做 ad-hoc(上游的正式签名密钥在 yetone/magpie-releases)。
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  macos-app:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # git describe 需要全部 tag 来戳版本号
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build app bundle (make app)
+        run: make app
+
+      - name: Ad-hoc sign
+        run: codesign --force --deep --sign - magpie.app
+
+      - name: Verify signature
+        run: codesign -v magpie.app
+
+      - name: Zip app bundle
+        run: ditto -c -k --sequesterRsrc --keepParent magpie.app magpie.app.zip
+
+      - name: Build CLI (same tree)
+        run: make cli && mv magpie magpie-cli
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-desktop-macos-arm64
+          path: |
+            magpie.app.zip
+            magpie-cli
+          if-no-files-found: error
+
+  cli-cross:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: windows, goarch: arm64 }
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build headless CLI
+        run: |
+          VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            go build -tags nogui -trimpath \
+            -ldflags "-s -w -X main.version=${VERSION}" -o magpie-cli${{ matrix.goos == 'windows' && '.exe' || '' }} .
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-cli-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: magpie-cli*
+          if-no-files-found: error
