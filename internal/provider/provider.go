@@ -197,6 +197,12 @@ type Provider struct {
 	// See SkipsRedaction.
 	Unredacted bool `json:"unredacted,omitempty"`
 
+	// Semantic turns on the local semantic pipeline (an L0-L4 rewrite
+	// ladder with refusal detection and an audit trail) for this
+	// provider's requests. The provider's own base URLs stay the real
+	// upstream: the pipeline applies in place, there is no second proxy.
+	Semantic bool `json:"semantic,omitempty"`
+
 	// Proxy is the proxy magpie's requests to this provider go through
 	// (#237: Codex through one, a vendor at home without): "" follows
 	// the global one (Settings' Proxy, the environment's, the system's),

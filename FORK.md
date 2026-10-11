@@ -30,6 +30,19 @@ Codex / Claude Code / … ──► magpie(:3425,方言互转 + 切换 + 账号�
 
 ## 语义平面(内置,替代 sidecar 的常态)
 
+**semantic 开关(不绑定 provider 名)**:任何 provider 都能加本地语义管线——
+
+```sh
+magpie provider add myrelay url=https://真上游/v1 key=KEY models=… semantic=yes
+magpie codex myrelay/<模型>      # 走 L0-L4 改写阶梯 + 判定 + 审计
+magpie codex moonshot/kimi-k2.5  # 切走 = 直连,不过管线
+```
+
+- `semantic=yes` 后,该 provider 的请求在 magpie 进程内就地过语义管线;
+  base URL 仍是**真上游**,没有第二层代理。
+- GUI 编辑器同样有 semantic 开关;`xkeysmith` 预设(endpoint 必填)只是
+  便捷入口,名字不再重要。
+
 fork 内置了完整语义平面(见 `docs/xkeysmith-migration.md`),provider 为
 `xkeysmith` 时走 `serveXkeysmith` 通路:判定 → 升层(L0→L4)→ 还原 → 审计,
 工具轮由网关自己执行。外部 sidecar 只在用户想复用官方二进制时才需要。

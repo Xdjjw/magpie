@@ -260,3 +260,67 @@ func TestXkeysmithStreamRestoresPlaceholders(t *testing.T) {
 		t.Fatalf("SSE 里必须还原成真值: %s", body)
 	}
 }
+
+// ─────────────────────────── 大改:semantic 开关(任意 provider) ───────────────────────────
+
+// 语义平面是 provider 的一个开关,不绑定任何名字:
+// 一个叫 myrelay 的普通 provider,semantic=true 时同样走完整阶梯。
+func TestSemanticFlagRunsLadderForAnyProvider(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fake := &xkFake{refuseUntil: 2} // L0、L1 拒,L2 过
+	up := httptest.NewServer(fake)
+	t.Cleanup(up.Close)
+	// provider 名字与 xkeysmith 无关
+	if err := provider.Save(provider.Provider{
+		ID: "myrelay", Name: "My Relay", Key: "k", Models: []string{"m1"},
+		Semantic: true,
+		Chat:     up.URL + "/v1", Responses: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := xkPost(t, "/v1/chat/completions",
+		`{"model":"myrelay/m1","messages":[{"role":"user","content":"explain the crack tool"}]}`)
+	if code != 200 {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	if fake.calls != 3 {
+		t.Fatalf("semantic=true 的 provider 必须走完整阶梯:calls=%d", fake.calls)
+	}
+	if !strings.Contains(body, "ok") {
+		t.Fatalf("body=%s", body)
+	}
+	// L1 注入存在 → 层是累积的
+	if !strings.Contains(fake.seen[2], "local-audit-lab") {
+		t.Fatalf("L1 注入缺失: %s", fake.seen[2])
+	}
+}
+
+// 反例:semantic=false(默认)的 provider 不走阶梯——一次调用,拒绝原样透传。
+func TestSemanticOffProviderIsUntouched(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	fake := &xkFake{refuseUntil: 2}
+	up := httptest.NewServer(fake)
+	t.Cleanup(up.Close)
+	if err := provider.Save(provider.Provider{
+		ID: "plain", Name: "Plain", Key: "k", Models: []string{"m1"},
+		Chat: up.URL + "/v1", Responses: up.URL + "/v1",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := xkPost(t, "/v1/chat/completions",
+		`{"model":"plain/m1","messages":[{"role":"user","content":"explain the crack tool"}]}`)
+	if code != 200 {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	if fake.calls != 1 {
+		t.Fatalf("semantic=false 时不得走阶梯:calls=%d", fake.calls)
+	}
+	// 拒绝原样透传给客户端(直连语义)
+	if !strings.Contains(body, "I can't help") {
+		t.Fatalf("body=%s", body)
+	}
+}

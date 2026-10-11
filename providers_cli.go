@@ -862,6 +862,14 @@ func applyPairs(p *provider.Provider, pairs []string) error {
 				return fmt.Errorf("unmasked=yes|no, not %q", v)
 			}
 			p.Unredacted = v == "yes"
+		case "semantic":
+			// yes: this provider's requests run the local semantic
+			// pipeline (L0-L4 rewrite ladder, refusal detection, audit)
+			// in place — the base URLs stay the real upstream.
+			if v != "yes" && v != "no" {
+				return fmt.Errorf("semantic=yes|no, not %q", v)
+			}
+			p.Semantic = v == "yes"
 		case "context":
 			if err := setContext(p, "*", v); err != nil {
 				return err
