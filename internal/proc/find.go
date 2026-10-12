@@ -24,6 +24,19 @@ func FindTool(name string) string {
 	return toolIn(name, runtime.GOOS, dirs)
 }
 
+// SystemBinDirs are the machine's own folders a user's tools are in when
+// PATH is a desktop app's: Homebrew's, and /usr/local's for a package
+// manager that installs there. launchd's PATH has neither, so a magpie
+// started from the Finder still finds a claude one of them holds.
+// Windows has none (its registry PATH is read instead). A var so a test
+// can point it away from the machine it runs on.
+var SystemBinDirs = func() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	return []string{"/opt/homebrew/bin", "/usr/local/bin"}
+}
+
 // toolIn is name's program in the first of dirs that has one: on Windows
 // name.exe, name.cmd or name, as npm's shim or an installer's binary.
 func toolIn(name, goos string, dirs []string) string {

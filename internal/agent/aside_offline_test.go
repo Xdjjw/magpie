@@ -42,6 +42,12 @@ func TestAsideOfflineDisconnectRestoresWithoutDaemon(t *testing.T) {
 	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("offline disconnect read daemon"); return nil, nil }
 	asideSet = func(string, string) error { t.Fatal("offline disconnect set daemon"); return nil }
 	t.Setenv("PATH", t.TempDir())
+	// no desktop app either, whatever this machine has installed: the
+	// fixture is dsh's id, and dsh's app being here would make the CLI it
+	// has none of look unnecessary rather than missing
+	was := appFolders
+	appFolders = func() []string { return nil }
+	t.Cleanup(func() { appFolders = was })
 	if proc.FindTool(a.Bin) != "" {
 		t.Fatal("fixture must have no Aside executable")
 	}

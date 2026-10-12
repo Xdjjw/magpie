@@ -123,7 +123,7 @@ func userDirs(everyNode bool) []string {
 		nodes(".local/share/fnm/node-versions/*/installation/bin")
 		nodes("Library/Application Support/fnm/node-versions/*/installation/bin")
 	}
-	known = append(known, "/opt/homebrew/bin", "/usr/local/bin")
+	known = append(known, SystemBinDirs()...)
 	var have []string
 	for _, d := range known {
 		if st, err := os.Stat(d); d != "" && err == nil && st.IsDir() {

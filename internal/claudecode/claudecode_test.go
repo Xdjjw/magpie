@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -198,6 +199,12 @@ func TestFindTakesTheMachinesOwnFirst(t *testing.T) {
 	if err := os.WriteFile(got, []byte("x"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// An empty PATH is not enough: the machine's own folders are probed
+	// with it, and a claude in one of them is this machine's, not the
+	// download this test is about.
+	was := proc.SystemBinDirs
+	proc.SystemBinDirs = func() []string { return nil }
+	t.Cleanup(func() { proc.SystemBinDirs = was })
 	t.Setenv("PATH", t.TempDir())
 	if p := Find(); p != got {
 		t.Errorf("with none of its own, Find() = %q, want the download %q", p, got)
