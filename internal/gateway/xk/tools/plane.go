@@ -85,6 +85,11 @@ type Plane struct {
 	mcpStatus []McpStatus
 	mu        sync.RWMutex
 	closed    bool
+	// conn is the context MCP handshakes run under: Close cancels it so a
+	// connection still being made is given up rather than left to finish
+	// against a plane that is gone.
+	conn      context.Context
+	connAbort context.CancelFunc
 }
 
 // connectable is the servers a plane may connect: the plane's own switch
@@ -129,6 +134,7 @@ func BuildAsync(cfg ToolsConfig, skills SkillSource, servers []McpServerCfg) *Pl
 
 func newPlane(cfg ToolsConfig, skills SkillSource) *Plane {
 	p := &Plane{cfg: cfg, guard: Guard{Approval: cfg.Approval, Allowlist: append([]string(nil), cfg.Allowlist...)}}
+	p.conn, p.connAbort = context.WithCancel(context.Background())
 
 	if cfg.Enabled && cfg.InjectSkillTool && skills.Len() > 0 {
 		exec := &SkillLoadExecutor{Skills: skills, MaxResultChars: cfg.MaxResultChars}
@@ -146,7 +152,7 @@ func newPlane(cfg ToolsConfig, skills SkillSource) *Plane {
 }
 
 func (p *Plane) connectMCP(server McpServerCfg) {
-	client, err := ConnectMcp(server, p.cfg.CallTimeoutMS)
+	client, err := ConnectMcpContext(p.conn, server, p.cfg.CallTimeoutMS)
 	if err != nil {
 		// 失败可见但不阻塞:如实记进状态,并**说出来** —— 状态没有任何
 		// 生产读侧(McpStatus 只被测试调用),只记不报等于静默失败。
@@ -176,6 +182,9 @@ func (p *Plane) connectMCP(server McpServerCfg) {
 	p.mu.Unlock()
 }
 
+// Close is final and idempotent: connections already published are closed,
+// and a handshake still in flight is aborted rather than left to finish
+// against a plane that is gone.
 func (p *Plane) Close() {
 	p.mu.Lock()
 	if p.closed {
@@ -186,6 +195,9 @@ func (p *Plane) Close() {
 	executors := append([]Executor(nil), p.executors...)
 	p.executors = nil
 	p.mu.Unlock()
+	if p.connAbort != nil {
+		p.connAbort()
+	}
 	for _, e := range executors {
 		e.Close()
 	}

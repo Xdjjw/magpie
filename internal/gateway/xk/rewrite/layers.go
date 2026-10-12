@@ -66,6 +66,11 @@ func (Passthrough) Apply(_ *Envelope, _ *LayerCtx) (*LayerReport, error) {
 }
 
 // ─────────────────────────── L1 上下文伪装 ───────────────────────────
+// skillsIndexMode is the skills mode whose payload is an index of skills the
+// model turns into full text by calling the skill loader. The gateway leaves
+// Gemini's tools alone, so that index names a capability a Gemini request
+// cannot reach.
+const skillsIndexMode = "index"
 
 type ContextInjection struct {
 	Instructions     string
@@ -98,7 +103,9 @@ func (l *ContextInjection) Apply(env *Envelope, _ *LayerCtx) (*LayerReport, erro
 	}
 
 	if l.SkillsPayload != "" {
-		if env.AppendSystemText(l.SkillsPayload) {
+		if env.Wire == WireGemini && l.SkillsMode == skillsIndexMode {
+			report.Note("Gemini 不接管网关工具,index 模式的技能索引不注入")
+		} else if env.AppendSystemText(l.SkillsPayload) {
 			report.Changed = true
 			report.SlotsTouched++
 			report.Rule("l1.skills-" + l.SkillsMode)

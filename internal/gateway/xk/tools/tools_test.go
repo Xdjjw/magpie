@@ -570,3 +570,48 @@ func TestClosedPlanePublishesNothingFromALateConnection(t *testing.T) {
 	// And a second Close is still a no-op, not a panic or a double close.
 	p.Close()
 }
+
+// Close gives up a connection that is still being made: the handshake runs
+// under the plane's context, so closing the plane ends it. Before, the
+// goroutine kept connecting to a plane that was already closed, and the
+// child process it started lived on until the handshake timed out.
+func TestCloseGivesUpAConnectionStillBeingMade(t *testing.T) {
+	dir := t.TempDir()
+	started, alive := filepath.Join(dir, "started"), filepath.Join(dir, "alive")
+	script := filepath.Join(dir, "silent-mcp.sh")
+	body := "#!/bin/sh\necho started > " + started + "\nsleep 1\necho alive > " + alive + "\nsleep 30\n"
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	// long enough that the test fails on the marker rather than on this
+	cfg.CallTimeoutMS = 30_000
+	p := BuildAsync(cfg, skillsFixture(), []McpServerCfg{
+		{Name: "silent", Enabled: true, Transport: "stdio", Command: script},
+	})
+	// Wait for the child to say it is up. If it never does, say what the
+	// plane said rather than only that it is late: a server that could not
+	// start at all is a different failure from one that started and was
+	// left running.
+	for end := time.Now().Add(30 * time.Second); ; {
+		if _, err := os.Stat(started); err == nil {
+			break
+		}
+		if st := p.McpStatus(); len(st) > 0 {
+			t.Fatalf("the fixture server could not start: %+v", st)
+		}
+		if time.Now().After(end) {
+			t.Fatal("the fixture server never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	p.Close()
+	time.Sleep(2 * time.Second)
+	if _, err := os.Stat(alive); err == nil {
+		t.Fatal("关闭后连接仍在继续:子进程被留下了")
+	}
+	if st := p.McpStatus(); len(st) != 0 {
+		t.Fatalf("关闭后不得发布状态: %+v", st)
+	}
+}

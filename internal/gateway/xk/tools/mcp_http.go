@@ -36,7 +36,7 @@ type httpClient struct {
 	mu        sync.Mutex
 }
 
-func newHTTPClient(cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
+func newHTTPClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
 	if cfg.Command != "" && cfg.Transport == "http" {
 		return nil, fmt.Errorf("http 传输不接受 command")
 	}
@@ -51,7 +51,7 @@ func newHTTPClient(cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
 		server: cfg.Name, url: cfg.URL, headers: cfg.Headers,
 		client: &http.Client{Timeout: timeout}, nextID: 1,
 	}
-	if _, err := c.request("initialize", map[string]any{
+	if _, err := c.requestContext(ctx, "initialize", map[string]any{
 		"protocolVersion": "2025-06-18",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "magpie-xkeysmith", "version": "1"},

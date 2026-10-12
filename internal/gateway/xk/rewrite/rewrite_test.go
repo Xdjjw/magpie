@@ -536,3 +536,35 @@ func TestOpenAIToolRoleMessagesAreToolResults(t *testing.T) {
 		t.Fatalf("L4 ScopeAll 应覆盖 role:tool 文本: %q", got)
 	}
 }
+
+// index 模式给的是「用技能加载器去取正文」的索引,而网关不接管 Gemini 的
+// 工具:向 Gemini 宣告它调不动的能力,比不宣告更坏。full 模式是自足正文,
+// 任何 wire 都注入。
+func TestSkillsIndexSkipsAWireWithoutTheLoader(t *testing.T) {
+	const payload = "local-audit-lab/skills"
+	for _, tc := range []struct {
+		wire Wire
+		body string
+	}{
+		{WireOpenAi, `{"model":"gpt-5","messages":[{"role":"user","content":"hi"}]}`},
+		{WireGemini, `{"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`},
+	} {
+		for _, mode := range []string{"index", "full"} {
+			env := envJSON(t, tc.body, tc.wire)
+			layer := &ContextInjection{SkillsPayload: payload, SkillNames: []string{"rev"}, SkillsMode: mode}
+			report, err := layer.Apply(env, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := strings.Contains(env.CollectText(ScopeAll), payload)
+			want := tc.wire != WireGemini || mode == "full"
+			if got != want {
+				t.Fatalf("wire=%v mode=%s injected=%v, want %v", tc.wire, mode, got, want)
+			}
+			// 注入与否必须与审计自述一致,否则事后读审计会得到反的结论。
+			if got != report.Changed {
+				t.Fatalf("wire=%v mode=%s injected=%v but the report says changed=%v", tc.wire, mode, got, report.Changed)
+			}
+		}
+	}
+}

@@ -31,12 +31,21 @@ type McpClient interface {
 }
 
 // ConnectMcp 按配置连接一个 MCP 服务器。
+// ConnectMcp connects an MCP server. A cancelled ctx aborts the handshake,
+// which is how Plane.Close stops a connection it started and no longer
+// wants: without it the goroutine went on connecting to a plane that was
+// already closed.
 func ConnectMcp(cfg McpServerCfg, timeoutMS uint64) (McpClient, error) {
+	return ConnectMcpContext(context.Background(), cfg, timeoutMS)
+}
+
+// ConnectMcpContext is ConnectMcp with the caller's context.
+func ConnectMcpContext(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (McpClient, error) {
 	switch cfg.Transport {
 	case "stdio", "":
-		return newStdioClient(cfg, timeoutMS)
+		return newStdioClient(ctx, cfg, timeoutMS)
 	case "http", "streamable-http":
-		return newHTTPClient(cfg, timeoutMS)
+		return newHTTPClient(ctx, cfg, timeoutMS)
 	default:
 		return nil, fmt.Errorf("未知 MCP 传输: %s", cfg.Transport)
 	}
@@ -54,7 +63,7 @@ type stdioClient struct {
 	timeout time.Duration
 }
 
-func newStdioClient(cfg McpServerCfg, timeoutMS uint64) (*stdioClient, error) {
+func newStdioClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*stdioClient, error) {
 	if cfg.Command == "" {
 		return nil, fmt.Errorf("stdio 传输但没有配 command")
 	}
@@ -92,7 +101,7 @@ func newStdioClient(cfg McpServerCfg, timeoutMS uint64) (*stdioClient, error) {
 		cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), output: stdout,
 		timeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
-	if err := c.initialize(); err != nil {
+	if err := c.initialize(ctx); err != nil {
 		c.abort()
 		_ = cmd.Wait()
 		return nil, err
@@ -160,10 +169,10 @@ func (c *stdioClient) sendContext(ctx context.Context, method string, params any
 	}
 }
 
-func (c *stdioClient) initialize() error {
+func (c *stdioClient) initialize(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	_, err := c.send("initialize", map[string]any{
+	_, err := c.sendContext(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
 		"clientInfo":      map[string]any{"name": "magpie-xkeysmith", "version": "1"},
@@ -171,7 +180,7 @@ func (c *stdioClient) initialize() error {
 	if err != nil {
 		return err
 	}
-	_, err = c.send("notifications/initialized", nil, true)
+	_, err = c.sendContext(ctx, "notifications/initialized", nil, true)
 	return err
 }
 
