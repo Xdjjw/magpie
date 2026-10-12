@@ -17,7 +17,7 @@ func semanticTestEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XKEYSMITH_SKILLS_DIR", t.TempDir())
-	for _, name := range []string{"XKEYSMITH_TOOLS", "XKEYSMITH_APPROVAL", "XKEYSMITH_ALLOWLIST", "XKEYSMITH_MCP_SERVERS", "XKEYSMITH_BIN"} {
+	for _, name := range []string{"XKEYSMITH_TOOLS", "XKEYSMITH_APPROVAL", "XKEYSMITH_ALLOWLIST", "XKEYSMITH_MCP_SERVERS", "XKEYSMITH_BIN", "XKEYSMITH_SKILLS_MODE"} {
 		t.Setenv(name, "")
 	}
 	if err := SetXkMaster(true); err != nil {

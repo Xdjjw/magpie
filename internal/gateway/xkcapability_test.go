@@ -6,6 +6,7 @@ package gateway
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -50,6 +51,7 @@ func capSetup(t *testing.T, f *capFake) {
 		t.Fatal(err)
 	}
 	t.Setenv("XKEYSMITH_SKILLS_DIR", skillDir)
+	t.Setenv("XKEYSMITH_SKILLS_MODE", "")
 	t.Setenv("XKEYSMITH_TOOLS", "1")
 
 	up := httptest.NewServer(f)
@@ -59,6 +61,48 @@ func capSetup(t *testing.T, f *capFake) {
 		Models: []string{"gpt-5"}, Chat: up.URL + "/v1", Responses: up.URL + "/v1",
 	}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestCapabilitySkillsModesMatchToolAvailability(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		tools      bool
+		wantIndex  bool
+		wantFull   bool
+		wantLoader bool
+	}{
+		{name: "off", mode: "off", tools: true},
+		{name: "index requires loader", mode: "index", tools: false},
+		{name: "index with loader", mode: "index", tools: true, wantIndex: true, wantLoader: true},
+		{name: "full without tools", mode: "full", tools: false, wantIndex: true, wantFull: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &capFake{reply: func(call int, _ map[string]any) map[string]any {
+				if call == 1 {
+					return chatAnswer("I can't help with that.")
+				}
+				return chatAnswer("ok")
+			}}
+			capSetup(t, fake)
+			t.Setenv("XKEYSMITH_SKILLS_MODE", tc.mode)
+			if tc.tools {
+				t.Setenv("XKEYSMITH_TOOLS", "1")
+			} else {
+				t.Setenv("XKEYSMITH_TOOLS", "")
+			}
+			code, body := xkPost(t, "/v1/chat/completions", `{"model":"xkeysmith/gpt-5","messages":[{"role":"user","content":"hi"}]}`)
+			if code != 200 || len(fake.seen) != 2 {
+				t.Fatalf("status=%d calls=%d body=%s", code, len(fake.seen), body)
+			}
+			joined := joinBodies(fake.seen)
+			gotIndex := strings.Contains(joined, "local-audit-lab/skills")
+			gotFull := strings.Contains(joined, "逆向正文")
+			gotLoader := strings.Contains(joined, "xk__skill_load")
+			if gotIndex != tc.wantIndex || gotFull != tc.wantFull || gotLoader != tc.wantLoader {
+				t.Fatalf("mode=%q tools=%v index=%v full=%v loader=%v; want %v/%v/%v\n%s", tc.mode, tc.tools, gotIndex, gotFull, gotLoader, tc.wantIndex, tc.wantFull, tc.wantLoader, joined)
+			}
+		})
 	}
 }
 
@@ -243,4 +287,81 @@ func joinBodies(seen []map[string]any) string {
 		parts = append(parts, string(mustJSON(s)))
 	}
 	return strings.Join(parts, "\n")
+}
+
+// index mode advertises skills the model reaches through the skill loader,
+// of skills that reaches no prompt has to say so rather than look like an
+// of规程 that reaches no prompt has to say so rather than look like an
+// empty one.
+func TestCapabilityIndexWithoutToolsSaysSkillsWereNotInjected(t *testing.T) {
+	var logged strings.Builder
+	was := log.Writer()
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(was) })
+
+	fake := &capFake{reply: func(int, map[string]any) map[string]any { return chatAnswer("ok") }}
+	capSetup(t, fake)
+	t.Setenv("XKEYSMITH_SKILLS_MODE", "index")
+	t.Setenv("XKEYSMITH_TOOLS", "")
+
+	code, body := xkPost(t, "/v1/chat/completions", `{"model":"xkeysmith/gpt-5","messages":[{"role":"user","content":"hi"}]}`)
+	if code != 200 {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
+	if joined := joinBodies(fake.seen); strings.Contains(joined, "local-audit-lab/skills") {
+		t.Fatalf("index was injected with no loader to follow it: %s", joined)
+	}
+	if !strings.Contains(logged.String(), "技能未注入") {
+		t.Fatalf("skills reached no prompt with nothing said: %q", logged.String())
+	}
+}
+
+// A malformed XKEYSMITH_MCP_SERVERS used to read as "no servers at all":
+// one typo and the plane came up with the skill loader alone, silently.
+func TestCapabilityMcpConfigErrorIsNotSilent(t *testing.T) {
+	t.Setenv("XKEYSMITH_MCP_SERVERS", `[{"name":"x",}]`)
+	if _, err := xkLoadMcpServers(); err == nil {
+		t.Fatal("写错的 XKEYSMITH_MCP_SERVERS 被当成了空配置")
+	}
+	t.Setenv("XKEYSMITH_MCP_SERVERS", `[{"name":"x","transport":"stdio","command":"/bin/sh"}]`)
+	servers, err := xkLoadMcpServers()
+	if err != nil || len(servers) != 1 || servers[0].Name != "x" {
+		t.Fatalf("servers=%+v err=%v", servers, err)
+	}
+	t.Setenv("XKEYSMITH_MCP_SERVERS", "")
+	if servers, err := xkLoadMcpServers(); err != nil || len(servers) != 0 {
+		t.Fatalf("没设变量就是没有服务器: %+v %v", servers, err)
+	}
+}
+
+// A request whose ladder is out is decided, not failed over: its budget is
+// shared and already spent, so no other candidate of it can answer — and
+// the error the semantic layer wrote is the one the agent gets. An error
+// held for a candidate that never comes is an error nobody sees.
+func TestCapabilityExhaustionIsNotAskedOfAnotherCandidate(t *testing.T) {
+	fake := &capFake{reply: func(int, map[string]any) map[string]any {
+		return chatAnswer("I can't help with that.")
+	}}
+	capSetup(t, fake)
+	p, _ := provider.Find("xkeysmith")
+	p.Fallback = []string{"spare/m1"}
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	spareCalls := 0
+	spare := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		spareCalls++
+		json.NewEncoder(w).Encode(chatAnswer("spare"))
+	}))
+	t.Cleanup(spare.Close)
+	if err := provider.Save(provider.Provider{ID: "spare", Key: "fixture", Models: []string{"m1"}, Chat: spare.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	code, body := xkPost(t, "/v1/chat/completions", `{"model":"xkeysmith/gpt-5","messages":[{"role":"user","content":"hi"}]}`)
+	if spareCalls != 0 {
+		t.Fatalf("耗尽后仍在问另一个候选: spare=%d status=%d body=%s", spareCalls, code, body)
+	}
+	if code != http.StatusServiceUnavailable || !strings.Contains(body, "exhaust") {
+		t.Fatalf("status=%d body=%s", code, body)
+	}
 }

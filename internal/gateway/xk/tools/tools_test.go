@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 func itoa(n int) string { return strconv.Itoa(n) }
@@ -295,6 +297,23 @@ func TestMcpAllowToolsWhitelist(t *testing.T) {
 	}
 }
 
+func TestMcpServerConfigJSONUsesRustDefaultsAndNames(t *testing.T) {
+	var cfg McpServerCfg
+	if err := json.Unmarshal([]byte(`{"name":"echo","transport":"stdio","allow_tools":["ping"],"env":{"MODE":"test"}}`), &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Enabled || cfg.Name != "echo" || cfg.AllowTools[0] != "ping" || cfg.Env["MODE"] != "test" {
+		t.Fatalf("snake_case config/default was not preserved: %+v", cfg)
+	}
+	var disabled McpServerCfg
+	if err := json.Unmarshal([]byte(`{"name":"off","enabled":false}`), &disabled); err != nil {
+		t.Fatal(err)
+	}
+	if disabled.Enabled {
+		t.Fatal("explicit enabled=false must override the default")
+	}
+}
+
 func TestMcpFailureIsVisibleNotFatal(t *testing.T) {
 	cfg := DefaultToolsConfig()
 	cfg.Enabled = true
@@ -399,6 +418,78 @@ func TestMcpHTTPJsonAndSession(t *testing.T) {
 	}
 }
 
+func TestBuildAsyncDoesNotWaitForMcpDiscovery(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req struct {
+			ID     int    `json:"id"`
+			Method string `json:"method"`
+		}
+		_ = json.Unmarshal(body, &req)
+		if req.Method == "initialize" {
+			entered <- struct{}{}
+			<-release
+		}
+		w.Header().Set("content-type", "application/json")
+		if req.Method == "tools/list" {
+			io.WriteString(w, `{"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{"tools":[{"name":"slow_ping","inputSchema":{"type":"object"}}]}}`)
+			return
+		}
+		io.WriteString(w, `{"jsonrpc":"2.0","id":`+itoa(req.ID)+`,"result":{}}`)
+	}))
+	defer srv.Close()
+	defer releaseOnce.Do(func() { close(release) })
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	started := time.Now()
+	p := BuildAsync(cfg, &fakeSkills{}, []McpServerCfg{{Name: "slow", Enabled: true, Transport: "http", URL: srv.URL}})
+	defer p.Close()
+	requestPlane := p.ForRequest(UnlockSet{})
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("BuildAsync blocked for MCP discovery: %s", elapsed)
+	}
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("MCP initialization did not start in background")
+	}
+	for _, def := range p.AllDefs() {
+		if def.Name == "xk__mcp__slow__slow_ping" {
+			t.Fatal("a tool was published before MCP discovery completed")
+		}
+	}
+	releaseOnce.Do(func() { close(release) })
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		for _, def := range p.AllDefs() {
+			if def.Name == "xk__mcp__slow__slow_ping" {
+				for _, requestDef := range requestPlane.VisibleDefs() {
+					if requestDef.Name == def.Name {
+						t.Fatal("an in-flight request observed an MCP tool discovered after its snapshot")
+					}
+				}
+				nextRequest := p.ForRequest(UnlockSet{})
+				if !nextRequest.IsActive() {
+					t.Fatal("a request created after discovery should see the MCP capability")
+				}
+				found := false
+				for _, nextDef := range nextRequest.VisibleDefs() {
+					found = found || nextDef.Name == def.Name
+				}
+				if !found {
+					t.Fatal("a request created after discovery did not see the MCP tool")
+				}
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("MCP tool was not published after discovery completed")
+}
+
 func TestMcpHTTPSSEResponse(t *testing.T) {
 	// 服务器用 SSE 回,且**先发一条通知**(id 不匹配),再发真正的应答。
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -433,4 +524,49 @@ func TestMcpHTTPSSEResponse(t *testing.T) {
 	if res.IsError || res.Content != "sse-pong" {
 		t.Fatalf("SSE 应答必须被读到 id 匹配那条: %+v", res)
 	}
+}
+
+// A server the configuration disabled is never connected. The synchronous
+// entry point filtered it out and the asynchronous one didn't, so which one
+// a caller picked decided whether a server the user turned off was reached.
+func TestDisabledServerIsNotConnected(t *testing.T) {
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	server := McpServerCfg{Name: "off", Enabled: false, Transport: "stdio", Command: writeEchoServer(t)}
+	// Build is synchronous: what it connected is the whole status.
+	p := Build(cfg, skillsFixture(), []McpServerCfg{server})
+	defer p.Close()
+	if st := p.McpStatus(); len(st) != 0 {
+		t.Fatalf("被禁用的服务器被连上了: %+v", st)
+	}
+	for _, d := range p.AllDefs() {
+		if strings.HasPrefix(d.Name, "xk__mcp__off__") {
+			t.Fatalf("被禁用的服务器不得注入工具: %s", d.Name)
+		}
+	}
+	// Both entry points take their servers from the same place, so the
+	// asynchronous one reaches a disabled server no more than this.
+	if got := connectable(cfg, []McpServerCfg{server}); len(got) != 0 {
+		t.Fatalf("connectable = %+v", got)
+	}
+	cfg.Enabled = false
+	if got := connectable(cfg, []McpServerCfg{{Name: "on", Enabled: true}}); len(got) != 0 {
+		t.Fatalf("a plane that is off connects nothing: %+v", got)
+	}
+}
+
+// Close is final. A connection that succeeds after it is dropped; one that
+// fails after it used to publish a status all the same, so a closed plane
+// kept growing.
+func TestClosedPlanePublishesNothingFromALateConnection(t *testing.T) {
+	cfg := DefaultToolsConfig()
+	cfg.Enabled = true
+	p := newPlane(cfg, skillsFixture())
+	p.Close()
+	p.connectMCP(McpServerCfg{Name: "broken", Enabled: true, Transport: "stdio", Command: "/nonexistent/mcp-server"})
+	if st := p.McpStatus(); len(st) != 0 {
+		t.Fatalf("关闭后不得再发布状态: %+v", st)
+	}
+	// And a second Close is still a no-op, not a panic or a double close.
+	p.Close()
 }

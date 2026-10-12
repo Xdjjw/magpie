@@ -73,7 +73,14 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
 
 ## 双真源纪律("按需更新"的工程化)
 
-- Go 版是 fork 的运行实现;Rust 仓库继续作为行为规范与 oracle 存在。
-- 任何语义变更:先改 Rust + corpus,再同步 Go,oracle diff 必须清零。
+- Go 版是 fork 的**运行实现**;Rust 仓库是**行为参考(oracle)**,不是构建依赖。
+  fork 不 import、不构建、也不改 xkeysmith 仓库(见 `FORK.md` 的补丁清单第 2 条,
+  那里撤回了「依赖 xkeysmith 侧透传」的做法)。
+- 语义变更**在 Go 侧落地**。要拿 Rust 版对照时,在**独立工作区**里跑它的测试与
+  corpus,把差异记进本文件;不要为了对照去改 xkeysmith 仓库,也不要让本 fork 的
+  构建或 CI 依赖它。
+- 行为规范以本 fork 的测试为准:`internal/gateway/xk/...` 的 corpus 与端到端用例
+  是「这条语义变更做完了」的判据。Rust 侧的对应实现只在需要考古时读。
 - 上游同步时的高发冲突区:`gateway.go` 的 attempt/serve(我们加了钩子)、
+  `ir.go`(若上游改 Part 形状,rewrite/detect 钩子要跟着动)。
   `ir.go`(若上游改 Part 形状,rewrite/detect 钩子要跟着动)。

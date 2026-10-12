@@ -123,10 +123,7 @@ func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe
 		}
 
 		if cfg.Context != nil && cfg.Context.Err() != nil {
-			reason := govern.StopClientGone
-			if cfg.Context.Err() == context.DeadlineExceeded {
-				reason = govern.StopWallClockExhausted
-			}
+			reason := stopReasonForContext(cfg.Context.Err())
 			return &LadderResult{Attempt: attempt, Records: records, StopReason: reason, Reason: cfg.Context.Err().Error()}, nil
 		}
 		if reason, ok := budget.Check(); !ok {
@@ -136,6 +133,21 @@ func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe
 		started := time.Now()
 		res := forward(request)
 		budget.NoteCall(res.InputTokens + res.OutputTokens)
+		if cfg.Context != nil && cfg.Context.Err() != nil {
+			reason := stopReasonForContext(cfg.Context.Err())
+			records = append(records, AttemptRecord{
+				Layer: layer, Decision: "stop:" + string(reason), Reason: cfg.Context.Err().Error(),
+				Applied: attempt.Applied(), RequestHash: attempt.RequestHash(),
+				Outcome: string(reason), StopReason: string(reason),
+				RequestBody: request, ResponseBody: res.Body,
+				Usage:     audit.UsageSummary{InputTokens: res.InputTokens, OutputTokens: res.OutputTokens, TotalTokens: res.InputTokens + res.OutputTokens},
+				LatencyMS: uint64(time.Since(started).Milliseconds()),
+			})
+			return &LadderResult{
+				Attempt: attempt, Probe: res, Records: records,
+				StopReason: reason, Reason: cfg.Context.Err().Error(),
+			}, nil
+		}
 
 		obs := observe(cfg.Proto, res)
 		verdict := cfg.Detector.Judge(obs)
@@ -196,6 +208,13 @@ func Run(cfg *LadderConfig, pristine *rewrite.Envelope, forward Forward, observe
 			layer = plan.Decision.Layer
 		}
 	}
+}
+
+func stopReasonForContext(err error) govern.StopReason {
+	if err == context.DeadlineExceeded {
+		return govern.StopWallClockExhausted
+	}
+	return govern.StopClientGone
 }
 
 func outcomeOf(v detect.Verdict, d govern.Decision) string {

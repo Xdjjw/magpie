@@ -1,9 +1,11 @@
 package attach
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/gateway/xk/detect"
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
@@ -187,6 +189,26 @@ func TestLadderDoesNotEscalateUpstreamError(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("calls=%d want 1", calls)
+	}
+}
+
+func TestLadderDeadlineDuringForwardStopsAsTimeout(t *testing.T) {
+	cfg := ladderConfig(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	cfg.Context = ctx
+	defer cancel()
+	calls := 0
+	forward := func([]byte) ProbeResult {
+		calls++
+		<-cfg.Context.Done()
+		return ProbeResult{Err: cfg.Context.Err()}
+	}
+	res, err := Run(cfg, chatEnvelope(t, "hello"), forward, chatObservation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.StopReason != govern.StopWallClockExhausted || calls != 1 || len(res.Records) != 1 || res.Records[0].StopReason != string(govern.StopWallClockExhausted) {
+		t.Fatalf("result=%+v calls=%d", res, calls)
 	}
 }
 

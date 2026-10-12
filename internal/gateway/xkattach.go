@@ -10,8 +10,11 @@ package gateway
 // internal/gateway/xk/attach 里可被假上游穷举测试。
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -42,8 +45,9 @@ type xkSettings struct {
 	sessions *govern.SessionRegistry
 	audit    *audit.Plane
 	// 能力平面(A 档技能 + B/C 档工具),由环境变量/配置决定是否启用。
-	skills *skills.Set
-	tools  *tools.Plane
+	skills     *skills.Set
+	tools      *tools.Plane
+	toolConfig tools.ToolsConfig
 }
 
 // xk returns the ladder settings, building them on first use.
@@ -63,19 +67,38 @@ func (s *Server) xk() *xkSettings {
 			plane, _ = audit.Build(func() audit.Config { c := cfg; c.Enabled = false; return c }())
 		}
 		skillSet := xkLoadSkills()
-		toolsPlane := xkLoadTools(skillSet)
+		skillMode := xkSkillMode()
+		// `off` also removes the skill loader from the tool plane. This keeps
+		// the advertised prompt and executable capability in lockstep.
+		toolSkills := skillSet
+		if skillMode == skills.ModeOff {
+			toolSkills = skills.Empty()
+		}
+		toolsPlane := xkLoadTools(toolSkills)
 		if skillSet.Len() > 0 {
-			pipeline.SetSkills(skillSet.Payload(skills.ModeIndex, 6000, 12000), skillSet.Names(), "index")
+			inject := skillMode == skills.ModeFull ||
+				(skillMode == skills.ModeIndex && toolsPlane.IsActive())
+			switch {
+			case inject:
+				pipeline.SetSkills(skillSet.Payload(skillMode, 6000, 12000), skillSet.Names(), string(skillMode))
+			case skillMode == skills.ModeIndex:
+				// index 是「先给索引,要正文就调 xk__skill_load」;工具平面
+				// 没开时模型调不动它,所以不注入是对的 —— 但「技能目录非空
+				// 却一个字都没进提示词」必须说出来,不能静默降级。
+				log.Printf("xkeysmith: %d 个技能未注入: XKEYSMITH_SKILLS_MODE=index 需要工具平面(XKEYSMITH_TOOLS=1);"+
+					" 不依赖工具的写法是 XKEYSMITH_SKILLS_MODE=full", skillSet.Len())
+			}
 		}
 		s.xkSettings = &xkSettings{
-			pipeline: pipeline,
-			detector: detect.DefaultOrPanic(),
-			limits:   limits,
-			pipeCfg:  govern.DefaultPipelineConfig(),
-			sessions: govern.NewSessionRegistry(limits),
-			audit:    plane,
-			skills:   skillSet,
-			tools:    toolsPlane,
+			pipeline:   pipeline,
+			detector:   detect.DefaultOrPanic(),
+			limits:     limits,
+			pipeCfg:    govern.DefaultPipelineConfig(),
+			sessions:   govern.NewSessionRegistry(limits),
+			audit:      plane,
+			skills:     skillSet,
+			tools:      toolsPlane,
+			toolConfig: *toolsPlane.Config(),
 		}
 	})
 	if s.xkErr != nil {
@@ -106,7 +129,11 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 	if settings.tools != nil {
 		names, patterns := settings.sessions.UnlockSet(sessionKey)
 		unlock = tools.UnlockSet{Skills: names, Patterns: patterns}
-		env = xkInjectTools(env, settings.tools, unlock)
+	}
+	var scoped *tools.RequestPlane
+	if settings.tools != nil {
+		scoped = settings.tools.ForRequest(unlock)
+		env = xkInjectTools(env, scoped)
 	}
 	cfg := &attach.LadderConfig{
 		Pipeline: settings.pipeline, Detector: settings.detector, Limits: settings.limits,
@@ -140,11 +167,9 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 			}
 			return xkWriteProbe(w, result.Attempt, result.Probe, from)
 		}
-		msg := "xkeysmith exhausted its rewrite ladder"
-		w.Header().Set("x-xkeysmith-error", string(result.StopReason))
-		return writeError(w, from, 503, msg), msg
+		return xkStop(w, from, state, result.StopReason, "xkeysmith exhausted its rewrite ladder")
 	}
-	if from != provider.Gemini && settings.tools != nil && settings.tools.IsActive() {
+	if from != provider.Gemini && scoped != nil && scoped.IsActive() {
 		reply, err := xkToolBody(from, result.Probe)
 		if err != nil {
 			return writeError(w, from, 502, err.Error()), err.Error()
@@ -155,7 +180,6 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 			gatewayCalls = gatewayCalls || tools.IsGatewayTool(c.Name)
 		}
 		if gatewayCalls {
-			scoped := settings.tools.ForRequest(unlock)
 			first := true
 			roundTrip := func(doc map[string]any) (map[string]any, error) {
 				if first {
@@ -163,7 +187,7 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 					return reply, nil
 				}
 				envelope := rewrite.NewEnvelope(doc, env.Wire)
-				envelope = xkInjectTools(envelope, settings.tools, scoped.Unlocks())
+				envelope = xkInjectTools(envelope, scoped)
 				request, err := json.Marshal(envelope.Body)
 				if err != nil {
 					return nil, err
@@ -186,7 +210,7 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 				return xkToolBody(from, last)
 			}
 			final, err := attach.RunToolLoop(&attach.ToolLoopConfig{
-				Plane: scoped, Dialect: xkToolDialect(from), MaxRounds: settings.tools.Config().MaxToolRounds,
+				Plane: scoped, Dialect: xkToolDialect(from), MaxRounds: settings.toolConfig.MaxToolRounds,
 				Budget: state.budget, Context: r.Context(), Tokens: func(map[string]any) uint64 { return last.InputTokens + last.OutputTokens },
 				OnTool: func(round int, c tools.ToolCall, out tools.ToolResult) {
 					if !out.Denied {
@@ -203,6 +227,12 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 				settings.sessions.RecordUnlocks(sessionKey, &settings.pipeCfg, unlocked.Skills, unlocked.Patterns)
 			}
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) {
+					return xkStop(w, from, state, govern.StopWallClockExhausted, "xkeysmith tool loop exceeded its request deadline")
+				}
+				if errors.Is(err, context.Canceled) {
+					return 499, "client gone"
+				}
 				if last.Status >= 400 {
 					xkCopyHeaders(w, headers)
 					return xkWriteProbe(w, result.Attempt, last, from)
@@ -211,9 +241,7 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 				return writeError(w, from, 502, msg), msg
 			}
 			if final.StopReason != "" {
-				msg := "xkeysmith tool rounds exhausted"
-				w.Header().Set("x-xkeysmith-error", string(final.StopReason))
-				return writeError(w, from, 503, msg), msg
+				return xkStop(w, from, state, final.StopReason, "xkeysmith tool rounds exhausted")
 			}
 			result.Probe = last
 		}
@@ -394,6 +422,22 @@ func xkLoadSkills() *skills.Set {
 	return set
 }
 
+// xkSkillMode is deliberately explicit at the gateway boundary. `index`
+// remains the compatibility default, but it is only injected when the skill
+// loader is available; `full` is self-contained and works with tools off.
+func xkSkillMode() skills.Mode {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("XKEYSMITH_SKILLS_MODE"))) {
+	case "off", "none", "disabled":
+		return skills.ModeOff
+	case "full":
+		return skills.ModeFull
+	case "index", "":
+		return skills.ModeIndex
+	default:
+		return skills.ModeIndex
+	}
+}
+
 // xkLoadTools 构建工具平面(默认关闭;由 XKEYSMITH_TOOLS=1 打开)。
 //
 // 与 Rust 版一致的默认:approval 代码默认 allow(零配置即用),
@@ -411,18 +455,27 @@ func xkLoadTools(skillSet *skills.Set) *tools.Plane {
 			}
 		}
 	}
-	return tools.Build(cfg, skillSet, xkLoadMcpServers())
+	servers, err := xkLoadMcpServers()
+	if err != nil {
+		// 不静默:一个写错的 MCP 配置此前表现成「没有任何服务器」。
+		log.Printf("xkeysmith: %v", err)
+	}
+	return tools.BuildAsync(cfg, skillSet, servers)
 }
 
 // xkLoadMcpServers 读 MCP 服务器配置(JSON,由桌面端或用户提供)。
-func xkLoadMcpServers() []tools.McpServerCfg {
+// xkLoadMcpServers 读 MCP 服务器配置(JSON,由桌面端或用户提供)。
+//
+// 解析失败如实返回错误:此前它静默返回空列表,于是一个写错的变量值或
+// 少一个引号,表现成「一个 MCP 服务器都没配」,而没有任何提示。
+func xkLoadMcpServers() ([]tools.McpServerCfg, error) {
 	raw := os.Getenv("XKEYSMITH_MCP_SERVERS")
 	if raw == "" {
-		return nil
+		return nil, nil
 	}
 	var servers []tools.McpServerCfg
 	if err := json.Unmarshal([]byte(raw), &servers); err != nil {
-		return nil
+		return nil, fmt.Errorf("XKEYSMITH_MCP_SERVERS 不是合法的 JSON 数组: %w", err)
 	}
 	// 展开 ${VAR} 与相对 cwd(与 xp-core 的 expand_env/绝对化同义)。
 	base := settings.Dir()
@@ -433,7 +486,7 @@ func xkLoadMcpServers() []tools.McpServerCfg {
 		}
 		servers[i].Cwd = tools.AbsCwd(tools.EnvExpand(servers[i].Cwd), base)
 	}
-	return servers
+	return servers, nil
 }
 
 // xkInjectTools 把可见的 xk__ 工具 schema 注入请求体。
@@ -441,11 +494,11 @@ func xkLoadMcpServers() []tools.McpServerCfg {
 // 方言差异在这里吸收:Chat 走顶层 tools;Anthropic 走顶层 tools
 // (input_schema 形状);Responses 走顶层 tools(扁平形状)。
 // 渐进式披露:只注入**当前解锁状态下可见**的工具。
-func xkInjectTools(env *rewrite.Envelope, plane *tools.Plane, unlock tools.UnlockSet) *rewrite.Envelope {
+func xkInjectTools(env *rewrite.Envelope, plane *tools.RequestPlane) *rewrite.Envelope {
 	if env.Wire == rewrite.WireGemini || plane == nil || !plane.IsActive() {
 		return env
 	}
-	visible := plane.VisibleDefs(unlock)
+	visible := plane.VisibleDefs()
 	if len(visible) == 0 {
 		return env
 	}

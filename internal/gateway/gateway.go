@@ -2059,9 +2059,13 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 			break
 		}
 		hw.settle()
-		if xkActed(r.Context()) {
-			// A gateway tool already ran. Commit this outcome before any of
-			// the native shape, account or provider retries can replay it.
+		if xkActed(r.Context()) || xkTerminal(r.Context()) {
+			// A gateway tool already ran, or the semantic layer decided the
+			// request is over (its ladder is out or its budget is spent).
+			// Commit this outcome before any of the native shape, account or
+			// provider retries can replay it: no other candidate can answer
+			// a request whose budget is already gone, and asking one would
+			// run the whole ladder again and hold back the error written.
 			hw.release()
 		}
 		if hw.passing {

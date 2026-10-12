@@ -43,6 +43,37 @@ func boolFlag(v bool) string {
 	return "0"
 }
 
+// xkWriteStop keeps resource exhaustion distinct from an upstream failure.
+// A request wall-clock deadline is a gateway timeout (the same contract as
+// the standalone xkeysmith server); a disconnected client cannot be written
+// to at all.
+func xkWriteStop(w http.ResponseWriter, from provider.Protocol, reason govern.StopReason, fallback string) (int, string) {
+	if reason == govern.StopClientGone {
+		return 499, "client gone"
+	}
+	if reason == govern.StopWallClockExhausted {
+		w.Header().Set("x-xkeysmith-error", "timeout")
+		msg := "xkeysmith_timeout: " + fallback
+		return writeError(w, from, http.StatusGatewayTimeout, msg), msg
+	}
+	w.Header().Set("x-xkeysmith-error", string(reason))
+	return writeError(w, from, http.StatusServiceUnavailable, fallback), fallback
+}
+
+// xkStop writes a stop and marks the request decided: the ladder is out or
+// its budget is spent, so no other candidate of this request can answer it
+// and the reply just written is the one to send. Without the mark the
+// candidate loop takes the error for a try that failed and asks another
+// provider, running the whole ladder again on a budget that is already
+// gone — and the held 504 never reaches the agent. An upstream error is
+// not one of these: that one is what failover is for.
+func xkStop(w http.ResponseWriter, from provider.Protocol, state *xkRequestState, reason govern.StopReason, fallback string) (int, string) {
+	if state != nil && reason.IsExhaustion() {
+		state.terminal.Store(true)
+	}
+	return xkWriteStop(w, from, reason, fallback)
+}
+
 // xkWriteProbe writes a non-streaming (or buffered) probe reply, with L4
 // restoration applied to every string in it.
 func xkWriteProbe(w http.ResponseWriter, attempt *rewrite.Attempt, res attach.ProbeResult, from provider.Protocol) (int, string) {

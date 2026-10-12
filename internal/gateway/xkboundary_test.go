@@ -63,7 +63,11 @@ func TestSemanticDeadlineCancelsNativeUpstream(t *testing.T) {
 	r, _, cancel := xkRequest(httptest.NewRequest("POST", "/v1/chat/completions", nil), limits)
 	defer cancel()
 	var call Call
-	New().attempt(httptest.NewRecorder(), r, provider.Chat, *p, "m1", []byte(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`), &call)
+	rec := httptest.NewRecorder()
+	status, _ := New().attempt(rec, r, provider.Chat, *p, "m1", []byte(`{"model":"m1","messages":[{"role":"user","content":"hi"}]}`), &call)
+	if status != http.StatusGatewayTimeout || rec.Code != http.StatusGatewayTimeout || rec.Header().Get("x-xkeysmith-error") != "timeout" {
+		t.Fatalf("deadline response status=%d code=%d error=%q body=%s", status, rec.Code, rec.Header().Get("x-xkeysmith-error"), rec.Body.String())
+	}
 	if r.Context().Err() != context.DeadlineExceeded {
 		t.Fatalf("deadline not shared with upstream: %v", r.Context().Err())
 	}
@@ -171,6 +175,27 @@ func TestSemanticStreamErrorKeepsProtocolContentType(t *testing.T) {
 	xkWriteProbe(rec, nil, attach.ProbeResult{Status: 200, Body: body, Stream: true}, provider.Anthropic)
 	if !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/event-stream") || rec.Body.String() != string(body) {
 		t.Fatalf("SSE error rendered as JSON: %q %s", rec.Header().Get("Content-Type"), rec.Body.String())
+	}
+}
+
+func TestSemanticWallClockStopMapsToGatewayTimeout(t *testing.T) {
+	rec := httptest.NewRecorder()
+	status, msg := xkWriteStop(rec, provider.Chat, govern.StopWallClockExhausted, "request deadline elapsed")
+	if status != http.StatusGatewayTimeout || rec.Code != http.StatusGatewayTimeout || rec.Header().Get("x-xkeysmith-error") != "timeout" || !strings.Contains(msg, "xkeysmith_timeout") {
+		t.Fatalf("status=%d response=%d header=%q msg=%q body=%s", status, rec.Code, rec.Header().Get("x-xkeysmith-error"), msg, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["error"].(map[string]any)["type"] != "api_error" {
+		t.Fatalf("unexpected protocol error body: %v", body)
+	}
+
+	clientGone := httptest.NewRecorder()
+	status, _ = xkWriteStop(clientGone, provider.Chat, govern.StopClientGone, "unused")
+	if status != 499 || clientGone.Code != 200 || clientGone.Body.Len() != 0 {
+		t.Fatalf("client cancellation wrote a response: status=%d code=%d body=%s", status, clientGone.Code, clientGone.Body.String())
 	}
 }
 

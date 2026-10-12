@@ -21,10 +21,11 @@ type xkRequestKey struct{}
 // One client request shares resource limits and trace identity across provider
 // candidates, rewrite layers and gateway tool rounds.
 type xkRequestState struct {
-	budget *govern.Budget
-	trace  audit.TraceID
-	seq    uint32
-	acted  atomic.Bool
+	budget   *govern.Budget
+	trace    audit.TraceID
+	seq      uint32
+	acted    atomic.Bool
+	terminal atomic.Bool
 }
 
 func xkRequest(r *http.Request, limits govern.Limits) (*http.Request, *xkRequestState, context.CancelFunc) {
@@ -40,6 +41,15 @@ func xkRequest(r *http.Request, limits govern.Limits) (*http.Request, *xkRequest
 func xkActed(ctx context.Context) bool {
 	state, _ := ctx.Value(xkRequestKey{}).(*xkRequestState)
 	return state != nil && state.acted.Load()
+}
+
+// xkTerminal says the semantic layer has decided this request is over: its
+// ladder is out or its budget is spent, so no other candidate of it can
+// answer and the reply already written is the one to send. An upstream
+// error is not one of these: that one is what failover is for.
+func xkTerminal(ctx context.Context) bool {
+	state, _ := ctx.Value(xkRequestKey{}).(*xkRequestState)
+	return state != nil && state.terminal.Load()
 }
 
 // xkProbeWriter holds a native reply until the ladder accepts it. It implements
