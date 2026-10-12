@@ -131,27 +131,35 @@ internal/gateway/xkintegration_test.go
 
 ## 剩余问题和验证目标
 
-### 请求超时：已按真实形态修正（原判断需更正）
+### 请求超时：已修（**前一版本文档的判断是错的**）
 
-原文说「共享 deadline 到期也会进入 `r.Context().Err() != nil` 那条分支」——**不成立**。
-墙钟 deadline 建在 `serveXkeysmith` 内部的派生 ctx 上（`xknative.go` 的 `xkRequest`），而
-外层候选循环用的 `r.Context()` 只来自 `http.Server`，它只设了 `ReadHeaderTimeout` 与
-`IdleTimeout`，没有 `WriteTimeout`、也没有 `TimeoutHandler`。所以共享 deadline 到期不会让
-外层 `r.Context()` 变成 done，不会被误记成 499。
+前一版本文件说「外层不受共享 deadline 影响」——**错**，原文的判断才是对的。`gateway.go`
+在候选循环开始前有一行 `r, _, cancel = xkRequest(r, settings.limits)`（只要有一个候选是
+semantic），它把 `r` 换成带 `context.WithTimeout(WallClockMS)` 的请求。所以外层
+`r.Context()` **确实**会随共享墙钟到期而 done。我上一轮漏看了这一行的作用，据此写下的
+「不成立」是错的；评审指出后已按真实形态修好。
 
-真正的缺口在邻近位置，已修：语义层写出的终止错误经 `holdWriter` 写出，而 `writeHeader`
-对 `hold && code >= 400` 直接返回（`fallback.go`），于是 `hw.status` 记下了 503/504 而
-`hw.ended` 仍为 false。外层随后按 `hw.failed()`（`retryable(5xx) == true`）把它当成「这个
-候选失败了」，去问下一个候选 —— 语义管线在一个**共享预算已经花完**的请求上重跑一遍，
-而写好的错误被扣在缓冲里，客户端拿到的是备选候选的答复。
+由此产生两个症状，都已在真实 handler 路径上复现并修掉：
 
-修法：请求状态加 `terminal` 标记（`xknative.go` 的 `xkRequestState.terminal` / `xkTerminal`）；
-`xkStop` 在 `reason.IsExhaustion()` 时置位（`xkattach_write.go`）；候选循环与 `xkActed`
-并列地 `hw.release()`（`gateway.go`）。上游错误**不**置位——那正是 failover 存在的意义。
+1. **超时被记成 499**。`if r.Context().Err() != nil && !hw.ended` 把共享墙钟到期与「agent
+   断连」当成同一件事，一律记 `499 the agent canceled the request` / `failCanceled`。
+   语义候选在前时客户端拿到的仍是 504，但请求记录是 499。
+2. **空的 HTTP 200**。普通候选在前、语义候选作为 fallback 时，墙钟在普通候选上到期，
+   那条分支直接 `break` 且**什么都没写** → 客户端拿到 Go 默认的空 200。
 
-覆盖：`TestCapabilityExhaustionIsNotAskedOfAnotherCandidate`。无此修复时它失败于
-`耗尽后仍在问另一个候选: spare=1 status=200 body={...content:"spare"...}` —— 客户端拿到的是
-备选的 200，而不是语义层的 503。
+修法（`gateway.go` 同一处）：`errors.Is(err, context.DeadlineExceeded)` 与
+`context.Canceled` 分开处理。前者是**网关超时**：无论候选记录了什么（它的调用是被这个
+deadline 切断的，不是上游答坏了），答案是 504；已经发出的应答不动；被扣住的整份应答
+（`hw.status < 400`）照常 release；什么都没写就写一个 504。后者才是 agent 断连，保持
+499 且不写响应。新增 `failTimeout`（`routing.go`）让 usage/trace 里能把它与取消分开。
+
+覆盖：`TestSharedWallClockIsATimeoutNotACancellation`（两个子用例，走真实 handler，
+并把 `s.xkSettings.limits.WallClockMS` 压到 300ms）。无此修复时：
+
+```
+the_semantic_candidate_is_asked_first:      Status:499 Error:the agent canceled the request
+a_plain_candidate_is_asked_first...:        an expired wall clock answered status=200 body=""
+```
 
 仍未统一：504 响应的 `error.type` 是 `api_error`（`writeError` 没有 504 分支），
 `xkeysmith_timeout` 只出现在 message 里。这是与 Rust 原版的契约差异。
@@ -167,7 +175,14 @@ internal/gateway/xkintegration_test.go
   配」，而没有任何提示。现在 `xkLoadMcpServers` 返回错误，`xkLoadTools` 记一条 log。
   覆盖：`TestCapabilityMcpConfigErrorIsNotSilent`。
 - MCP 连不上现在也会 log 一行（`connectMCP`）。此前只写进 `McpStatus`，而 `McpStatus()` 在
+- MCP 连不上现在也会 log 一行（`connectMCP`）。此前只写进 `McpStatus`，而 `McpStatus()` 在
   生产代码里**没有任何读侧**（只有测试调它），所以「失败可见但不阻塞」是句空话。
+- `Close` 不再让**正在建立**的连接继续跑。握手以前跑在自己的超时里，`Close` 只影响已经
+  发布出去的连接，于是关掉平面之后那个 goroutine 还会连到握手超时为止（子进程一直活着）。
+  现在 `newPlane` 建一个 `conn` ctx，`connectMCP` 用 `ConnectMcpContext`，`Close` 取消它；
+  `ConnectMcp` 保持原签名（`context.Background()`）。覆盖：
+  `TestCloseGivesUpAConnectionStillBeingMade` —— 无此修复时失败于
+  `关闭后连接仍在继续:子进程被留下了`。
 
 ### Skills 与工具可用性：一处默认行为需要确认
 
@@ -180,7 +195,11 @@ internal/gateway/xkintegration_test.go
 **待拍板**：默认改成 `full`（自足、不依赖工具），还是保持 index 但把「技能未生效」暴露到
 桌面端。当前只做到「不静默」。
 
-Gemini 跳过网关工具注入但共用技能索引 pipeline 的不一致仍未处理。
+Gemini 与技能索引的不一致已修：`index` 给的是「用技能加载器取正文」的索引，而网关不接管
+Gemini 的工具，所以向 Gemini 宣告它调不动的能力比不宣告更坏。`ContextInjection.Apply`
+（`rewrite/layers.go`）在 `WireGemini` + index 时跳过注入并在报告里说明；`full` 模式是
+自足正文，任何 wire 都注入。覆盖：`TestSkillsIndexSkipsAWireWithoutTheLoader` —— 无此修复
+时失败于 `wire=gemini mode=index injected=true, want false`。
 
 ### 既有红测试：已修（这一项此前被低估了）
 
@@ -236,12 +255,19 @@ Gemini 跳过网关工具注入但共用技能索引 pipeline 的不一致仍未
 | `GOOS=windows go build ./...` | 通过 |
 | `go test -tags nogui ./...` | **53 个包全部通过，0 失败**（本次之前：4 个包 6 个用例失败） |
 | `go test -race -tags nogui ./internal/gateway/xk/... ./internal/gateway -run 'Test(BuildAsync\|Mcp\|Xkeysmith\|Semantic\|Capability\|XkMaster\|LadderDeadlineDuringForward)' -count=1` | 通过，无 data race |
-| 每个新用例「拿掉修复就会失败」 | 5 个新用例逐一验证过，失败信息见上文各节 |
+| `go test -race -tags nogui ./internal/gateway/xk/tools -run TestCloseGivesUpAConnectionStillBeingMade -count=20` | 通过（新用例的稳定性：50s，无 data race） |
+| 每个新用例「拿掉修复就会失败」 | 8 个新用例逐一验证过，失败信息见上文各节 |
 | `make cli`（发布构建路径） | 通过；产物 `magpie` 39,124,962 字节，sha256 `03bf79e3b489c538db7849b92080843161dcf8cd1437469ea5be6180a6c15d35`，版本串 `v0.1.1157-47-gb4af0ed3` |
-| 推送 | `origin/codex/magpie-semantic-integration`：`aa00e2e4..b4af0ed3`（fast-forward） |
 
-**没有跑到的**：真实上游联调；GUI 的 Playwright 套件（本次没动 `internal/gui/assets`）；
-Windows / Linux 实机（只做了交叉 vet 与 build，按 code-standards 那不算测试）。
+**一次全量运行里 `TestCloseGivesUpAConnectionStillBeingMade` 曾失败于「fixture server never
+started」**：那是 10 秒的等待窗口在 52 个包并行下不够。窗口放宽到 30 秒并让它报出平面自己的
+状态（起不来 vs 起来了没被杀，是两种不同的失败），随后 20 次 `-race` 与两次全量都通过。
+
+**推送**：`origin/codex/magpie-semantic-integration` 已更新到本次的头。
+`xkeysmith`（主工作树，`e3e8c9c4`）是 `codex/magpie-semantic-integration` 的**祖先**：
+两者没有分叉，`xkeysmith` 没有任何整合分支缺少的提交。整合分支在它之上多了
+`a31e7b23`、`aa00e2e4` 以及本次收尾的若干提交（`git log e3e8c9c4..HEAD`）。
+主工作树那两个二进制的本地修改与源码无关。
 
 ## 分支关系（已核实）
 
@@ -253,12 +279,11 @@ Windows / Linux 实机（只做了交叉 vet 与 build，按 code-standards 那�
 
 1. 拍板 Skills 的默认模式（见上文「一处默认行为需要确认」）。
 2. 对齐 504 的 `error.type` 契约，或明确记录「与 Rust 版不一致」是接受的。
-3. Gemini 与技能索引 / full 模式的关系。
-4. **从 `b4af0ed3` 重建 CLI 与桌面包**：`make cli` 已验证（校验和见上），
-   但 fork 自己那两个产物（主工作树的 `xkeysmith-magpie-cli` 与
-   `xkeysmith-magpie-app.zip`，停在 10-11 12:49）的打包配方没在仓库里，
-   需要按原有流程重做，并记录提交号与校验和、核对安装后实际运行的版本。
-5. 后续迭代补齐 Skills、Tools、MCP 和审计的桌面管理入口。
+3. **重建 CLI 与桌面包**：`make cli` 已验证（校验和见上），但 fork 自己那两个产物
+   （主工作树的 `xkeysmith-magpie-cli` 与 `xkeysmith-magpie-app.zip`，停在 10-11 12:49）
+   的打包配方没在仓库里，需要按原有流程从本次提交重做，并记录提交号与校验和、核对安装后
+   实际运行的版本。
+4. 后续迭代补齐 Skills、Tools、MCP 和审计的桌面管理入口。
 
 ## 历史上下文
 
