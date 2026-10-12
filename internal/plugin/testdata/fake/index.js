@@ -31,7 +31,15 @@ async function h2(origin, path) {
     const body = []
     req.on("response", (h) => (status = h[":status"]))
     req.on("data", (c) => body.push(c))
-    req.on("end", () => (s.close(), resolve(new Response(Buffer.concat(body), { status }))))
+    // A stream that ends with no response line is the failure it looks
+    // like: a proxy that closes the socket answers nothing. Building a
+    // Response with status 0 throws inside this handler, and an unhandled
+    // throw in a listener takes the whole plugin host down with it.
+    req.on("end", () => {
+      s.close()
+      if (status === 0) return fail(new Error("the connection closed before it answered"))
+      resolve(new Response(Buffer.concat(body), { status }))
+    })
     req.end()
   })
 }
