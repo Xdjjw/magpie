@@ -380,11 +380,12 @@ func Run(version string, showMain bool, link string) error {
 	menu := h.app.NewMenu()
 	open := menu.Add(labels.open).OnClick(func(*application.Context) { h.ShowMain("") })
 	menu.AddSeparator()
-	// 语义管线总开关:xkeysmith 的 L0-L4 一拨即断/即启,不用重启。
+	// 语义管线一键开关:开 = L0-L4 + 人格为空时自动装推荐模板;
+	// 关 = 直连 + 人格还原到开启前。与设置页、`magpie xk on|off` 同一动作。
 	xkItem := menu.Add(xkTrayLabel(trayLang(settings.Load().Lang, systemLang), gateway.XkMasterOn()))
 	xkItem.OnClick(func(*application.Context) {
-		if err := gateway.SetXkMaster(!gateway.XkMasterOn()); err != nil {
-			log.Println("xkeysmith master:", err)
+		if _, err := gateway.SetXkPower(!gateway.XkMasterOn()); err != nil {
+			log.Println("xkeysmith power:", err)
 			return
 		}
 		application.InvokeSync(func() {

@@ -35,15 +35,21 @@ func xkCmd(args []string) error {
 	}
 	switch args[0] {
 	case "on":
-		if err := gateway.SetXkMaster(true); err != nil {
+		installed, err := gateway.SetXkPower(true)
+		if err != nil {
 			return err
 		}
-		fmt.Println("xkeysmith 语义管线:开(semantic=yes 的 provider 立即恢复走管线)")
+		if installed {
+			fmt.Println("xkeysmith 语义管线:开(人格为空,已自动部署推荐模板;手写人格不会被覆盖)")
+		} else {
+			fmt.Println("xkeysmith 语义管线:开(保留现有人格)")
+		}
 	case "off":
-		if err := gateway.SetXkMaster(false); err != nil {
+		_, err := gateway.SetXkPower(false)
+		if err != nil {
 			return err
 		}
-		fmt.Println("xkeysmith 语义管线:关(所有请求原样直连,几秒内生效)")
+		fmt.Println("xkeysmith 语义管线:关(请求原样直连,人格已还原到开启前;几秒内生效)")
 	case "status":
 		if gateway.XkMasterOn() {
 			fmt.Println("on")

@@ -8,7 +8,7 @@ const I18N = {
     "Use semantic pipeline": "启用语义流水线",
     "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "对这个供应商执行改写与拒绝判定。设置中的总开关控制所有已启用的供应商。",
     "This preset uses semantic processing while the master switch in Settings is on.": "设置中的总开关开启时，这个预设使用语义处理。",
-    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4 改写、拒绝判定和审计作用于已启用的供应商。关闭后恢复原有转发。",
+    "L0–L4 rewrite, refusal detection and audit for providers marked semantic=yes. On also installs the recommended session persona when none is set; Off restores the previous persona and sends traffic straight to the upstream.": "对标记 semantic=yes 的供应商就地执行 L0–L4 改写、拒绝判定和审计。开启时若没有人格会自动装推荐模板；关闭时还原之前的人格，流量原样直连上游。",
     "Session persona": "会话人格",
     "Optional system framing carried by every semantic request from L0 — your authorized working context, in your own words. Empty sends requests unchanged.": "可选的 system 框架，随每个语义请求从 L0 起上行——用你自己的话描述已授权的工作环境。留空则请求原样发送。",
 
@@ -3993,7 +3993,7 @@ const I18N = {
     "Use semantic pipeline": "啟用語義處理流程",
     "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "對這個供應商執行改寫與拒絕判定。設定中的總開關控制所有已啟用的供應商。",
     "This preset uses semantic processing while the master switch in Settings is on.": "設定中的總開關開啟時，這個預設使用語義處理。",
-    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4 改寫、拒絕判定與稽核套用於已啟用的供應商。關閉後恢復原有轉送。",
+    "L0–L4 rewrite, refusal detection and audit for providers marked semantic=yes. On also installs the recommended session persona when none is set; Off restores the previous persona and sends traffic straight to the upstream.": "對標記 semantic=yes 的供應商就地執行 L0–L4 改寫、拒絕判定與稽核。開啟時若無人格會自動裝推薦範本；關閉時還原之前的人格，流量原樣直連上游。",
     "Session persona": "會話人格",
     "Optional system framing carried by every semantic request from L0 — your authorized working context, in your own words. Empty sends requests unchanged.": "可選的 system 框架，隨每個語義請求從 L0 起上行——用你自己的話描述已授權的工作環境。留空則請求原樣傳送。",
 
@@ -7961,7 +7961,7 @@ const I18N = {
     "Use semantic pipeline": "意味処理パイプラインを使う",
     "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "このプロバイダーに書き換えと拒否判定を適用します。設定の全体スイッチは有効にしたすべてのプロバイダーを制御します。",
     "This preset uses semantic processing while the master switch in Settings is on.": "設定の全体スイッチがオンの間、このプリセットは意味処理を使います。",
-    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "有効にしたプロバイダーに L0–L4 の書き換え、拒否判定、監査を適用します。オフにすると通常の転送に戻ります。",
+    "L0–L4 rewrite, refusal detection and audit for providers marked semantic=yes. On also installs the recommended session persona when none is set; Off restores the previous persona and sends traffic straight to the upstream.": "semantic=yes のプロバイダーに L0–L4 の書き換え、拒否判定、監査を適用します。オンのとき人格が未設定なら推奨テンプレートを自動導入し、オフで以前の人格に戻してトラフィックを上流へそのまま通します。",
     "Session persona": "セッションペルソナ",
     "Optional system framing carried by every semantic request from L0 — your authorized working context, in your own words. Empty sends requests unchanged.": "任意の system フレーム。意味処理リクエストごとに L0 から付与されます——認可された作業環境を自分の言葉で。空欄ならリクエストはそのまま送られます。",
 
@@ -11931,7 +11931,7 @@ const I18N = {
     "Use semantic pipeline": "Semantische Verarbeitung verwenden",
     "Rewrite and refusal checks for this provider. The master switch in Settings controls all enabled providers.": "Umschreibung und Ablehnungsprüfung für diesen Anbieter. Der Hauptschalter in Einstellungen steuert alle aktivierten Anbieter.",
     "This preset uses semantic processing while the master switch in Settings is on.": "Diese Vorlage verwendet die semantische Verarbeitung, solange der Hauptschalter in Einstellungen eingeschaltet ist.",
-    "L0–L4 rewrite, refusal detection and audit, applied in place for providers marked semantic=yes. Off sends their traffic straight to the upstream.": "L0–L4-Umschreibung, Ablehnungsprüfung und Protokollierung für aktivierte Anbieter. Aus stellt die normale Weiterleitung wieder her.",
+    "L0–L4 rewrite, refusal detection and audit for providers marked semantic=yes. On also installs the recommended session persona when none is set; Off restores the previous persona and sends traffic straight to the upstream.": "L0–L4-Umschreibung, Ablehnungsprüfung und Protokollierung für Anbieter mit semantic=yes. Ein installiert die empfohlene Persona, wenn keine gesetzt ist; Aus stellt die vorherige Persona wieder her und leitet den Verkehr direkt weiter.",
     "Session persona": "Sitzungs-Persona",
     "Optional system framing carried by every semantic request from L0 — your authorized working context, in your own words. Empty sends requests unchanged.": "Optionaler System-Rahmentext, mit jeder Semantic-Anfrage ab L0 mitgesandt — Ihr autorisierter Arbeitskontext in eigenen Worten. Leer lässt Anfragen unverändert.",
 

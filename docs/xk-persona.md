@@ -11,10 +11,16 @@
 
 ## 部署
 
+一键开关(推荐):`magpie xk on`(或托盘/设置页的那个开关)会自动装
+本模板——当且仅当人格为空;你手写的人格永远优先。`magpie xk off`
+关管线并把人格还原到开启前的样子。
+
 ```sh
-magpie xk persona set - < docs/xk-persona.txt   # 或在 设置 › 会话人格 粘贴
+magpie xk on                                 # 一键:管线开 + 空人格自动装模板
+magpie xk persona set - < docs/xk-persona.txt   # 或:手写/覆盖部署
 magpie xk persona show                          # 查看
 magpie xk persona clear                         # 清除对照
+magpie xk off                                # 一键:管线关 + 人格还原
 ```
 
 改动 2 秒内热生效,不用重启。留空 = 请求原样,行为与没有人格时一致。
