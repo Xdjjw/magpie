@@ -46,6 +46,20 @@ Windows/Linux 交叉编译与静态分发。WASM(wasi)+ Bun 插件宿主理论�
   被切在 SSE 事件之间；没有占位符时直接释放原生事件。这样保持事件形状正确，
   代价是 L4 流请求的首字节要等判定完成。
 
+## MCP 连接与工具发现的生命周期
+
+[`tools.Plane`](../internal/gateway/xk/tools/plane.go) 为 MCP 连接建立共享的生命周期
+context。`BuildAsync` 在后台连接并发现工具，发现完成后才发布到平面；单个服务器
+连接失败会记录日志，不阻塞其他服务器或网关请求。
+
+HTTP 与 stdio 的 `initialize`、`notifications/initialized` 和 `tools/list` 都使用
+这个 context。`Plane.Close` 取消它，使尚未发布的连接也能退出。stdio 取消时会关闭
+管道并终止子进程，随后由连接关闭路径等待回收；不会继续等到工具调用超时。
+
+回归覆盖：`TestMcpStdioCloseCancelsToolDiscovery` 使用真实 stdio 子进程，确认关闭
+发生在 `tools/list` 阶段时子进程退出；`TestReviewCloseCancelsEveryMCPDiscoveryPhase`
+覆盖 HTTP 的三个阶段。测试需按仓库规范在临时 HOME 下运行。
+
 ## 阶段计划(每阶段以语料为验收契约)
 
 1. **detect + govern + audit**(纯函数三件套)——✅ 已完成(含读侧):

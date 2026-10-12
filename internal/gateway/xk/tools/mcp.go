@@ -54,7 +54,11 @@ func ConnectMcpContext(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) 
 // ─────────────────────────── stdio 客户端 ───────────────────────────
 
 type stdioClient struct {
-	cmd     *exec.Cmd
+	cmd *exec.Cmd
+	// ctx 是这条连接的生命周期:发现(tools/list)沿它飞行,取消时
+	// AfterFunc 触发 abort 杀掉子进程——不然一个挂住的 stdio 服务器
+	// 会让 Close 等到调用超时。
+	ctx     context.Context
 	stdin   io.WriteCloser
 	stdout  *bufio.Reader
 	output  io.ReadCloser
@@ -98,7 +102,7 @@ func newStdioClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*s
 		return nil, fmt.Errorf("启动 MCP 服务器失败: %w", err)
 	}
 	c := &stdioClient{
-		cmd: cmd, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), output: stdout,
+		cmd: cmd, ctx: ctx, stdin: stdin, stdout: bufio.NewReaderSize(stdout, 1<<20), output: stdout,
 		timeout: time.Duration(timeoutMS) * time.Millisecond,
 	}
 	if err := c.initialize(ctx); err != nil {
@@ -187,7 +191,8 @@ func (c *stdioClient) initialize(ctx context.Context) error {
 func (c *stdioClient) ListTools() ([]McpTool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	raw, err := c.send("tools/list", map[string]any{}, false)
+	// 发现沿连接生命周期飞行:Close 取消它,挂住的服务器随之被杀。
+	raw, err := c.sendContext(c.ctx, "tools/list", map[string]any{}, false)
 	if err != nil {
 		return nil, err
 	}
