@@ -15,6 +15,7 @@ import (
 	"github.com/yetone/magpie/internal/gateway/xk/govern"
 	"github.com/yetone/magpie/internal/gateway/xk/rewrite"
 	"github.com/yetone/magpie/internal/provider"
+	"github.com/yetone/magpie/internal/usage"
 )
 
 func TestSemanticBudgetCoversNativeFallback(t *testing.T) {
@@ -229,5 +230,62 @@ func TestSemanticL4RestoresAcrossProtocolEvents(t *testing.T) {
 	}
 	if err != nil || text != "connect 10.20.30.40 now" || strings.Contains(rec.Body.String(), "«TGT") {
 		t.Fatalf("split placeholder corrupted protocol events: text=%q err=%v stream=%s", text, err, rec.Body.String())
+	}
+}
+
+// The request's own wall clock is on the context the candidate loop reads —
+// xkRequest installs it as soon as one candidate is semantic — so an expiry
+// there is magpie's timeout, not the agent going away. Read as one, a
+// timeout was recorded as a 499, and a request whose semantic candidate had
+// not been reached yet was left with an empty 200.
+func TestSharedWallClockIsATimeoutNotACancellation(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// first names the provider the request lands on: the semantic one is
+		// asked first unless "plain" puts a plain provider in front of it,
+		// with the semantic one as its fallback.
+		first string
+	}{
+		{name: "the semantic candidate is asked first"},
+		{name: "a plain candidate is asked first, the semantic one falls back", first: "plain"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fresh(t)
+			semanticTestEnv(t)
+			hang := func(w http.ResponseWriter, r *http.Request) {
+				io.Copy(io.Discard, r.Body)
+				<-r.Context().Done()
+			}
+			semanticProvider(t, provider.Chat, hang)
+			model := "semantic-test/m1"
+			if tc.first == "plain" {
+				up := httptest.NewServer(http.HandlerFunc(hang))
+				t.Cleanup(up.Close)
+				if err := provider.Save(provider.Provider{ID: "plain", Key: "fixture", Models: []string{"m1"},
+					Chat: up.URL + "/v1", Fallback: []string{"semantic-test/m1"}}); err != nil {
+					t.Fatal(err)
+				}
+				model = "plain/m1"
+			}
+			s := New()
+			if s.xk() == nil {
+				t.Fatal("the semantic plane did not come up")
+			}
+			s.xkSettings.limits.WallClockMS = 300
+			rec := httptest.NewRecorder()
+			s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/chat/completions",
+				strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`)))
+			if rec.Code != http.StatusGatewayTimeout {
+				t.Fatalf("an expired wall clock answered status=%d body=%q", rec.Code, rec.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body["error"] == nil {
+				t.Fatalf("an expired wall clock answered no error: %q (%v)", rec.Body.String(), err)
+			}
+			records := usage.Load(time.Time{})
+			if len(records) != 1 || records[0].Status != http.StatusGatewayTimeout {
+				t.Fatalf("the request was recorded as %+v", records)
+			}
+		})
 	}
 }

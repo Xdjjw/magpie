@@ -183,6 +183,10 @@ const (
 	// failLoop: the reply was ended stuck in a loop (#1359) — the agent
 	// is told, and nobody rests, as the model, not the account, looped
 	failLoop = "loop"
+	// failTimeout: the request's shared wall clock ran out — magpie's own
+	// budget, on the same context as an agent that went away, and told
+	// apart from it: a timeout is a gateway timeout (504), not a 499.
+	failTimeout = "timeout"
 )
 
 // loopErrType is the usage log's ErrType for a reply ended for looping

@@ -2124,7 +2124,34 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 		if at := wrote.Load(); at > 0 && call.TTFT > 0 {
 			sentMs = min(max(time.Unix(0, at).Sub(start).Milliseconds(), 1), call.TTFT)
 		}
-		if r.Context().Err() != nil && !hw.ended {
+		if err := r.Context().Err(); err != nil && !hw.ended {
+			if errors.Is(err, context.DeadlineExceeded) {
+				// The request's own shared wall clock is on this context:
+				// xkRequest puts it there, and the loop above installs it as
+				// soon as one candidate is semantic. So a deadline expiring
+				// lands here too, and reading it as the agent going away
+				// recorded a gateway timeout as a 499 — and, with nothing
+				// written yet (a plain candidate in front of the semantic
+				// one), broke out leaving the agent an empty 200.
+				// Whatever the candidate in flight recorded, its call was cut
+				// by this deadline rather than answered badly, so a failure
+				// held for it is a gateway timeout, not the upstream's own
+				// error. A whole reply already held, or an answer already on
+				// its way, is the one to send.
+				switch {
+				case hw.passing:
+					// already sent: nothing more to write
+				case hw.status >= 400 || hw.status == 0:
+					call.Status, call.Error = http.StatusGatewayTimeout, "the request's wall clock ran out"
+					failTo(w, kept, from, call.Status, call.Error)
+				default:
+					hw.release()
+				}
+				try.Status, try.Error, try.Fail = call.Status, call.Error, failTimeout
+				telemetry.attempt(call, try, c.p.ID, sent, hw, capture)
+				s.trace.update(tr, func(t *Route) { t.Tries[len(t.Tries)-1] = try })
+				break
+			}
 			// the agent went away: nobody failed, and nobody else is asked
 			call.Status, call.Error = 499, "the agent canceled the request"
 			try.Status, try.Error, try.Fail = call.Status, call.Error, failCanceled
