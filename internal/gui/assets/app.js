@@ -18548,17 +18548,54 @@ function renderUpdateMirror(r, s) {
 
 // xkeysmith 语义管线的总开关行:读当前状态,Off/On 分段,点击即 POST。
 // API 不可用(浏览器预览)时整行隐藏,不留一个永远空着的控件。
+// 人格行跟着总开关行走:同一台 API 在,人格编辑才有意义。
+let xkPersonaDirty = false, xkPersonaWired = false;
 async function refreshXkRow() {
   const row = $("#xkRow");
   try {
     const res = await fetch("/api/xk").then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
     row.hidden = false;
+    loadXkPersona();
     $("#xkSegs").replaceChildren(segs([["off", t("Off")], ["on", t("On")]], res.enabled ? "on" : "off", async (pick) => {
       const enabled = pick === "on";
       const r = await fetch("/api/xk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled }) }).catch(() => null);
       if (!r || !r.ok) return;
       await refreshXkRow();
     }));
+  } catch {
+    row.hidden = true;
+    $("#xkPersonaRow").hidden = true;
+  }
+}
+
+// 会话人格:入口注入的 system 框架,Save/Clear 写回 `/api/xk/persona`,
+// 2 秒内对语义请求生效。正在编辑时不被后台刷新覆盖。
+async function loadXkPersona() {
+  const row = $("#xkPersonaRow"), note = $("#xkPersonaNote");
+  try {
+    const res = await fetch("/api/xk/persona").then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
+    row.hidden = false;
+    const box = $("#xkPersonaText");
+    if (!xkPersonaDirty && document.activeElement !== box) box.value = res.text || "";
+    if (xkPersonaWired) return;
+    xkPersonaWired = true;
+    box.oninput = () => { xkPersonaDirty = true; note.classList.remove("show"); };
+    box.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#xkPersonaSave").onclick(); };
+    $("#xkPersonaSave").onclick = async () => {
+      const r = await fetch("/api/xk/persona", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: box.value }) }).catch(() => null);
+      if (!r || !r.ok) return;
+      xkPersonaDirty = false;
+      note.textContent = t("Saved");
+      note.classList.add("show");
+      setTimeout(() => note.classList.remove("show"), 1500);
+    };
+    $("#xkPersonaClear").onclick = async () => {
+      const r = await fetch("/api/xk/persona", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) }).catch(() => null);
+      if (!r || !r.ok) return;
+      box.value = "";
+      xkPersonaDirty = false;
+      note.classList.remove("show");
+    };
   } catch {
     row.hidden = true;
   }

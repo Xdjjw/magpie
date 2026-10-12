@@ -694,7 +694,7 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 	// xkeysmith 语义管线的总开关:设置页的开关与 `magpie xk on|off` 读写
 	// 同一份状态(2 秒缓存),关 = 所有请求原样直连。
 	mux.HandleFunc("GET /api/xk", func(rw http.ResponseWriter, r *http.Request) {
-		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn()})
+		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn(), "persona": strings.TrimSpace(gateway.XkPersona()) != ""})
 	})
 	mux.HandleFunc("POST /api/xk", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
@@ -709,6 +709,25 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 			return
 		}
 		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn()})
+	})
+	// 入口人格:设置页的编辑框与 `magpie xk persona set|clear` 读写同一份
+	// 状态;空文本 = 清除。注入从 L0 起生效,2 秒内热更新。
+	mux.HandleFunc("GET /api/xk/persona", func(rw http.ResponseWriter, r *http.Request) {
+		writeJSON(rw, map[string]any{"text": gateway.XkPersona()})
+	})
+	mux.HandleFunc("POST /api/xk/persona", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Text string `json:"text"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if err := gateway.SetXkPersona(in.Text); err != nil {
+			fail(rw, err)
+			return
+		}
+		writeJSON(rw, map[string]any{"text": gateway.XkPersona()})
 	})
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
 		// the panel and its model picker load from here: an account still

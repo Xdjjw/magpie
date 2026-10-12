@@ -125,6 +125,11 @@ func (s *Server) serveXkeysmith(w http.ResponseWriter, r *http.Request, from pro
 	}
 	stream := streamOf(body) || from == provider.Gemini && strings.Contains(r.URL.Path, "streamGenerateContent")
 	sessionKey := xkSessionKey(r, env, model)
+	// 入口人格在工具说明之前注入:它是基础框架,工具说明叠在上面。
+	// L0 起就随请求上行——不等第一次被拒才由 L1 补上下文。
+	if persona := xkPersonaInjection(); persona != "" {
+		env.AppendSystemText(persona)
+	}
 	unlock := tools.UnlockSet{}
 	if settings.tools != nil {
 		names, patterns := settings.sessions.UnlockSet(sessionKey)
