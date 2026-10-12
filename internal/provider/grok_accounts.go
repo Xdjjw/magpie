@@ -139,11 +139,28 @@ func grokLoginUsage(ctx context.Context) map[string]SubscriptionQuota {
 	var mu sync.Mutex
 	var wg sync.WaitGroup
 	u := &grokHomeUsage
+	held := holding(ctx)
 	for _, g := range grokLogins() {
 		u.Lock()
 		e, ok := u.m[g.Home]
 		u.Unlock()
-		if ok && time.Since(e.at) < time.Minute {
+		// with allowances read only when asked, what was read last, or
+		// kept on disk, unless the vendor just turned the account away
+		// (StaleAllowance)
+		gctx := ctx
+		if held && isStaleRead("grok/"+strings.ToLower(g.User)) {
+			gctx = unheld(ctx)
+		} else if held {
+			q := e.q
+			if !ok {
+				q = keepLast(SubscriptionQuota{Provider: "grok", Name: "Grok (SuperGrok)", Icon: "xai", Windows: []QuotaWindow{}, Error: errNotAsked.Error()}, g.User)
+			}
+			mu.Lock()
+			out[g.User] = q
+			mu.Unlock()
+			continue
+		}
+		if ok && time.Since(e.at) < time.Minute && !held {
 			mu.Lock()
 			out[g.User] = e.q
 			mu.Unlock()
@@ -158,9 +175,10 @@ func grokLoginUsage(ctx context.Context) map[string]SubscriptionQuota {
 		u.pending[g.Home] = read
 		u.Unlock()
 		wg.Add(1)
+		takeStaleRead("grok/" + strings.ToLower(g.User))
 		go func(g grokLogin) {
 			defer wg.Done()
-			q := keepLast(grokUsageAt(ctx, g.Home), g.User)
+			q := keepLast(grokUsageAt(gctx, g.Home), g.User)
 			if q.Error != "" && ok {
 				q = e.q // a hiccup keeps what was known
 			}

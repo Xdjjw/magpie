@@ -67,7 +67,7 @@ func chatToolNames(body []byte) map[string]bool {
 			Name string `json:"name"`
 		} `json:"tools"`
 	}
-	if json.Unmarshal(body, &q) != nil || len(q.Tools) == 0 {
+	if decodeJSON(body, &q) != nil || len(q.Tools) == 0 {
 		return nil
 	}
 	m := map[string]bool{}
@@ -256,7 +256,7 @@ func paramCall(s string, names map[string]bool) (writtenCall, int, bool) {
 		val := strings.Trim(s[n:end], "\r\n")
 		val = strings.TrimSuffix(val, cutMark(val))
 		var v any
-		if json.Unmarshal([]byte(strings.TrimSpace(val)), &v) == nil {
+		if decodeJSON([]byte(strings.TrimSpace(val)), &v) == nil {
 			args[key] = v
 		} else {
 			args[key] = val
@@ -301,7 +301,7 @@ func glmCall(s string, names map[string]bool) (writtenCall, int, bool) {
 		}
 		key, val := strings.TrimSpace(s[n+p[2]:n+p[3]]), s[n+p[4]:n+p[5]]
 		var v any
-		if json.Unmarshal([]byte(strings.TrimSpace(val)), &v) == nil {
+		if decodeJSON([]byte(strings.TrimSpace(val)), &v) == nil {
 			args[key] = v
 		} else {
 			args[key] = val
@@ -344,7 +344,7 @@ func dsmlCall(s, name string, open int, names map[string]bool) (writtenCall, int
 			continue
 		}
 		var v any
-		if json.Unmarshal([]byte(strings.TrimSpace(val)), &v) == nil {
+		if decodeJSON([]byte(strings.TrimSpace(val)), &v) == nil {
 			args[p[1]] = v
 		} else {
 			args[p[1]] = val
@@ -366,14 +366,14 @@ func callArgs(raw json.RawMessage) (json.RawMessage, bool) {
 	}
 	if raw[0] == '"' {
 		var s string
-		if json.Unmarshal(raw, &s) != nil {
+		if decodeJSON(raw, &s) != nil {
 			return nil, false
 		}
 		fixed, _ := escapeRawControls(strings.TrimSpace(s))
 		raw = json.RawMessage(fixed)
 	}
 	var m map[string]any
-	if json.Unmarshal(raw, &m) != nil {
+	if decodeJSON(raw, &m) != nil {
 		return nil, false
 	}
 	b, err := json.Marshal(m)

@@ -280,7 +280,6 @@ func TestTOMLTableIgnoresHeadersInsideValues(t *testing.T) {
 
 func TestTOMLTableParseErrorLeavesFileUntouched(t *testing.T) {
 	for _, input := range []string{
-		"\ufeff[model_providers.magpie]\nname = \"old\"\n",
 		"invalid = [\n[model_providers.magpie]\nname = \"old\"\n",
 		"[model_providers.magpie]\ninvalid = [\n[[skills.config]]\n",
 		"[model_providers.magpie]\ninvalid = [\n",
@@ -324,7 +323,6 @@ func TestTOMLParseErrorLocation(t *testing.T) {
 	for _, tc := range []struct {
 		name, input, location, message string
 	}{
-		{"BOM", "\ufeff[a]\nx = 1\n", "line 1, column 1", "UTF-8 BOM"},
 		{"array", "# config\n[a]\nx = [\n", "line 3, column 5", "array is incomplete"},
 		{"number", "# config\n[a]\nx = @\n", "line 3, column 5", "incomplete number"},
 		{"EOF value", "[a]\nvalue =", "line 2, column 8", "expected value"},

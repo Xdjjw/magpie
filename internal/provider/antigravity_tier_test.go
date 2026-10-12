@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yetone/magpie/internal/catalog"
 )
 
 // A Google AI Pro account as loadCodeAssist answers it (CLIProxyAPI
@@ -164,5 +166,76 @@ func TestAntigravityTierFreeAndKeptProject(t *testing.T) {
 	}
 	if len(f.fetches) != 1 || f.fetches[0]["project"] != "kept-proj" || fmt.Sprint(f.fetches[0]["entitlement"]) != "map[userTier:g1-pro-tier]" {
 		t.Errorf("asked %v", f.fetches)
+	}
+}
+
+// #1553 (AnxForever): a Google AI Pro account that loadCodeAssist has on
+// free-tier, paying for g1-pro-tier, in aicode-consumers. Google answered
+// its fetchAvailableModels with g1-pro-tier named "Request contains an
+// invalid argument." magpie then asks again with {project} alone, which is
+// all the open-source clients that serve Pro accounts send (CLIProxyAPI,
+// sub2api, Antigravity-Manager), and lists what that gives. Should that
+// fail too, the log says so and the account keeps the list it had.
+func TestAntigravityProInvalidTierAsksWithoutOne(t *testing.T) {
+	const load = `{"currentTier":{"id":"free-tier","name":"Antigravity"},
+		"paidTier":{"id":"g1-pro-tier","name":"Google AI Pro"},
+		"cloudaicompanionProject":"aicode-consumers"}`
+	const invalid = `{"error":{"code":400,"message":"Request contains an invalid argument.","status":"INVALID_ARGUMENT"}}`
+	plain := 200
+	f := &fakeGoogle{load: load, modelsFor: func(body map[string]any) (int, string) {
+		if body["entitlement"] != nil {
+			return 400, invalid
+		}
+		if plain != 200 {
+			return plain, `{"error":{"code":503,"message":"The service is currently unavailable.","status":"UNAVAILABLE"}}`
+		}
+		return 200, withClaude
+	}}
+	googleSandbox(t, f)
+	buf := captureLog(t)
+	auth := googleAuth{AccessToken: "tok", RefreshToken: "rt-1553", Expiry: time.Now().Add(time.Hour).UnixMilli()}
+	if err := addGoogleLogin("antigravity", "paid@gmail.com", "", auth); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := googleAccountOf("antigravity")
+	ms, err := p.Fetch(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) != 3 || !slices.ContainsFunc(ms, func(m catalog.Model) bool { return m.ID == "claude-opus-5-5" }) {
+		t.Fatalf("models %v", ms)
+	}
+	f.mu.Lock()
+	asked := fmt.Sprint(f.fetches)
+	f.mu.Unlock()
+	if asked != "[map[entitlement:map[userTier:g1-pro-tier] project:aicode-consumers] map[project:aicode-consumers]]" {
+		t.Errorf("asked %s", asked)
+	}
+	for _, w := range []string{
+		`antigravity paid@gmail.com: loadCodeAssist at ` + codeAssistProd + `: current tier free-tier (Antigravity), paid tier g1-pro-tier (Google AI Pro), project "aicode-consumers"`,
+		`antigravity paid@gmail.com: fetchAvailableModels with entitlement g1-pro-tier: Antigravity: Request contains an invalid argument.; asking with none next`,
+		`project "aicode-consumers", current tier "free-tier", paid tier "g1-pro-tier", entitlement ""): 4 models, 3 kept`,
+	} {
+		if !strings.Contains(buf.String(), w) {
+			t.Errorf("log lacks %q:\n%s", w, buf.String())
+		}
+	}
+
+	// asked without one and refused too: logged, the list it had is kept
+	f.mu.Lock()
+	plain = 503
+	f.mu.Unlock()
+	buf.Reset()
+	ms, err = p.Fetch(context.Background())
+	if err != nil || len(ms) != 3 {
+		t.Fatalf("kept: %v, %v", ms, err)
+	}
+	for _, w := range []string{
+		`antigravity paid@gmail.com: fetchAvailableModels at ` + codeAssistDaily + ` (project "aicode-consumers", no entitlement): Antigravity: The service is currently unavailable.`,
+		`antigravity paid@gmail.com: models not refreshed: Antigravity: The service is currently unavailable.; keeping the 3 it listed before`,
+	} {
+		if !strings.Contains(buf.String(), w) {
+			t.Errorf("log lacks %q:\n%s", w, buf.String())
+		}
 	}
 }

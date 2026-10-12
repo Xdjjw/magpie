@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
@@ -56,7 +57,9 @@ async function open(engine, lang, posted, st, t, width = 900) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang, posted, st));
+  await watchSettingsReads(page);
   await page.goto("http://magpie.test/?view=settings&tab=general");
+  await settingsDrawn(page); // rows found are the ones that stay (#1659)
   await page.locator("#setPage-general .row.pref").first().waitFor();
   return { page, errors };
 }

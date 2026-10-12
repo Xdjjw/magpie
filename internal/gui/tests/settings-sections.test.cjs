@@ -158,23 +158,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           assert.equal(posts.length, posted, id + ": a tab posts nothing");
         }
         // the warm-ups are in Allowances, still a tab each
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         assert(await page.locator("#warmTab-codex").isVisible(), "the warm-ups under Allowances");
 
         // a part's control posts what it did
-        await page.locator("#setTab-general").click();
+        await page.locator(":is(#setTab-general, .nav-s[data-of=setTab-general]):visible").click();
         await page.locator("#themeSegs .opt").nth(2).click();
         for (let i = 0; i < 50 && !posts.length; i++) await page.waitForTimeout(40);
         assert.equal(posts.at(-1)?.theme, "dark", "the theme still saves");
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await page.locator("#currencySegs .opt").nth(1).click();
         for (let i = 0; i < 50 && posts.at(-1)?.currency !== "cny"; i++) await page.waitForTimeout(40);
         assert.equal(posts.at(-1).currency, "cny", "the currency still saves");
 
         // the keyboard: one tab in the Tab order, the arrows, Home and End
-        await page.locator("#setTab-privacy").click();
+        await page.locator(":is(#setTab-privacy, .nav-s[data-of=setTab-privacy]):visible").click();
         assert.deepEqual(await page.locator("#setTabs [role=tab]").evaluateAll((bs) => bs.filter((b) => b.tabIndex === 0).map((b) => b.dataset.set)), ["privacy"]);
-        await page.locator("#setTab-privacy").focus();
+        await page.locator(":is(#setTab-privacy, .nav-s[data-of=setTab-privacy]):visible").focus();
         await page.keyboard.press("ArrowRight");
         assert.deepEqual((await shown(page)).parts, ["otel"]);
         assert.equal((await shown(page)).focus, "otel");
@@ -231,7 +231,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           const under = await page.evaluate(() => document.querySelector("#setPage-general").getBoundingClientRect().top - document.querySelector("#setTabs").getBoundingClientRect().bottom);
           assert(under >= 0, what + ": the part under the tabs");
           // the last tab, on the last line, reached with one click, moving nothing
-          await page.locator("#setTab-about").click();
+          await page.locator(":is(#setTab-about, .nav-s[data-of=setTab-about]):visible").click();
           await page.waitForTimeout(150);
           assert.deepEqual((await shown(page)).parts, ["about"], what);
           assert.equal(await top(page), 0, what + ": the click must not scroll the page");

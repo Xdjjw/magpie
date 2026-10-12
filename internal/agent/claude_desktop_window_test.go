@@ -174,3 +174,61 @@ func TestClaudeDesktopContextWindow1M(t *testing.T) {
 		t.Fatalf("glm listed by its 1M id alone: %q %v", window(), err)
 	}
 }
+
+// TestClaudeDesktopAloneContextWindow (#1458, marsxxl on v0.1.1154): with
+// Claude Desktop on magpie and Claude Code itself left on its own setup,
+// Desktop's Code tab still runs Claude Code on ~/.claude/settings.json, so
+// it is told Desktop's window (and what Desktop's models can do) all the
+// same. Only wiring Claude Code in wrote them before, and its Sync did
+// nothing while it wasn't, so such a user saw 200K for every model. The
+// user's own Claude Code setup and settings are left as they are, and
+// Desktop off takes magpie's values out again.
+func TestClaudeDesktopAloneContextWindow(t *testing.T) {
+	home, path := desktopWindowSandbox(t)
+	writeFile(t, path, `{"theme":"dark","model":"opus","autoCompactWindow":300000}`)
+	a := claude(home)
+	get := func(key string) string { v, _ := edit.GetJSON(path, key); return v }
+	window := func() string { return get("env." + claudeContextEnv) }
+	desktop := func(v string) {
+		t.Helper()
+		if err := claudeDesktop(home).Field("provider").Set(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	desktop("magpie")
+	if window() != "256000" {
+		t.Fatalf("Desktop alone on magpie: window %q, want Grok's 256000", window())
+	}
+	if caps := get("env." + claudeCapsEnv); !strings.Contains(caps, "mythos-magpie-") {
+		t.Fatalf("Desktop alone on magpie: capabilities %q name none of Desktop's ids", caps)
+	}
+	if get("env.ANTHROPIC_BASE_URL") != "" || get("model") != "opus" || get("autoCompactWindow") != "300000" || get("theme") != "dark" {
+		t.Fatalf("the user's own Claude Code setup changed: %s", readFile(path))
+	}
+	// the catalog's round keeps it
+	if err := a.Sync(); err != nil || window() != "256000" {
+		t.Fatalf("after Sync: %q %v", window(), err)
+	}
+	// Claude Code wired in and out again while Desktop stays on
+	if err := a.Field("model").Set("v/gpt"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("model").Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if get("env.ANTHROPIC_BASE_URL") != "" {
+		t.Fatalf("Claude Code still on magpie: %s", readFile(path))
+	}
+	if window() != "256000" {
+		t.Fatalf("Claude Code taken off magpie, Desktop still on: %q", window())
+	}
+	// Desktop off: magpie's values go
+	desktop("")
+	if window() != "" || get("env."+claudeCapsEnv) != "" {
+		t.Fatalf("Desktop off: %s", readFile(path))
+	}
+	if get("theme") != "dark" || get("autoCompactWindow") != "300000" {
+		t.Fatalf("the user's settings changed: %s", readFile(path))
+	}
+}

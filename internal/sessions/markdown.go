@@ -22,6 +22,29 @@ func WriteMarkdown(w io.Writer, s Session, name string) error {
 	if !HasTranscript(s.Agent) || s.Path == "" {
 		return ErrNoTranscript
 	}
+	return writeMarkdown(w, s, name, "File", s.Path, false, func(each func(Part) bool) error {
+		return readTranscript(s, func(_ bool, p Part) bool { return each(p) })
+	})
+}
+
+// WriteGatewayMarkdown writes a session magpie's gateway recorded (t, from
+// GatewayTranscript) as WriteMarkdown writes one read from the agent's own
+// file: for a session whose agent ran on another machine, as one that
+// reaches this magpie through a remote magpie does (akic404 on Discord),
+// there is no file here, only what the gateway kept. It says so, and says
+// when older turns or the end of a long part weren't kept.
+func WriteGatewayMarkdown(w io.Writer, s Session, name string, t Transcript) error {
+	return writeMarkdown(w, s, name, "Recorded by", "magpie's gateway", t.Cut, func(each func(Part) bool) error {
+		for _, p := range t.Parts {
+			if !each(p) {
+				break
+			}
+		}
+		return nil
+	})
+}
+
+func writeMarkdown(w io.Writer, s Session, name, fromKey, from string, cut bool, parts func(func(Part) bool) error) error {
 	b := bufio.NewWriter(w)
 	title := strings.TrimSpace(s.Title)
 	if title == "" {
@@ -43,11 +66,14 @@ func WriteMarkdown(w io.Writer, s Session, name string) error {
 		models = append(models, m.Model)
 	}
 	meta("Models", strings.Join(models, ", "))
-	meta("File", s.Path)
+	meta(fromKey, from)
+	if cut {
+		b.WriteString("\n*Not all of this session was kept: what follows is what is left of it.*\n")
+	}
 	b.WriteString("\n---\n")
 	who := ""
 	said := false
-	err := readTranscript(s, func(_ bool, p Part) bool {
+	err := parts(func(p Part) bool {
 		p.Text = strings.TrimSpace(p.Text)
 		if p.Text == "" {
 			return true
@@ -85,6 +111,9 @@ func WriteMarkdown(w io.Writer, s Session, name string) error {
 			b.WriteString("*[image]*\n")
 		default:
 			b.WriteString(p.Text + "\n")
+		}
+		if p.Cut > 0 {
+			fmt.Fprintf(b, "\n*… %d more characters weren't kept.*\n", p.Cut)
 		}
 		return true
 	})

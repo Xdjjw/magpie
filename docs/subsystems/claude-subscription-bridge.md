@@ -24,6 +24,35 @@ in for no agent. It doesn't update itself (the bridge sets
 `DISABLE_AUTOUPDATER`); installing again takes the newest and removes the
 older one.
 
+A run is started with `--dangerously-skip-permissions` (`claudeCLIArgs`):
+its only tools are magpie's MCP ones, answered by the client, and
+Anthropic's web search. Claude Code run as root refuses that flag ("cannot
+be used with root/sudo privileges") unless `IS_SANDBOX` is `1` or
+`CLAUDE_CODE_BUBBLEWRAP` is set, so a run as root, magpie's own euid 0 or
+a WSL distro whose default user is root (the probe's `uid`,
+`wslrun.Tool.Root`), is given `IS_SANDBOX=1` (`claudeCLI.asRoot`;
+FrierenF on Discord). A run as anyone else has its env as before. Only the
+bridge's run gets it; the warm-up and `/usage` runs don't skip
+permissions.
+
+The run's MCP server is magpie itself (`magpie claude-mcp-helper`,
+`internal/claudebridge`), which hands each tool call back to the gateway
+at `POST /_magpie/claude-mcp/<token>` (`mcpCall`), where the call is
+registered in `b.calls` for the turn with its results to find. The token
+is `randomToken` (24 bytes from `crypto/rand`), one per run. The callback
+URL is written to `callback` in the run's own temp folder (0600) and the
+helper is given that file's path, so the token is never on Claude Code's
+command line. The helper calls the address the gateway listens on
+(`callbackBaseURL`: `MAGPIE_ADDR`, `0.0.0.0`/`::` as `127.0.0.1`), which,
+pinned to one interface's address, isn't loopback, and it sends no
+gateway key. `lanGuard` therefore lets in exactly that path, by POST, with
+the token of a run now live (`ownCallback`: `addCallback` when the run is
+registered, `dropCallback` in `removeRun`, compared in constant time).
+Every other request, and this path with a wrong, spent or encoded token,
+is judged as any other. Without it the call was refused 401, never
+reached the run, and every turn with tool results found no run waiting and
+started a new Claude Code told the whole conversation (#1546).
+
 ## Why turns go on in one run
 
 A run started anew is told the whole conversation in one user message
@@ -67,6 +96,43 @@ exit status and the end of its stderr (`endedBefore`), as one that ends
 before it reads its input is (`whyEnded`). The tool-results path and
 `resume` already start a new run when the one they found has ended.
 
+## A side question after a reply (#1638)
+
+After each turn Claude Code 2.1.290 asks its prompt suggestion: the
+conversation so far, with the turn's system prompt, tools and thinking so
+it shares the cache, and one more user message, "[SUGGESTION MODE: …",
+with no system message after it. Its request goes on from the turn's
+reply like a next turn, so `resume` gives it the conversation's run, and
+the run waited at the suggestion's reply. The user's real next turn then
+found no run and was told the whole conversation in a new Claude Code
+(the reporter's 41 messages, 88k tokens written to the cache, minutes
+after the last reply, with nothing in the log).
+
+`ended` now keeps, beside the run's new key, the key it went on from
+(`behindKey`) and the uuid of the turn that took it there (`behindTurn`).
+A turn that finds no run under its own key takes one whose `behindKey` is
+its key, rewinds it to `behindTurn` (as `letGo` does) and tells it only
+the turn's messages ("taken back from the side question it answered
+since"). The run is marked `rewound`, so it isn't shelved. A run that
+can't be rewound is let go and the turn told whole to a new run, as
+before. Tried with the real 2.1.290 client in `-p --prompt-suggestions`
+and the real 2.1.290 as the run, against a local mock of Anthropic: one
+run for the whole session, and the turn after each suggestion went on
+from the reply before it. Other side requests that go on from the
+conversation (extract_memories, away_summary, /btw) take the same path;
+they weren't tried.
+
+A turn after a reply that starts a new run logs why none waited
+(`whyNoRun`, "claude: no run waits for this turn: …"): its run went on
+with a turn this one doesn't follow, waits under another key (the model,
+settings, system prompt or tools differ), waits at an earlier turn, is
+busy with another request, ended (how long ago, and why: `endWhy`, set by
+`abortFor`, kept in `b.lost` by conversation), or no run here has had the
+conversation. Tool results that find no run waiting add what became of
+the run that made the calls ("the run that made the calls ended …",
+`whyCallsLost`, from `b.lostCalls`, which `removeRun` fills with the calls
+the run waited on and the results it was last handed).
+
 ## A turn the client gives up on (`letGo`, #780, #1365)
 
 When the client goes away mid-reply, a run resumed for the turn is told to
@@ -84,7 +150,44 @@ ended, and that request was told the whole conversation in a new run.
 Claude Code 2.1.295 rewinds past a tool round mid-reply (tried against a
 local mock of Anthropic). A run started anew for the turn has nothing to
 rewind to and is still ended; so is one with a call still in the client's
-hands (`pending`).
+hands (`pending`). Rewinding it to its first message would leave nothing,
+and its results were already handed over its MCP calls, so the results
+sent again go to a new run told the whole conversation (#1638's first
+case: a 499, then "tool results no run waiting" and 17 messages told).
+Keeping its cache would mean taking it back to Claude Code's own
+tool_result message and telling the results again as text, which wasn't
+done: the reporter's requests aren't known, and a fork that took the
+lead's calls (`claimResume`) looks the same from here. The log now says
+which run ended and why.
+
+### One key per waiting run
+
+A run waits under one key (`keepIdle`, the only writer of `b.idle`);
+kept again, a run leaves the key it waited at, unless another run now
+waits there. Which order of calls kept one run twice in the reporter's
+gateway isn't known: `ended` and `letGo` of one request exclude each
+other (`serveSubscription`'s ended callback runs only when `gone()`
+stopped the `AfterFunc` that calls `letGo`), so it isn't those two of one
+request. `keepIdle` holds the rule whichever caller it was (#1596). Past `idleMost`, the
+eviction loop takes out the key it found as oldest, not the run's own.
+Before (X, Sma1lboy: magpie at 158 GB after two days of omp agents), one
+run under two keys was the oldest on every pass, the pass took out only
+its newer key, and the loop never ended: it held `b.mu`, stopping every
+Claude subscription request, and grew its list of runs to let go without
+bound. `claude_idle_test.go` (`TestClaudeIdleEvictionEnds` runs the loop
+in a child process, which on the old code fails on what the loop
+allocates, not on a deadline).
+
+`keepIdle` refuses a run that has ended, and its callers then leave the
+run's timer alone (#1667). A resumed turn's 30-minute timer can end a run
+(`abort` → `finish` → `removeRun`) while its reply is going out, and the
+reply's last event, already in the segment, still reaches the client
+whole, so `ended` is told it went well. Before, the ended run was kept,
+held one of `idleMost` places until pushed out, and its re-armed timer
+found it closed and never took it out. `finish` sets `closed` before
+`removeRun` takes `b.mu`, and `keepIdle` reads it under `b.mu`, so a run
+is either refused or kept and then taken out by `removeRun`.
+`TestClaudeRunEndedMidReplyIsNotKeptIdle` fires the timer before `ended`.
 
 ## Finding the run: keys
 
@@ -94,10 +197,15 @@ hands (`pending`).
 - `ended` keeps a run whose reply was whole under
   `turnKey(owner, req, messages + reply)`: the account, model, whether an
   effort was asked, thinking off, tool choice, system prompt, the tools, web
-  search, schema, and the messages as `hashMessages` reads them. The exact
-  match is that key, from `nextTurn`'s split of the next request.
+  search, schema, and the messages as `hashMessages` reads them. The
+  system prompt is taken without the client Claude Code's
+  `x-anthropic-billing-header` line (`withoutBillingHeader`), which the run
+  is never told and whose fields (`cch`, `cc_prompt_id`, `cc_prev_req`…)
+  change every turn; with it in, no next turn found its run (#1638). The
+  exact match is that key, from `nextTurn`'s split of the next request.
 - It also keeps a `looseTurn`: the same settings without the tools, the
-  message count, the conversation before the last turn (hashed), and the
+  message count, the conversation before the last turn (hashed; its system
+  prompt also without the billing line), and the
   last turn's messages one by one (`messageWords`), the reply last. Shelving
   copies it, with the tool names the run's agent had, to the
   `savedSession`.
@@ -225,7 +333,7 @@ carries none.
 
 ```sh
 go test -tags nogui ./internal/claudecode/ -count=1
-go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy' -count=1
+go test -tags nogui ./internal/gateway/ -run 'ClaudeSubscriptionRunsTheDownloaded|ClaudeSubscriptionWithoutClaudeCode|ClaudeRewritten|LostMedia|ImagesTakenOut|RunLetGoWhenTheClientRewrote|ClaudeSessionTempFiles|ClaudeLetGo|ClaudeSessionFiles|ClaudeOldSessions|ClaudeSubscriptionReplySaysTheAllowance|ClaudeAllowanceHeaders|ClaudeForksAnsweringTheLeadsCalls|ClaudeTurnGivenUpOn|ClaudeToolResultsGivenUpOn|ClaudePromptMarksEarlierTurns|ClaudeUnloadableSession|ClaudeEndedRunSaysWhy|ClaudeIdle|ClaudeSideQuestion|ClaudeNoRunSaysWhy|ClaudeToolResultsNoRunSaysWhy' -count=1
 ```
 
 `claude_rewritten_test.go` has a case for each relaxation and one for each

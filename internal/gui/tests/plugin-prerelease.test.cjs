@@ -61,7 +61,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await page.waitForFunction(() => document.querySelector('#nav button[data-view="plugins"]')?.classList.contains("has-dot"));
     await page.locator('#nav button[data-view="plugins"]').click();
     const view = page.locator("#view-plugins");
-    await view.locator(".lib-tabs .opt", { hasText: "Installed" }).click();
+    await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: "Installed" }).click();
     await view.locator(".pm-row").nth(cases.length - 1).waitFor();
 
     const rows = await view.locator(".pm-row").evaluateAll((rs) => rs.map((r) => ({

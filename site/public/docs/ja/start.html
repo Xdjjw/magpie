@@ -170,7 +170,7 @@
     <div class="callout"><b>何もしなくてもできるグループ。</b> すでに持っているモデルを提供する 2 つ目のプロバイダを追加すると（Claude サブスクリプションと Copilot の Claude Opus、DeepSeek 自身の API と OpenRouter の DeepSeek など）、magpie はそれを提供するすべてのプロバイダにまたがるグループ <code>group/auto-&lt;model&gt;</code> を自動で作ります。名前はベンダーごとの表記の違い（<code>deepseek/deepseek-chat</code>、<code>deepseek-chat</code>）を吸収して照合されます。エージェントにこれを選ぶとリクエストがすべてに分散されます。不要なものは <code>magpie group rm</code> で非表示にできます。</div>
     <div class="table-wrap"><table>
       <tr><th>ルーティング</th><th>先に使われるもの</th></tr>
-      <tr><td>スマート <code>smart</code></td><td>デフォルトです。メンバーのアカウントとキーをまとめて扱い（グループ内のグループは 1 つとして扱います。下記参照）、クォータに余裕のあるサブスクリプションのうち、利用枠が最も早く更新されるもの。基準は週の枠です。週の枠がなく 5 時間枠だけのアカウント（Claude Enterprise）は 5 時間枠で判断されるため、それより後に週の枠が更新されるものすべてより先になります。失敗後に休止中のものは最後に回ります。</td></tr>
+      <tr><td>スマート <code>smart</code></td><td>デフォルトです。メンバーのアカウントとキーをまとめて扱い（グループ内のグループは 1 つとして扱います。下記参照）、クォータに余裕のあるサブスクリプションのうち、利用枠が最も早く更新されるもの。基準は週の枠です。週の枠がなく 5 時間枠だけのアカウント（Claude Enterprise）は 5 時間枠で判断されるため、それより後に週の枠が更新されるものすべてより先になります。リセットのないクレジット（WorkBuddy のパッケージはそれぞれの日に失効します）は、残りのうち最も早く失効する時点で判断されるため、クレジットが最も早く失効する WorkBuddy アカウントが先になります。失敗後に休止中のものは最後に回ります。</td></tr>
       <tr><td>順番どおり <code>order</code></td><td>最初のモデルが応答できなくなるまでそれを使い、次へ進みます。</td></tr>
       <tr><td>持ち回り <code>rotate</code></td><td>各会話の次のターンを、次のメンバーのアカウントやキーに送り、負荷を分散します。</td></tr>
       <tr><td>使用量の少ない順 <code>usage</code></td><td>利用枠の残りが最も多いアカウントやキー。</td></tr>
@@ -184,7 +184,7 @@
       <tr><td>オフ <code>off</code></td><td>リクエストごとに改めてルーティングします。</td></tr>
     </table></div>
     <h3 id="rules">ルール · ターンを指定したモデルへ</h3>
-    <p>グループの <span class="ui">Rules</span> は、指定した種類のターンをグループ内の特定のモデルに送ります。種類とは、長いもの（<code>tokens ≥ N</code>）、画像を含むもの、推論を求めるもの（オン、または一定レベル以上）、特定のエージェントからのもの、あなたが記述した内容を求めるもの（<em>インテント</em>）、エージェントがコンテキストを圧縮するもの、です。メッセージを送ると上から順に評価され、最初に一致したルールのモデルが先頭になり、失敗したときはグループの他のモデルが後に続きます。どのルールにも一致しないターンは、グループの通常のルーティングに従い、それまでの送り先に留まります。</p>
+    <p>グループの <span class="ui">Rules</span> は、指定した種類のターンをグループ内の特定のモデルに送ります。種類とは、長いもの（<code>tokens ≥ N</code>）、画像を含むもの、推論を求めるもの（オン、または一定レベル以上）、特定のエージェントからのもの、あなたが記述した内容を求めるもの（<em>インテント</em>）、エージェントがコンテキストを圧縮するもの、特定のフォルダ（プロジェクト）で作業しているもの、です。ルールの条件はすべて満たす必要があるので、「~/work/acme 内で、かつ長い」のようにも書けます。メッセージを送ると上から順に評価され、最初に一致したルールのモデルが先頭になり、失敗したときはグループの他のモデルが後に続きます。どのルールにも一致しないターンは、グループの通常のルーティングに従い、それまでの送り先に留まります。</p>
     <ul>
       <li>ルールはターンの開始時に決まり、エージェントがツールの結果を返している間もそのターンは同じモデルに留まるため、ベンダーのキャッシュが途中で失われません。唯一の例外として、ターンがモデルのコンテキストを超えて大きくなった場合は、それを受け付けられるメンバーに移ります。</li>
       <li>トークン数は、リクエストのサイズから推定した値と、会話の直前のリクエストでベンダーが数えた値のうち、大きいほうを使います。余裕を持たせてください。200k のモデルなら、ルールは 199k ではなく 150k にします。</li>
@@ -192,13 +192,15 @@
       <li>インテントは、ユーザーが求めていることを数語で表したものです（「テストを書く・直す」「ちょっとした質問」など）。ターンの開始時に、グループの分類モデル（magpie にある任意のモデル。小さく高速で推論なしのものが最適です）に、一致しうるインテントのうちユーザーのメッセージがどれに当たるかを一度だけ尋ねます。送られるのはそのメッセージだけで、会話全体ではありません。分類モデルが失敗した、遅すぎた（8 秒）、または判断できなかった場合は、どのインテントも一致せず、そのターンは他のルールに従います。インテントのないルールでいずれにせよ決まる場合は問い合わせず、同じメッセージについて二度尋ねることもありません。その呼び出しは使用量に magpie 自身の呼び出しとして表示されます。何を尋ねるのか、回答がどう使われるのか、失敗したらどうなるのかの詳細は<a href="/docs/ja/intent">インテントルーティング</a>を参照してください。</li>
       <li><span class="ui">compacting</span> は、エージェントが会話を圧縮するとき（Claude Code の <code>/compact</code> と自動圧縮、Codex、OpenCode、Pi、Gemini CLI、Qwen Code、Kimi Code）に一致します。これにより、会話は元のモデルのまま、要約だけをより安く速いモデルに書かせられます。圧縮は単独で判断されます。圧縮が起きたターンとそのキャッシュは元の送り先に留まります。会話がルールのモデルが受け付けられる長さを超えている場合は、次に一致するルール、またはグループの順序で決まります。</li>
       <li><b>時間帯と曜日。</b>ルールは、このコンピューターの時計で、特定の時間帯や曜日だけ有効にできます（ベンダーのピーク時間など）。その間のターンを別のモデルに送るルールでは、ベンダーのモデルはフォールバックとして後ろに残ります。完全に外すには、ルールの <span class="ui">送信先</span> を <span class="ui">一時停止</span> に変えます。ルールが有効な間（時間帯、曜日、エージェント）、そのモデルはグループから外れ、先頭にもフォールバックにもならず、会話の継続でも使われません。時間帯が終われば戻ります。一時停止は時間帯、曜日、エージェントだけで判断し、グループのモデルがすべて一時停止中ならエージェントにそう伝えます。</li>
-      <li>ルーティングタブには、各ターンをどのルールがどこへ送ったか、分類モデルが何と答えたかが表示されます。</li>
+      <li><b>フォルダ。</b><span class="ui">フォルダ</span> は、エージェントの作業フォルダが指定したフォルダのどれか、またはその中にあるときに一致します。<code>~/work/acme</code> は <code>~/work/acme/web</code> を含み、<code>~/work/acme-old</code> は含みません。フォルダはエージェントがリクエストでモデルに伝えるもの（Claude Code、Codex、OpenCode、Pi が伝えます）なので、伝えないエージェントはフォルダのルールに一致しません。<code>~</code> はホームフォルダ、<code>C:\work</code> は WSL の <code>/mnt/c/work</code> と同じで、macOS と Windows では大文字小文字を区別しません。</li>
+      <li>ルーティングタブには、各ターンをどのルールがどこへ送ったか、分類モデルが何と答えたか、エージェントが伝えた作業フォルダが表示されます。</li>
     </ul>
     <h3 id="nested">グループの中のグループ</h3>
     <p>グループのモデルには別のグループも含められます。<span class="ui">Add a model</span> の <em>Routing groups</em> の下から選ぶか、ターミナルで <code>models+=group/&lt;id&gt;</code> を使います。中に入ったグループは順序の中でその位置を占め、自分のモデルの間では自分のルーティングとルールに従って振り分けます。たとえば Coder を <code>deepseek-v4-pro</code>、次に <em>Fast</em> とし、Fast は安いモデルを独自の順序で並べる、といった構成ができます。Coder のルールでターンを <code>group/fast</code> に送れば、どのモデルを先にするかは Fast 自身のルールが決めます。</p>
     <ul>
       <li><b>ループは不可。</b> グループは、直接でも中のグループ経由でも、自分自身を含められません。Coder が Fast を含んでいるときに、Coder を含む Fast を保存しようとすると拒否され、ピッカーにもそのようなグループは表示されません。入れ子は最大 8 階層です。他のグループに含まれているグループは削除できないので、先にそちらから外してください。</li>
       <li><b>各グループは自分のルーティングに従います。</b> 外側のグループのルーティングが何であれ、内側のグループの中には及びません。スマート、持ち回り、使用量の少ない順、週のペースは、内側のグループを 1 つのメンバーとして、内側のグループが最初に試すアカウントやキーで評価します。そこが選ばれると、内側のグループが丸ごと、自分の順序で試されます。Claude（順番どおり）と GPT（順番どおり）を含むスマートの Coder は、両者のアカウントをすべてまとめて比べるのではなく、Claude の先頭と GPT の先頭を比べます。</li>
+      <li><b>独自のルーティングを持つプロバイダーも同じです。</b> プロバイダーのアカウントやキーのルーティングを順番どおり、持ち回り、使用量の少ない順、週のペース、重みにしたモデルは、どのグループの中でもそれを保ちます。グループはそれが最初に試すアカウントやキーで比べ、選ばれたら自分の順序で丸ごと試します。既定のスマートのままのプロバイダーは、アカウントがグループの他のものとまとめて比べられ、どのプロバイダーのものでも枠が最も早くリセットされるものが先になります。</li>
       <li><b>フェイルオーバーは通ります。</b> 内側のグループのモデルがすべて失敗すると、他のメンバーと同様に、外側のグループの次のメンバーが応答します。</li>
       <li>2 回現れるモデル（単独と、中のグループ内）は、最初の位置で一度だけ問い合わせます。</li>
     </ul>
@@ -217,7 +219,9 @@ magpie group set opus-anywhere models+=openrouter/anthropic/claude-opus-5.5
 magpie group rule add opus-anywhere use=openrouter/anthropic/claude-opus-5.5 tokens=150k  <span class="c"># 長いターンはまずこれへ</span>
 magpie group rule add opus-anywhere use=copilot/claude-opus-5.5 intent=<span class="s">"ちょっとした質問"</span> classifier=groq/llama-3.1-8b-instant
 magpie group rule add opus-anywhere use=deepseek/deepseek-v4-flash compact  <span class="c"># /compact の要約は安いモデルへ</span>
+magpie group rule add opus-anywhere use=kimi/kimi-k2.6 folders=~/oss,<span class="s">"~/My Project"</span>  <span class="c"># これらのプロジェクトのターンはまずこのモデルへ</span>
 magpie group rule add opus-anywhere pause=copilot/claude-opus-5.5 time=14:00-18:00 days=mon-fri  <span class="c"># その時間帯は外す</span>
+magpie group rule add opus-anywhere pause=claude/claude-opus-5-5 except-folders=~/big-task  <span class="c"># ~/big-task のタスク専用：ほかのフォルダでは外す</span>
 magpie group set coder models+=group/opus-anywhere  <span class="c"># グループの中のグループ</span>
 magpie group rule opus-anywhere      <span class="c"># ルール一覧。rule rm|mv &lt;n&gt;、rule classifier &lt;group&gt; &lt;model&gt;</span>
 magpie group copy opus-anywhere <span class="s">"Opus test"</span>  <span class="c"># モデル・ルーティング・ルールが同じ複製。別々に変更できる</span>
@@ -233,8 +237,8 @@ magpie claude group/opus-anywhere    <span class="c"># これを使う</span></p
       <img class="for-dark" src="/img/usage-ja-dark.png" width="2080" height="1004" loading="lazy" alt="使用量タブ：残高、トークンとコストの合計、30 日間のグラフ">
       <figcaption>ゲートウェイを通ったすべての呼び出しの残高、トークン、キャッシュヒット、コスト。</figcaption>
     </figure>
-    <p><b>コンテキスト。</b> Usage の <span class="ui">Context</span> タブでは、ゲートウェイを通るときに読み取った各エージェントのプロンプトの中身を表示します。システムプロンプト、ツール定義（MCP サーバーのツールはまとめて 1 つ）、指示ファイルと skills、ツールが読み込んだファイル、ツールのその他の出力、会話が、モデルのコンテキストウィンドウのどれだけを占めるかがわかります。各エージェントには 100 点満点のスコア（プロンプトのうちキャッシュから読まれた割合、スタートの軽さ、埋まる速さ、失敗の頻度）と、スコアの根拠を示す「軽いスタート」「MCP が重い」などのタグが付きます。セッションを開くと最新リクエストのウィンドウをマスごとに見られ、<span class="ui">Routing</span> ページでも選んだリクエストについて同じものが表示されます。保存するのは名前だけで、プロンプトの本文は保存しません。</p>
-    <p><b>プロファイル。</b> <span class="ui">Agents</span> タブの下部にある <span class="ui">＋ Save current</span> で、全エージェントの設定を名前を付けて保存できます。チップをクリックすれば、すべてを一度に元に戻せます。</p>
+    <p><b>コンテキスト。</b> Usage の <span class="ui">Context</span> タブでは、ゲートウェイを通るときに読み取った各エージェントのプロンプトの中身を表示します。システムプロンプト、ツール定義（MCP サーバーのツールはまとめて 1 つ）、指示ファイルと skills、ツールが読み込んだファイル、ツールのその他の出力、会話が、モデルのコンテキストウィンドウのどれだけを占めるかがわかります。各エージェントには 100 点満点のスコア（プロンプトのうちキャッシュから読まれた割合、スタートの軽さ、埋まる速さ、失敗の頻度）と、スコアの根拠を示す「軽いスタート」「MCP が重い」などのタグが付きます。セッションを開くと最新リクエストのウィンドウをマスごとに見られ、<span class="ui">Routing</span> ページでも選んだリクエストについて同じものが表示されます。部分・マス・項目をクリックすると、magpie が送ったままの本文を読めます（マスクがオンならマスク済み）。本文は直近 10 件のリクエスト分だけ、magpie の実行中にメモリに置かれます。保存するのは名前だけで、プロンプトの本文は保存せず、どこにも送りません。</p>
+    <p><b>プロファイル。</b> <span class="ui">Agents</span> タブの下部にある <span class="ui">＋ Save current</span> で、全エージェントの設定を名前を付けて保存できます。チップをクリックすれば、すべてを一度に元に戻せます。使用中のプロファイルには ✓ が付き、トレイパネルの <span class="ui">プロファイル</span> ボタンにもその名前が表示されます。その後に設定を手で変えると ✓ は外れます。</p>
 
     <h2 id="cli"><a class="anchor" href="#cli">ターミナルから</a></h2>
     <p><code>magpie tui</code> はターミナルで動くアプリ全体で、上記の各手順にはそれぞれコマンドがあります。<code>magpie help</code> ですべて確認できます。</p>
@@ -244,6 +248,7 @@ magpie claude group/opus-anywhere    <span class="c"># これを使う</span></p
       <tr><td><code>magpie presets</code></td><td>magpie が知っているベンダー</td></tr>
       <tr><td><code>magpie provider add deepseek sk-…</code></td><td>プリセットをキー付きで追加</td></tr>
       <tr><td><code>magpie accounts add codex</code></td><td>Claude または ChatGPT のサブスクリプションをもう 1 つサインイン</td></tr>
+      <tr><td><code>magpie accounts discovery off</code></td><td>エージェントのサインイン（Claude Code と Codex のファイル、キーチェーン）を読み取らない。<code>on</code> で再び読み取る</td></tr>
       <tr><td><code>magpie providers</code></td><td>プロバイダ一覧：ホスト、キー、モデル、使っているエージェント</td></tr>
       <tr><td><code>magpie models</code></td><td>エージェントが選べるすべてのモデル（<code>provider/model</code> 形式）</td></tr>
       <tr><td><code>magpie claude codex/gpt-5.5</code></td><td>エージェントのモデルを設定</td></tr>
@@ -269,7 +274,7 @@ magpie claude group/opus-anywhere    <span class="c"># これを使う</span></p
     <p>インストーラと <code>magpie update</code> にプロキシを渡します：<code>curl -fsSL https://usemagpie.ai/install.sh | sh -s -- --proxy http://127.0.0.1:7890</code>、または <code>magpie update --proxy socks5://127.0.0.1:1080</code>（http・https・socks5・socks5h に対応。<code>HTTPS_PROXY</code> と <code>ALL_PROXY</code> も使われます）。<code>--mirror &lt;prefix&gt;</code> を付けると、指定した GitHub ダウンロードミラーから <code>&lt;prefix&gt;https://github.com/…</code> としてリリースファイルを取得します。<code>magpie update mirror &lt;prefix&gt;</code> でアプリ自身の更新を含め毎回使い、<code>magpie update mirror off</code> で解除します。指定しない限りミラーは使われず、ファイルの SHA-256 はミラーではなく常に usemagpie.ai から取得するので、ミラーが書き換えたファイルはインストールされません。アプリ自身の更新は <span class="ui">Settings</span> → <span class="ui">Proxy</span> を通ります。</p>
 
     <h3 id="privacy">magpie は何を送信しますか？</h3>
-    <p>プロンプト、返答、キー、アカウントは、使っているプロバイダーにだけ送られます。間に magpie 自身のサーバーはありません。リリース版の magpie は 1 日 1 回、使われていることを知らせます。何人が使っていて、何を優先して面倒を見るべきかを知るためです。送るのは、このコンピュータで作ったランダムな ID、magpie のバージョンとシステム、そして使っているエージェント、プロバイダー、モデルを magpie 自身の ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）で、それぞれの数とともに。自分で追加したプロバイダーとそのモデルは <code>custom</code> とだけ記録します。プロバイダー追加シートの先頭に載るパートナーについては、1 日に表示された回数、開かれた回数、追加された回数も送ります（回数のみ）。名前、Base URL、アカウント、キー、プロンプト、使用量は送りません。<span class="ui">設定</span> → <span class="ui">プライバシー</span> → <span class="ui">使っているエージェント、プロバイダー、モデルを共有</span> でエージェント、プロバイダー、モデルとパートナーの回数を外せます。<span class="ui">ユーザー数に含める</span>、<code>DO_NOT_TRACK=1</code>、<code>MAGPIE_NO_STATS=1</code> のどれかですべてオフになります。ソースからのビルドは送信しません。パートナーの公式サイトと「キーを取得」のリンクは <code>usemagpie.ai/go/…</code> を経由し、移動の前にクリックを 1 回数えます（どのパートナーか、どのリンクか、国）。usemagpie.ai はパートナー一覧が取得された回数も数えます。これはサーバー自身が見るもので、どの Web サイトのアクセス集計とも同じく、上の設定には左右されません。ID、IP アドレス、アカウントは記録しません。詳しくは<a href="https://github.com/yetone/magpie/blob/main/docs/reference.md#counting-users">リファレンス</a>を。</p>
+    <p>プロンプト、返答、キー、アカウントは、使っているプロバイダーにだけ送られます。間に magpie 自身のサーバーはありません。リリース版の magpie は 1 日 1 回、使われていることを知らせます。何人が使っていて、何を優先して面倒を見るべきかを知るためです。送るのは、このコンピュータで作ったランダムな ID、magpie のバージョンとシステム、そして使っているエージェント、プロバイダー、モデルを magpie 自身の ID（<code>claude</code>、<code>deepseek</code>、<code>deepseek/deepseek-v4</code>）で、それぞれの数とともに。自分で追加したプロバイダーとそのモデルは <code>custom</code> とだけ記録します。プロバイダー追加シートの先頭に載るパートナーについては、1 日に表示された回数、開かれた回数、追加された回数も送ります（回数のみ）。名前、Base URL、アカウント、キー、プロンプト、使用量は送りません。<span class="ui">設定</span> → <span class="ui">プライバシー</span> → <span class="ui">使っているエージェント、プロバイダー、モデルを共有</span> でエージェント、プロバイダー、モデルとパートナーの回数を外せます。<span class="ui">ユーザー数に含める</span>、<code>DO_NOT_TRACK=1</code>、<code>MAGPIE_NO_STATS=1</code> のどれかですべてオフになります。ソースからのビルドは送信しません。パートナーの公式サイトと「キーを取得」のリンクは <code>usemagpie.ai/go/…</code> を経由し、移動の前にクリックを 1 回数えます（どのパートナーか、どのリンクか、国）。usemagpie.ai はパートナー一覧が取得された回数も数えます。これはサーバー自身が見るもので、どの Web サイトのアクセス集計とも同じく、上の設定には左右されません。ID、IP アドレス、アカウントは記録しません。プラグイン、インポートリンク、ライブラリが示すアイコンは <code>usemagpie.ai/api/icon</code> を経由して取得するので、アイコンのあるサーバーに見えるのはあなたの IP ではなく Cloudflare のアドレスです。このサーバーは画像を中継するだけで、数えることも記録することもしません。詳しくは<a href="https://github.com/yetone/magpie/blob/main/docs/reference.md#counting-users">リファレンス</a>を。</p>
 
     <h3 id="proxy-loopback">エージェントが 502 を返す、または接続できず、magpie の Routing タブに何も出ない？</h3>
     <p>プロキシアプリ（Surge、Clash、mihomo など。システムプロキシ、TUN、拡張モードのいずれかが有効）が、エージェントから <code>http://127.0.0.1:3425</code> へのリクエストを横取りして別の場所へ送っているため、magpie に届いていません。除外リスト（<code>skip-proxy</code>、バイパス）に 127.0.0.1 を書くだけでは足りないことがあります。Codex など一部のエージェントは、それでもプロキシを通します。ローカルアドレスを直結にするルールを、他のルールより前に追加してください：</p>

@@ -134,7 +134,7 @@ func TestClaudeDesktopDefault(t *testing.T) {
 	if got := desktopDefault("fake/m1"); got != "" {
 		t.Fatalf("default for the first model itself = %q", got)
 	}
-	if got := desktopTurn("claude-haiku-4-5", title); got != "fake/m1" {
+	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/m1" {
 		t.Fatalf("title = %q", got)
 	}
 	StandIn = func(agent, model string) string {
@@ -144,11 +144,89 @@ func TestClaudeDesktopDefault(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { StandIn = nil })
-	if got := desktopTurn("claude-haiku-4-5", title); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("claude-haiku-4-5", title, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("title with a stand-in = %q", got)
 	}
 	// a session on a real Claude model magpie serves keeps it
-	if got := desktopTurn("fake/claude-opus-4-8", turn); got != "fake/claude-opus-4-8" {
+	if got := desktopTurn("fake/claude-opus-4-8", turn, false); got != "fake/claude-opus-4-8" {
 		t.Fatalf("turn = %q", got)
+	}
+}
+
+// Claude Code in Claude Desktop names the model of its own background
+// requests on purpose: its auto mode's safety classifier asks for its sonnet
+// with no tools and a small max_tokens, and goes to that model, not to the
+// session's (#1539, tete1030). Desktop's title still goes to the session's
+// model, from Desktop's own client or from Claude Code when Desktop asks it.
+func TestClaudeDesktopClassifierKeepsItsModel(t *testing.T) {
+	f := &fake{reply: sse(
+		`event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"m1","content":[],"usage":{"input_tokens":1,"output_tokens":0}}}`,
+		`event: message_stop`+"\n"+`data: {"type":"message_stop"}`)}
+	up := setup(t, provider.Anthropic, f)
+	if err := provider.Save(provider.Provider{ID: "fake", Name: "Fake", Key: "k", Anthropic: up.URL,
+		Models: []string{"claude-opus-5-5", "claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	desktopPicked.Lock()
+	desktopPicked.model, desktopPicked.from = "", ""
+	desktopPicked.Unlock()
+	const cli = "claude-cli/2.1.295 (external, claude-desktop)"
+	const electron = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Claude/1.6608.0 Chrome/142.0.7444.235 Electron/39.2.7 Safari/537.36"
+	send := func(ua, body string) string {
+		t.Helper()
+		f.got = nil
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+		req.Header.Set("x-api-key", Token+"-claude-desktop")
+		req.Header.Set("User-Agent", ua)
+		rec := httptest.NewRecorder()
+		New().Handler().ServeHTTP(rec, req)
+		if rec.Code != 200 {
+			t.Fatalf("%d %s", rec.Code, rec.Body)
+		}
+		return modelOf(f.got)
+	}
+	// the session is on opus
+	if got := send(cli, `{"model":"claude-opus-5-5","max_tokens":64000,"stream":true,"tools":[{"name":"Bash","input_schema":{"type":"object"}}],"messages":[{"role":"user","content":"hi"}]}`); got != "claude-opus-5-5" {
+		t.Fatalf("turn: sent %q", got)
+	}
+	// the safety classifier's first stage: no tools, max_tokens 64 or 256,
+	// the latter with 2048 of thinking on top; the notification classifier
+	for _, body := range []string{
+		`{"model":"claude-sonnet-5","max_tokens":1024,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.296.523; cc_entrypoint=claude-desktop;"},{"type":"text","text":"A user kicked off a Claude Code agent to do a coding task and walked away."}],"messages":[{"role":"user","content":"…"}]}`,
+		`{"model":"claude-sonnet-5","max_tokens":64,"stream":true,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.295; cc_entrypoint=claude-desktop;"},{"type":"text","text":"You are a security monitor for autonomous AI coding agents."}],"messages":[{"role":"user","content":"<transcript>…</transcript>"}]}`,
+		`{"model":"claude-sonnet-5","max_tokens":2304,"thinking":{"type":"enabled","budget_tokens":2048},"stream":true,"system":[{"type":"text","text":"You are a security monitor for autonomous AI coding agents."}],"messages":[{"role":"user","content":"<transcript>…</transcript>"}]}`,
+	} {
+		if got := send(cli, body); got != "claude-sonnet-5" {
+			t.Fatalf("classifier: sent %q, want claude-sonnet-5", got)
+		}
+	}
+	// Desktop's title, from its own client and from Claude Code
+	title := `{"model":"claude-sonnet-5","max_tokens":200,"stream":true,"system":"You write short session titles. Reply with only the tagged fields the prompt asks for.","messages":[{"role":"user","content":"hi"}]}`
+	if got := send(electron, title); got != "claude-opus-5-5" {
+		t.Fatalf("Desktop's title: sent %q, want claude-opus-5-5", got)
+	}
+	// as Claude Code 2.1.296 sends `claude -p --model claude-sonnet-5
+	// --system-prompt "You write short session titles. …" --tools ""`
+	cliTitle := `{"model":"claude-sonnet-5","messages":[{"role":"user","content":[{"type":"text","text":"fix the mobile login button","cache_control":{"type":"ephemeral"}}]}],"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.296.3fd; cc_entrypoint=claude-desktop;"},{"type":"text","text":"You are a Claude agent, built on Anthropic's Claude Agent SDK.","cache_control":{"type":"ephemeral"}},{"type":"text","text":"You write short session titles. Reply with only the tagged fields the prompt asks for.","cache_control":{"type":"ephemeral"}}],"tools":[],"max_tokens":64000,"stream":true}`
+	if got := send(cli, cliTitle); got != "claude-opus-5-5" {
+		t.Fatalf("Claude Code's title for Desktop: sent %q, want claude-opus-5-5", got)
+	}
+	// a model magpie doesn't serve still goes to the session's
+	if got := send(cli, `{"model":"claude-haiku-4-5-20251001","max_tokens":64,"stream":true,"messages":[{"role":"user","content":"hi"}]}`); got != "claude-opus-5-5" {
+		t.Fatalf("unserved haiku: sent %q", got)
+	}
+}
+
+func TestDesktopTitle(t *testing.T) {
+	for body, want := range map[string]bool{
+		`{"system":"You write short session titles. Reply…"}`:                                               true,
+		`{"system":[{"type":"text","text":"cc"},{"type":"text","text":"You write short session titles."}]}`: true,
+		`{"system":"You are a security monitor."}`:                                                          false,
+		`{"system":"x","messages":[{"role":"user","content":"You write short session titles."}]}`:           false,
+		`{"system":[{"type":"text","text":"Quote: You write short session titles."}]}`:                      false,
+	} {
+		if desktopTitle([]byte(body)) != want {
+			t.Errorf("desktopTitle(%s) = %v", body, !want)
+		}
 	}
 }

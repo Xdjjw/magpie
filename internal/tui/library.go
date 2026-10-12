@@ -142,8 +142,8 @@ func (m model) updateLibrary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.openLibAgents(r)
 		case "found-mcp", "found-skill":
 			m.flash, m.flashOK = "i brings "+r.name+" into the library, for magpie to give it to other agents too", true
-			if r.kind == "found-skill" {
-				m.flash += "; d takes it out of every agent"
+			if !r.own {
+				m.flash += "; d takes it out of every agent that has it"
 			}
 		}
 	case "e":
@@ -183,14 +183,23 @@ func (m model) updateLibrary(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			do = library.RemoveSkill
 		case "found-skill":
 			do = library.RemoveFoundSkill
+		case "found-mcp":
+			if r.own {
+				m.flash, m.flashOK = r.name+" is put there by the agent's app itself, each time it starts: it stays as it is", false
+				return m, nil
+			}
+			do = library.RemoveFoundServer
 		default:
 			return m, nil
 		}
 		if m.confirm != "library/"+r.kind+"/"+r.name {
 			m.confirm = "library/" + r.kind + "/" + r.name
 			m.flash, m.flashOK = "press d again to take "+r.name+" out of the library and every agent", false
-			if r.kind == "found-skill" {
+			switch r.kind {
+			case "found-skill":
 				m.flash = "press d again to take " + r.name + " out of every agent that has it, kept with the backups"
+			case "found-mcp":
+				m.flash = "press d again to take " + r.name + " out of every agent that has it, their files kept with the backups"
 			}
 			return m, nil
 		}

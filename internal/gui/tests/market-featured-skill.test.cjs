@@ -13,11 +13,13 @@ const { chromium, webkit } = require("playwright");
 const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/tester";
 const items = [
-  { id: "magpie-community/plugins/magpie-quota", name: "magpie-quota", source: "magpie-community/plugins", skillId: "magpie-quota", installs: 0, official: true, featured: true, description: "Check what is left of every subscription." },
-  { id: "acme/skills/pdf", name: "pdf", source: "acme/skills", skillId: "pdf", installs: 1200, description: "PDFs" },
+  { id: "magpie-community/plugins/magpie-quota", name: "magpie-quota", source: "magpie-community/plugins", skillId: "magpie-quota", installs: 0, official: true, featured: true, icon: "https://github.com/magpie-community.png?size=96", description: "Check what is left of every subscription." },
+  { id: "acme/skills/pdf", name: "pdf", source: "acme/skills", skillId: "pdf", installs: 1200, icon: "https://github.com/acme.png?size=96", description: "PDFs" },
 ];
 
-function serve(lang) {
+const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==", "base64");
+
+function serve(lang, asked) {
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
@@ -34,6 +36,14 @@ function serve(lang) {
     }
     if (url.pathname === "/api/library/market/servers") return json({ items: [] });
     if (url.pathname === "/api/library/market/skills") return json({ items: structuredClone(items) });
+    // magpie-community's avatar fails its first fetch, as GitHub's did on
+    // the user's first look, and comes on the second; acme's never comes
+    if (url.pathname === "/api/library/icon") {
+      const u = url.searchParams.get("u");
+      asked[u] = (asked[u] || 0) + 1;
+      if (u.includes("magpie-community") && asked[u] > 1) return route.fulfill({ body: PNG, contentType: "image/png" });
+      return route.fulfill({ status: 404, body: "" });
+    }
     if (url.pathname === "/api/groups") return json({ groups: [] });
     if (url.pathname === "/api/providers") return json({ providers: [], gateway: { running: true } });
     if (url.pathname.startsWith("/api/")) return json({});
@@ -53,7 +63,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.setDefaultTimeout(5000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      await page.route("**/*", serve(lang));
+      const asked = {};
+      await page.route("**/*", serve(lang, asked));
       await page.addInitScript(() => { localStorage.setItem("magpie.libTab", "skills"); });
       t.after(() => browser.close());
       await page.goto("http://magpie.test/?view=library");
@@ -87,6 +98,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.locator(".mk-sheet").waitFor();
       assert.deepEqual(await ext().allTextContents(), ["skills.sh", "github.com/acme/skills"]);
       assert.equal(await page.locator(".mk-sheet .mk-badge").count(), 1); // installs
+
+      // a picture that failed once is asked again; one that fails twice is
+      // its initial
+      await own.locator(".mk-icon img").evaluate((i) => new Promise((ok) => (i.complete && i.naturalWidth ? ok() : i.addEventListener("load", ok))));
+      assert.equal(await own.locator(".mk-icon.mono").count(), 0);
+      await pdf.locator(".mk-icon.mono").waitFor();
+      assert.equal(await pdf.locator(".mk-mono").textContent(), "A");
+      // (the sheet draws its picture too, so it is asked at least twice)
+      assert(asked["https://github.com/magpie-community.png?size=96"] >= 2);
+      assert(asked["https://github.com/acme.png?size=96"] >= 2);
 
       assert.deepEqual(errors, []);
     });

@@ -21,10 +21,13 @@ const base = () => ({
     { name: "fs", transport: "stdio", command: "npx", args: ["fs-mcp"], agents: ["codex"] },
     { name: "neon", transport: "http", url: "https://mcp.neon.tech/mcp", agents: ["codex", "claude"], signIn: { signedIn: false } },
     { name: "exa", transport: "http", url: "https://mcp.exa.ai/mcp", agents: ["codex"], signIn: { signedIn: false } },
+    { name: "figma", transport: "http", url: "https://mcp.figma.com/mcp", agents: ["claude"], signIn: { signedIn: false } },
   ],
 });
 // mcpauth.ErrNoSignIn, as the API says it
 const noSignIn = "this server already works without signing in, so there is nothing to sign in to: the agents given it can use it as it is. A key it takes goes in Headers; a server that signs in at another address (as Exa's ?login) needs that URL";
+// mcpauth.ErrClientRefused: Figma's registration 403s any app it doesn't list (#1619)
+const refused = "this server's sign-in admits only the apps it lists and turned magpie away, so magpie can't sign in for the agents. The agents given it still have the server's own address: sign in from each agent itself (in Claude Code, run /mcp and pick the server)";
 
 function server(lang, calls) {
   const lib = base();
@@ -42,6 +45,7 @@ function server(lang, calls) {
       // the backend signs in to the saved URL: Exa's plain one asks for none
       const s = lib.servers.find((x) => x.name === name);
       if (s.url === "https://mcp.exa.ai/mcp") return route.fulfill({ status: 400, json: { error: noSignIn } });
+      if (s.url === "https://mcp.figma.com/mcp") return route.fulfill({ status: 400, json: { error: refused } });
       polls = 0;
       // no url: the test's browser opens no window
       return route.fulfill({ json: { id: "s-" + name, server: name, state: "waiting" } });
@@ -77,8 +81,8 @@ function server(lang, calls) {
 }
 
 const words = {
-  en: { signIn: "Sign in", signOut: "Sign out", signed: "Signed in", label: "Sign-in", done: "Signed in to neon — the agents given it use magpie's sign-in", out: "Signed out of neon — the agents are given the server's own address again", exaDone: "Signed in to exa — the agents given it use magpie's sign-in", noSignIn: "already works without signing in" },
-  zh: { signIn: "登录", signOut: "退出登录", signed: "已登录", label: "登录", done: "已登录 neon，分配到它的 agent 共用 magpie 的登录", out: "已退出 neon，agent 改回使用服务器自身的地址", exaDone: "已登录 exa，分配到它的 agent 共用 magpie 的登录", noSignIn: "无需登录即可使用" },
+  en: { signIn: "Sign in", signOut: "Sign out", signed: "Signed in", label: "Sign-in", done: "Signed in to neon — the agents given it use magpie's sign-in", out: "Signed out of neon — the agents are given the server's own address again", exaDone: "Signed in to exa — the agents given it use magpie's sign-in", noSignIn: "already works without signing in", refused: "admits only the apps it lists" },
+  zh: { signIn: "登录", signOut: "退出登录", signed: "已登录", label: "登录", done: "已登录 neon，分配到它的 agent 共用 magpie 的登录", out: "已退出 neon，agent 改回使用服务器自身的地址", exaDone: "已登录 exa，分配到它的 agent 共用 magpie 的登录", noSignIn: "无需登录即可使用", refused: "只接受它列出的应用" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
@@ -156,6 +160,18 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator("#modal .lib-editor").waitFor({ state: "detached" });
         assert.deepEqual(calls.slice(5), ["save exa https://mcp.exa.ai/mcp?login {}"]);
         await row("exa").locator(".lib-tag", { hasText: w.signed }).waitFor();
+
+        // Xichun123 (#1619): Figma admits only the apps it lists. The
+        // refusal says so, in the reader's language, and that each agent
+        // signs in itself, not a bare "(403): Forbidden"
+        await row("figma").click();
+        const figma = page.locator("#modal .lib-signin");
+        await figma.getByRole("button", { name: w.signIn, exact: true }).click();
+        await figma.locator(".lib-signin-err", { hasText: w.refused }).waitFor();
+        assert.match(await figma.locator(".lib-signin-err").textContent(), /\/mcp/);
+        assert.deepEqual(calls.slice(6), ["start figma"]);
+        await page.keyboard.press("Escape");
+        await page.locator("#modal .lib-editor").waitFor({ state: "detached" });
         assert.equal(await scrolled(), before, "no click moved the page");
         await ctx.close();
       });

@@ -186,7 +186,10 @@ func findItem(stripped []byte, where map[string]string) (gjson.Result, bool) {
 func delItem(raw, stripped []byte, r gjson.Result) []byte {
 	a, b := r.Index, r.Index+len(r.Raw)
 	ls := bytes.LastIndexByte(raw[:a], '\n') + 1
-	alone := len(bytes.TrimSpace(stripped[ls:a])) == 0
+	// a comment before the element on its line is not alone: read from raw,
+	// where the comment is still there (stripped has it blanked), as
+	// delJSONBytes does, so the comment stays when the element goes.
+	alone := len(bytes.TrimSpace(raw[ls:a])) == 0
 	j := b
 	for j < len(stripped) && isSpace(stripped[j]) {
 		j++
@@ -197,9 +200,7 @@ func delItem(raw, stripped []byte, r gjson.Result) []byte {
 		to = j + 1
 		if alone {
 			from = ls
-			if to < len(raw) && raw[to] == '\n' {
-				to++
-			}
+			to = pastLineEnd(raw, to)
 		}
 		out, _ := splice(raw, from, to-from, nil)
 		return out
@@ -210,9 +211,7 @@ func delItem(raw, stripped []byte, r gjson.Result) []byte {
 	}
 	if alone {
 		from = ls
-		if to < len(raw) && raw[to] == '\n' {
-			to++
-		}
+		to = pastLineEnd(raw, to)
 	}
 	out, _ := splice(raw, from, to-from, nil)
 	k := a

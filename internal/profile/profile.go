@@ -13,6 +13,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/library"
 	"github.com/yetone/magpie/internal/provider"
 )
@@ -106,9 +107,22 @@ func Load() (map[string]Profile, error) {
 		return out, nil
 	}
 	if err := json.Unmarshal(b, &out); err != nil {
-		return nil, fmt.Errorf("%s: %w", Path(), err)
+		// one a crash left all zero (#1505) is its last good generation
+		bak, ferr := lastgood.Fallback(Path(), b, validProfiles)
+		if ferr != nil {
+			return nil, fmt.Errorf("%s: %w", Path(), err)
+		}
+		out = map[string]Profile{}
+		if err := json.Unmarshal(bak, &out); err != nil {
+			return nil, fmt.Errorf("%s: %w", Path(), err)
+		}
 	}
 	return out, nil
+}
+
+func validProfiles(b []byte) bool {
+	var m map[string]Profile
+	return json.Unmarshal(b, &m) == nil
 }
 
 // Names lists profiles alphabetically.
@@ -124,6 +138,9 @@ func Names(ps map[string]Profile) []string {
 func store(ps map[string]Profile) error {
 	b, err := json.MarshalIndent(ps, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := lastgood.Keep(Path(), validProfiles, 0o600); err != nil {
 		return err
 	}
 	return edit.WriteAtomic(Path(), append(b, '\n'))
@@ -272,14 +289,7 @@ func ApplyFields(p map[string]string) (int, error) {
 		if f == nil {
 			continue
 		}
-		v := p[k]
-		// a model of a provider renamed since the profile was saved is
-		// the same model by its new id
-		if r := provider.RenamedRef(v); r != v {
-			if s, err := a.Spell(f.Key, r); err == nil {
-				v = s
-			}
-		}
+		v := wanted(a, f.Key, p[k])
 		if f.Get() == v {
 			continue
 		}
@@ -289,6 +299,69 @@ func ApplyFields(p map[string]string) (int, error) {
 		changed++
 	}
 	return changed, nil
+}
+
+// wanted is the value applying v to a's field key writes: a model of a
+// provider renamed since the profile was saved is the same model by its
+// new id.
+func wanted(a *agent.Agent, key, v string) string {
+	if r := provider.RenamedRef(v); r != v {
+		if s, err := a.Spell(key, r); err == nil {
+			return s
+		}
+	}
+	return v
+}
+
+// InUse reports whether p is the setup in use now: applying it would change
+// none of what it puts back, the detected agents' fields, their model lists
+// and the library's setup. It is not "the profile applied last": a setting
+// changed by hand since makes it no longer the one in use, and one saved
+// with the setup as it is is in use at once. now is each detected agent's
+// values by id, as Agent.Values reads them; an agent missing from it is
+// read here. A profile that names nothing found on this computer (one
+// synced from another) is not in use, as applying it would do nothing.
+func InUse(p Profile, agents []*agent.Agent, now map[string]map[string]string) bool {
+	byID := make(map[string]*agent.Agent, len(agents))
+	for _, a := range agents {
+		byID[a.ID] = a
+	}
+	compared := false
+	for k, v := range p.Fields {
+		i := strings.LastIndex(k, ".")
+		if i < 0 {
+			continue
+		}
+		a := byID[k[:i]]
+		if a == nil {
+			continue
+		}
+		f := a.Field(k[i+1:])
+		if f == nil {
+			continue
+		}
+		cur, ok := now[a.ID][f.Key]
+		if !ok {
+			cur = f.Get()
+		}
+		if cur != wanted(a, f.Key, v) {
+			return false
+		}
+		compared = true
+	}
+	if len(p.Models) > 0 {
+		if !provider.ModelListsHeld(p.Models) {
+			return false
+		}
+		compared = true
+	}
+	if p.Library != nil {
+		if !library.Holds(p.Library) {
+			return false
+		}
+		compared = true
+	}
+	return compared
 }
 
 // Summary renders a profile's non-default models as a short one-line description.

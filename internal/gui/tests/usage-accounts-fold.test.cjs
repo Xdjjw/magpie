@@ -157,13 +157,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       got = await cards(page);
       assert.deepEqual(got["workbuddy-ai"].users, range(1, 5));
       assert.equal(got["workbuddy-ai"].more, w.more17);
-      // seventeen rows fewer leave less page than was scrolled: it rests at
-      // its end (the head can't be held), with the button still in sight
-      const [top, sh, ch] = await view.evaluate((v) => [v.scrollTop, v.scrollHeight, v.clientHeight]);
-      assert.ok(Math.abs(top - (sh - ch)) <= 1, "the page rests at its end");
-      const after = await page.locator(`${sel} .quota-accts-more`).boundingBox();
-      assert.ok(after.y > 0 && after.y + after.height < 500, "the button is still in sight");
-      assert.ok(await head.evaluate((e) => e.getBoundingClientRect().top) > at, "the head came down, not further up");
+      // the card's head stays where it was, as a provider's keys' does: the
+      // cards packed into columns (#860), the next goes on under this one, so
+      // the page no longer has to end there and come down to the button
+      assert.equal(await head.evaluate((e) => e.getBoundingClientRect().top), at, "the card's head stays where it was");
 
       // 440px: nothing cut or spilling, folded and open
       await page.setViewportSize({ width: 440, height: 700 });

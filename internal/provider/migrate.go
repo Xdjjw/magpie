@@ -26,6 +26,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"log"
 	"maps"
 	"net/http"
@@ -40,7 +41,9 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/update"
 )
 
@@ -266,6 +269,9 @@ type MoveCandidate struct {
 // MoveCandidates are the built-ins not on their plugins that have accounts
 // to move, by name.
 func MoveCandidates() []MoveCandidate {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	out := []MoveCandidate{}
 	for id, mv := range movers {
 		if Moved(id) {
@@ -296,12 +302,29 @@ var migrationsMu sync.Mutex
 func readMigrations() map[string]Migration { return heldOf("migrations", readMigrationsFile) }
 
 func readMigrationsFile() map[string]Migration {
-	m, _ := filememo.Read("migrations", migrationsPath(), func(b []byte) (map[string]Migration, error) {
-		var m map[string]Migration
-		_ = json.Unmarshal(b, &m)
-		return m, nil
-	})
+	m, err := filememo.Read("migrations", migrationsPath(), parseMigrations)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		// one that doesn't read (all zero after a crash, #1505) is not
+		// "nothing moved": a moved subscription would come back as its
+		// built-in, and the next move write that over every other's
+		if b, ferr := lastgood.Fallback(migrationsPath(), unreadBytes(migrationsPath()), validMigrations); ferr == nil {
+			m, _ = parseMigrations(b)
+		} else {
+			log.Printf("migrations.json: %v", ferr)
+		}
+	}
 	return m
+}
+
+func parseMigrations(b []byte) (map[string]Migration, error) {
+	var m map[string]Migration
+	err := json.Unmarshal(b, &m)
+	return m, err
+}
+
+func validMigrations(b []byte) bool {
+	_, err := parseMigrations(b)
+	return err == nil
 }
 
 // MigrationOf is where the built-in id's move stands.
@@ -359,6 +382,9 @@ func setMigration(id string, f func(m *Migration)) error {
 		return err
 	}
 	defer Changed()
+	if err := lastgood.Keep(migrationsPath(), validMigrations, 0o600); err != nil {
+		return err
+	}
 	return writePrivate(migrationsPath(), append(b, '\n'))
 }
 
@@ -452,6 +478,9 @@ var modelsInUse = func(id string) []string {
 // Move puts the built-in id's accounts onto its plugin (see above). An
 // error leaves the built-in as it was.
 func Move(ctx context.Context, id string) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	mv := movers[id]
 	if mv == nil {
 		return fmt.Errorf("%s has no plugin to move to", id)
@@ -483,6 +512,9 @@ func Move(ctx context.Context, id string) error {
 // signed in: the plugin installed, and the subscription signs in through
 // it from now on, as a moved one does. One with accounts is moved instead.
 func Adopt(ctx context.Context, id string) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	mv := movers[id]
 	if mv == nil {
 		return fmt.Errorf("%s has no plugin to move to", id)
@@ -924,6 +956,9 @@ func MoveBack(ctx context.Context, id string) error {
 // serves nothing else now, which releasePlugin, about to remove or turn
 // off the plugin itself, leaves to its caller.
 func moveBack(ctx context.Context, id string, tidy bool) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	mv := movers[id]
 	if mv == nil {
 		return fmt.Errorf("%s isn't a built-in subscription", id)
@@ -1090,6 +1125,9 @@ func pluginOn(id string) map[string]bool {
 // start-up: once, or again moveRetry after one failed. One the user moved
 // back stays.
 func MoveRetiring(ctx context.Context) map[string]error {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	out := map[string]error{}
 	for _, id := range Retiring {
 		m, ok := MigrationOf(id)
@@ -1124,6 +1162,9 @@ func MoveRetiring(ctx context.Context) map[string]error {
 // user moved back stays built-in, and a failed move waits moveRetry. No
 // plugin is installed for it: the user's own install is what says to.
 func HandOver(ctx context.Context, accounts bool) map[string]error {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	out := map[string]error{}
 	var pps []plugin.Provider
 	asked := false
@@ -1198,6 +1239,10 @@ func KeepRetiringMoved(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
+		}
+		if settings.AccountDiscoveryOff() {
+			t.Reset(time.Hour)
+			continue
 		}
 		keepMovedCurrent(ctx)
 		moves := MoveRetiring(ctx)

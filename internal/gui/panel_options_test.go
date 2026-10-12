@@ -32,3 +32,18 @@ func TestPanelOptionsCaptionButtons(t *testing.T) {
 		}
 	}
 }
+
+// #1803: on Linux a see-through panel (an RGBA GTK window under a
+// transparent webview) left a fainter copy of the old scroll position's
+// paint behind; the panel is a solid window there, as the main window is.
+// The Mac and Windows keep their translucent panel.
+func TestPanelSolidOnLinux(t *testing.T) {
+	if o := panelOptions("linux", ""); o.BackgroundType != application.BackgroundTypeSolid || !o.Frameless || !o.AlwaysOnTop {
+		t.Errorf("linux panel = background %v frameless %v on top %v, want a solid, frameless, on-top window", o.BackgroundType, o.Frameless, o.AlwaysOnTop)
+	}
+	for _, goos := range []string{"darwin", "windows"} {
+		if o := panelOptions(goos, ""); o.BackgroundType != application.BackgroundTypeTranslucent {
+			t.Errorf("%s panel background = %v, want translucent", goos, o.BackgroundType)
+		}
+	}
+}

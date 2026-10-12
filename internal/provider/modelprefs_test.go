@@ -997,7 +997,7 @@ func (d *dispatch) servesItself(ifs *ast.IfStmt) bool {
 				return true
 			}
 			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if name := sel.Sel.Name; len(name) > len("serve") && name[len("serve")] >= 'A' && name[len("serve")] <= 'Z' {
+				if name := sel.Sel.Name; strings.HasPrefix(name, "serve") && len(name) > len("serve") && name[len("serve")] >= 'A' && name[len("serve")] <= 'Z' {
 					own = true
 				}
 			}

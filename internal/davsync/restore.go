@@ -106,6 +106,7 @@ func Restore(ctx context.Context) ([]string, error) {
 		// as a sync that brought them in leaves it: the next one has
 		// nothing to push back
 		st.Local, st.Remote, st.Sum, st.Server = hashes(local), R, sum(data), ver
+		st.Blind = nil // what is here now is what the server has
 		remember(data)
 		st.Last, st.Error = time.Now(), ""
 		saveState(st)
@@ -178,6 +179,7 @@ func Upload(ctx context.Context) error {
 		}
 		// as the first sync to an empty server leaves it
 		st.Local, st.Remote, st.Sum, st.Server = hashes(local), hashes(b), sum(sealed), v
+		st.Blind = nil // it replaced what wasn't a backup: nothing to merge again
 		remember(sealed)
 		st.Last, st.Error, st.File = time.Now(), "", nil
 		saveState(st)

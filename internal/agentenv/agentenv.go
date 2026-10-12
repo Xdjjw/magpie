@@ -43,18 +43,27 @@ var Vars = []string{
 	// Pi and its forks (OmO, Senpi), whose profile and config are apart
 	"PI_CODING_AGENT_DIR", "PI_CODING_AGENT_SESSION_DIR", "PI_CONFIG_DIR", "PI_PROFILE",
 	"OMO_CODING_AGENT_DIR", "SENPI_CODING_AGENT_DIR",
+	"PRIME_AGENT_CODING_AGENT_DIR",
+	// StepCode: config root resolution and folder overrides
+	"STEP_CODING_AGENT_DIR", "STEPCODE_CONFIG_DIR",
 	// omp
 	"OMP_PROFILE",
 	// Qoder's two builds, the global site's and China's
 	"QODER_CONFIG_DIR", "QODERCN_CONFIG_DIR",
 	// Grok: its home, and where its CLI is installed
 	"GROK_HOME", "GROK_BIN_DIR",
+	// Grok App's data folder (its agent-home/config.toml), else the OS's app-data one
+	"GROK_APP_HOME",
 	// Kimi Code and its shared folder
 	"KIMI_CODE_HOME", "KIMI_SHARE_DIR",
 	// Qwen Code's home, ~/.qwen without it
 	"QWEN_HOME",
 	// Ante
 	"ANTE_HOME",
+	// AstrBot's root, the folder holding its data/ (else ~/.astrbot, the desktop app's)
+	"ASTRBOT_ROOT",
+	// jcode's folder, ~/.jcode without it
+	"JCODE_HOME",
 	// MiMo Code, MiniMax Code, OpenHanako, Hermes, dsh, WorkBuddy, CodeBuddy Code
 	"MIMOCODE_HOME", "MINIMAX_DATA_DIR", "HANA_HOME", "HERMES_HOME", "DSH_HOME",
 	"WORKBUDDY_CONFIG_DIR", "CODEBUDDY_CONFIG_DIR",
@@ -79,6 +88,15 @@ var Vars = []string{
 	"FACTORY_HOME_OVERRIDE", "WINDSURF_API_SERVER_URL", "ZCODE_CREDENTIAL_SECRET",
 	// xkeysmith's optional semantic-plane skills and tool configuration
 	"XKEYSMITH_SKILLS_DIR", "XKEYSMITH_SKILLS_MODE", "XKEYSMITH_TOOLS", "XKEYSMITH_APPROVAL", "XKEYSMITH_ALLOWLIST", "XKEYSMITH_MCP_SERVERS",
+	// nvm's and fnm's folders, which hold the Node versions an agent's CLI
+	// is installed under, and which of them a terminal uses
+	"NVM_DIR", "FNM_DIR",
+	// mise's and asdf's folders, whose shims stand for an agent's CLI and
+	// whose installs hold the Node versions it is under
+	"MISE_DATA_DIR", "ASDF_DIR",
+	// Google Cloud's credentials file and gcloud's folder, which Vertex AI's
+	// tokens are minted from (and Gemini CLI's own, on Vertex AI)
+	"GOOGLE_APPLICATION_CREDENTIALS", "CLOUDSDK_CONFIG",
 }
 
 // NotPaths are the Vars that name no folder or file under the working
@@ -90,5 +108,6 @@ var NotPaths = map[string]bool{
 	"PI_PROFILE": true, "OMP_PROFILE": true,
 	"WINDSURF_API_SERVER_URL": true, "ZCODE_CREDENTIAL_SECRET": true,
 	"PI_CONFIG_DIR": true, "OPENCODE_DB": true,
-	"MAGPIE_ZED_BIN": true, "MAGPIE_ZED_PROCESS_NAMES": true,
+	"STEPCODE_CONFIG_DIR": true,
+	"MAGPIE_ZED_BIN":      true, "MAGPIE_ZED_PROCESS_NAMES": true,
 }

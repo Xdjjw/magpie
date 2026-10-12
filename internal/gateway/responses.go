@@ -47,7 +47,7 @@ type rArgs string
 
 func (a *rArgs) UnmarshalJSON(b []byte) error {
 	var s string
-	if json.Unmarshal(b, &s) == nil {
+	if decodeJSON(b, &s) == nil {
 		*a = rArgs(s)
 	} else if string(b) != "null" {
 		*a = rArgs(b)
@@ -114,11 +114,11 @@ func customInput(args string) string {
 	var a struct {
 		Input *string `json:"input"`
 	}
-	if json.Unmarshal([]byte(args), &a) == nil && a.Input != nil {
+	if decodeJSON([]byte(args), &a) == nil && a.Input != nil {
 		return *a.Input
 	}
 	var str string
-	if json.Unmarshal([]byte(args), &str) == nil {
+	if decodeJSON([]byte(args), &str) == nil {
 		return str
 	}
 	return args
@@ -166,7 +166,7 @@ func unsealed(schema json.RawMessage) json.RawMessage {
 		return schema
 	}
 	var v any
-	if json.Unmarshal(schema, &v) != nil {
+	if decodeJSON(schema, &v) != nil {
 		return schema
 	}
 	var strip func(any)
@@ -224,7 +224,7 @@ type rRequest struct {
 // in each upstream's own words. A format of plain text stays where it was.
 func textFormat(text json.RawMessage) (json.RawMessage, *Format) {
 	var fields map[string]json.RawMessage
-	if json.Unmarshal(text, &fields) != nil {
+	if decodeJSON(text, &fields) != nil {
 		return text, nil
 	}
 	f := openAIFormat(fields["format"])
@@ -251,7 +251,7 @@ func parseResponses(body []byte) (*Request, error) {
 	// Responses Lite's tools, sent as the first input item (#350)
 	body = liftAdditionalTools(body)
 	var q rRequest
-	if err := json.Unmarshal(body, &q); err != nil {
+	if err := decodeJSON(body, &q); err != nil {
 		return nil, fmt.Errorf("invalid request: %v", err)
 	}
 	r := &Request{Model: q.Model, System: q.Instructions, MaxTokens: q.MaxOutputTokens, Temp: q.Temperature,
@@ -265,11 +265,11 @@ func parseResponses(body []byte) (*Request, error) {
 	}
 	var found []rTool // what Codex's tool searches found
 	var s string
-	if json.Unmarshal(q.Input, &s) == nil {
+	if decodeJSON(q.Input, &s) == nil {
 		r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{{Kind: Text, Text: s}}})
 	} else {
 		var items []rItem
-		if err := json.Unmarshal(q.Input, &items); err != nil {
+		if err := decodeJSON(q.Input, &items); err != nil {
 			return nil, fmt.Errorf("invalid input: %v", err)
 		}
 		// replied: the conversation has had a turn answered. Codex adds a
@@ -341,9 +341,9 @@ func parseResponses(body []byte) (*Request, error) {
 					// collect a streamed response for a non-streaming client.
 					// Retain the original notification, including absent IDs.
 					if rawItems == nil {
-						_ = json.Unmarshal(q.Input, &rawItems)
+						_ = decodeJSON(q.Input, &rawItems)
 					}
-					_ = json.Unmarshal(rawItems[i], &part.Standalone)
+					_ = decodeJSON(rawItems[i], &part.Standalone)
 				}
 				r.Messages = append(r.Messages, Message{Role: "user", Parts: []Part{part}})
 			case it.Type == "reasoning":
@@ -351,7 +351,7 @@ func parseResponses(body []byte) (*Request, error) {
 				// summary (all magpie gives a client of a translated reply)
 				var b strings.Builder
 				var content []rText
-				_ = json.Unmarshal(it.Content, &content)
+				_ = decodeJSON(it.Content, &content)
 				for _, c := range content {
 					if c.Type == "reasoning_text" {
 						b.WriteString(c.Text)
@@ -367,7 +367,7 @@ func parseResponses(body []byte) (*Request, error) {
 					// sealed: the item goes back to a Responses API as it
 					// came, id, summary and all (#1445)
 					if rawItems == nil {
-						_ = json.Unmarshal(q.Input, &rawItems)
+						_ = decodeJSON(q.Input, &rawItems)
 					}
 					if i < len(rawItems) {
 						part.Sealed, part.SealedBy = rawItems[i], sealResponses
@@ -424,7 +424,7 @@ func parseResponses(body []byte) (*Request, error) {
 		}
 	}
 	var tc string
-	if json.Unmarshal(q.ToolChoice, &tc) == nil {
+	if decodeJSON(q.ToolChoice, &tc) == nil {
 		r.ToolChoice = tc
 	} else {
 		var o struct {
@@ -437,7 +437,7 @@ func parseResponses(body []byte) (*Request, error) {
 				Namespace string `json:"namespace"`
 			} `json:"tools"`
 		}
-		if json.Unmarshal(q.ToolChoice, &o) == nil {
+		if decodeJSON(q.ToolChoice, &o) == nil {
 			switch o.Type {
 			case "allowed_tools":
 				if o.Mode != "auto" && o.Mode != "required" {
@@ -486,11 +486,11 @@ func parseResponses(body []byte) (*Request, error) {
 // requiring paired outputs still need the delivered text, without a fake call ID.
 func orphanedToolOutputs(body []byte) []byte {
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return body
 	}
 	var input []json.RawMessage
-	if json.Unmarshal(q["input"], &input) != nil {
+	if decodeJSON(q["input"], &input) != nil {
 		return body
 	}
 	changed := false
@@ -507,7 +507,7 @@ func orphanedToolOutputs(body []byte) []byte {
 			CallID string          `json:"call_id"`
 			Output json.RawMessage `json:"output"`
 		}
-		if json.Unmarshal(raw, &item) != nil {
+		if decodeJSON(raw, &item) != nil {
 			flush()
 			inCalls = false
 			out = append(out, raw)
@@ -580,11 +580,11 @@ func pairToolItems(body []byte) []byte {
 		return body
 	}
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return body
 	}
 	var input []json.RawMessage
-	if json.Unmarshal(q["input"], &input) != nil {
+	if decodeJSON(q["input"], &input) != nil {
 		return body
 	}
 	type item struct {
@@ -594,7 +594,7 @@ func pairToolItems(body []byte) []byte {
 	items := make([]item, len(input))
 	answered := map[string]bool{}
 	for i, raw := range input {
-		if json.Unmarshal(raw, &items[i]) != nil {
+		if decodeJSON(raw, &items[i]) != nil {
 			items[i] = item{}
 		}
 		if t := items[i].Type; (t == "function_call_output" || t == "custom_tool_call_output") && items[i].CallID != "" {
@@ -656,7 +656,7 @@ func mergeTurns(msgs []Message) []Message {
 
 func responsesParts(raw json.RawMessage) []Part {
 	var s string
-	if json.Unmarshal(raw, &s) == nil {
+	if decodeJSON(raw, &s) == nil {
 		if s == "" {
 			return nil
 		}
@@ -667,7 +667,7 @@ func responsesParts(raw json.RawMessage) []Part {
 		Text     string `json:"text"`
 		ImageURL string `json:"image_url"`
 	}
-	json.Unmarshal(raw, &items)
+	decodeJSON(raw, &items)
 	var out []Part
 	for _, it := range items {
 		switch it.Type {
@@ -693,33 +693,60 @@ func replaysReasoning(model, host string) bool {
 }
 
 // withReasoningText gives each reasoning item in a Responses request that
-// carries no reasoning_text its summary as one, for an upstream that wants
-// the reasoning back (replaysReasoning). Codex sends an item back as it got
-// it, and one from a turn magpie translated, or another provider served,
-// has only a summary: passed on as it is, DeepSeek refuses the whole
-// request with "The reasoning_text in the thinking mode must be passed back
-// to the API" (#1104). An item with neither is left as it is.
+// carries no reasoning_text its summary as one, else noReasoning, and each
+// tool call a step made with no reasoning item one holding noReasoning, for
+// an upstream that wants the reasoning back (replaysReasoning). Codex sends
+// an item back as it got it: one from a turn magpie translated has only a
+// summary, one the ChatGPT backend sealed has only encrypted_content, and a
+// turn another model in a mixed group served may have no reasoning item at
+// all. DeepSeek refuses the whole request over any of them, and over an
+// empty reasoning_text, with "The `reasoning_text` in the thinking mode must
+// be passed back to the API" (#1104, #1592). A body with nothing to give
+// comes back byte for byte.
 func withReasoningText(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"reasoning"`)) {
+	if !bytes.Contains(body, []byte(`"reasoning"`)) && !bytes.Contains(body, []byte(`_call"`)) {
 		return body
 	}
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return body
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(q["input"], &items) != nil {
+	if decodeJSON(q["input"], &items) != nil {
 		return body
 	}
 	changed := false
-	for i, raw := range items {
+	// thought: the step the model is on (since the last user message or
+	// tool output) has a reasoning item
+	thought := false
+	out := make([]json.RawMessage, 0, len(items))
+	for _, raw := range items {
 		var it struct {
 			Type    string  `json:"type"`
+			Role    string  `json:"role"`
 			Summary []rText `json:"summary"`
 			Content []rText `json:"content"`
 		}
-		if json.Unmarshal(raw, &it) != nil || it.Type != "reasoning" ||
+		if decodeJSON(raw, &it) != nil {
+			out = append(out, raw)
+			continue
+		}
+		switch {
+		case it.Type == "reasoning":
+			thought = true
+		case it.Type == "function_call", it.Type == "custom_tool_call":
+			if !thought {
+				r, _ := json.Marshal(map[string]any{"type": "reasoning", "summary": []any{},
+					"content": []map[string]string{{"type": "reasoning_text", "text": noReasoning}}})
+				out = append(out, r)
+				thought, changed = true, true
+			}
+		case strings.HasSuffix(it.Type, "_output"), it.Type == "message" && it.Role != "assistant", it.Type == "" && it.Role != "" && it.Role != "assistant":
+			thought = false
+		}
+		if it.Type != "reasoning" ||
 			slices.ContainsFunc(it.Content, func(c rText) bool { return c.Type == "reasoning_text" && c.Text != "" }) {
+			out = append(out, raw)
 			continue
 		}
 		var b strings.Builder
@@ -727,22 +754,23 @@ func withReasoningText(body []byte) []byte {
 			b.WriteString(s.Text)
 		}
 		if b.Len() == 0 {
-			continue
+			b.WriteString(noReasoning)
 		}
 		var m map[string]json.RawMessage
-		if json.Unmarshal(raw, &m) != nil {
+		if decodeJSON(raw, &m) != nil {
+			out = append(out, raw)
 			continue
 		}
 		m["content"], _ = json.Marshal([]map[string]string{{"type": "reasoning_text", "text": b.String()}})
 		if nb, err := json.Marshal(m); err == nil {
-			items[i] = nb
-			changed = true
+			raw, changed = nb, true
 		}
+		out = append(out, raw)
 	}
 	if !changed {
 		return body
 	}
-	q["input"], _ = json.Marshal(items)
+	q["input"], _ = json.Marshal(out)
 	nb, err := json.Marshal(q)
 	if err != nil {
 		return body
@@ -762,7 +790,7 @@ func sealedReasoning(p Part) bool {
 		Enc     string            `json:"encrypted_content"`
 		Content []json.RawMessage `json:"content"`
 	}
-	return json.Unmarshal(p.Sealed, &it) == nil && it.Enc != "" && len(it.Content) == 0
+	return decodeJSON(p.Sealed, &it) == nil && it.Enc != "" && len(it.Content) == 0
 }
 
 // buildResponses renders a request for a Responses upstream.
@@ -775,6 +803,8 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	replay := replaysReasoning(model, host)
 	var input []any
 	for _, m := range r.Messages {
+		// thought: this assistant turn has sent a reasoning item
+		thought := false
 		var content []map[string]any
 		flushMsg := func() {
 			if len(content) == 0 {
@@ -814,9 +844,18 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 					flushMsg()
 					input = append(input, map[string]any{"type": "reasoning", "summary": []any{},
 						"content": []map[string]any{{"type": "reasoning_text", "text": p.Text}}})
+					thought = true
 				}
 			case ToolCall:
 				flushMsg()
+				if replay && !thought {
+					// a call with no thinking (another model's turn, or
+					// reasoning sealed by the ChatGPT backend), which
+					// DeepSeek turns the whole request away for (#1592)
+					input = append(input, map[string]any{"type": "reasoning", "summary": []any{},
+						"content": []map[string]any{{"type": "reasoning_text", "text": noReasoning}}})
+					thought = true
+				}
 				id := p.ID
 				if id == "" {
 					id = "call_" + newID()
@@ -854,7 +893,7 @@ func buildResponses(r *Request, model, host string, rejectTemp bool) []byte {
 	}
 	if len(r.Text) > 0 || r.Format != nil {
 		text := map[string]any{}
-		json.Unmarshal(r.Text, &text)
+		decodeJSON(r.Text, &text)
 		if r.Format != nil {
 			text["format"] = r.Format.responses()
 		}
@@ -1043,7 +1082,7 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 		} `json:"error"`
 		Message string `json:"message"`
 	}
-	if err := json.Unmarshal([]byte(data), &ev); err != nil {
+	if err := decodeJSON([]byte(data), &ev); err != nil {
 		return nil
 	}
 	switch ev.Type {
@@ -1091,7 +1130,7 @@ func (d *responsesDecoder) decode(data string, emit func(Event)) error {
 			var whole struct {
 				Item json.RawMessage `json:"item"`
 			}
-			if json.Unmarshal([]byte(data), &whole) == nil && len(whole.Item) > 0 {
+			if decodeJSON([]byte(data), &whole) == nil && len(whole.Item) > 0 {
 				emit(Event{Kind: KSealed, Name: sealResponses, ID: ev.Item.ID, Text: string(whole.Item)})
 			}
 		}

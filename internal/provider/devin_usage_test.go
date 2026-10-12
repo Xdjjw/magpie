@@ -90,3 +90,38 @@ printf 'Logged in (via Devin).\n\nUser:\n  Email:             dev@example.com\n\
 		t.Fatalf("refused %+v", q)
 	}
 }
+
+// TestDevinWeekUsedUpHolds: 面条 on magpie's Discord — Devin has a daily
+// and a weekly quota, and with the week used up only the day showed, at
+// 0%, while routing kept sending to the account. JSON leaves a 0 out, so
+// the week came as no weeklyQuotaRemainingPercent beside the day's 100
+// (the rest as the owner's real Teams account answers GetUserStatus).
+func TestDevinWeekUsedUpHolds(t *testing.T) {
+	const status = `{"planInfo":{"teamsTier":"TEAMS_TIER_DEVIN_TEAMS_V2","planName":"Teams","monthlyPromptCredits":-1,"isTeams":true,"isDevin":true,"billingStrategy":"BILLING_STRATEGY_QUOTA"},
+		"planStart":"2026-09-26T21:45:55Z","planEnd":"2026-10-26T21:45:55Z","availablePromptCredits":-1,
+		"dailyQuotaRemainingPercent":100,"overageBalanceMicros":"46807746",
+		"dailyQuotaResetAtUnix":"1791705600","weeklyQuotaResetAtUnix":"1792051200"}`
+	var st devinPlanStatus
+	if err := json.Unmarshal([]byte(status), &st); err != nil {
+		t.Fatal(err)
+	}
+	var q SubscriptionQuota
+	devinQuota(&q, st)
+	if len(q.Windows) != 2 || q.Windows[0].Name != "1 day" || q.Windows[0].Used != 0 ||
+		q.Windows[1].Name != "7 days" || q.Windows[1].Used != 100 || q.Windows[1].ResetsAt == nil || q.Windows[1].ResetsAt.Unix() != 1792051200 {
+		t.Fatalf("windows %+v", q.Windows)
+	}
+	now := time.Unix(1791700000, 0)
+	if till := allowanceOf(q.Windows, now).Full("swe-2", 100, now); till.Unix() != 1792051200 {
+		t.Fatalf("held till %v, want the week's reset", till)
+	}
+
+	// billed otherwise, a share left out is no quota
+	var credits devinPlanStatus
+	json.Unmarshal([]byte(strings.Replace(status, "BILLING_STRATEGY_QUOTA", "BILLING_STRATEGY_CREDITS", 1)), &credits)
+	var c SubscriptionQuota
+	devinQuota(&c, credits)
+	if len(c.Windows) != 1 || c.Windows[0].Name != "1 day" {
+		t.Fatalf("credits windows %+v", c.Windows)
+	}
+}

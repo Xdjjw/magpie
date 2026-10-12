@@ -108,7 +108,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", server(lang, posts, over));
       const go = async () => {
         await page.locator("#prefs").click();
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await page.locator("#warmSegs .opt").first().waitFor({ state: "attached" });
       };
       await page.goto("http://magpie.test/");

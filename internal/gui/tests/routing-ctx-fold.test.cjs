@@ -74,6 +74,9 @@ const look = (page) => page.evaluate(() => {
     crumbs: card.querySelector(".ctx-crumbs").textContent,
     overflow: card.scrollWidth - card.clientWidth + (document.documentElement.scrollWidth - document.documentElement.clientWidth),
     after: card.getBoundingClientRect().bottom,
+    // the head's space to the card's border, over it and under it
+    gaps: (() => { const c = card.getBoundingClientRect(), h = card.querySelector(".ctx-head").getBoundingClientRect(), bw = parseFloat(getComputedStyle(card).borderTopWidth);
+      return [h.top - c.top - bw, c.bottom - h.bottom - bw].map((n) => Math.round(n * 10) / 10); })(),
   };
 });
 
@@ -122,6 +125,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(!shut.grid && !shut.contents, "folded, the grid and contents are gone");
         assert.equal(shut.short, "114K / 272K · 42%", "folded, how full it is is beside the title");
         assert(shut.height < 60, `folded, it is one line: ${shut.height}px`);
+        assert.equal(shut.gaps[0], shut.gaps[1], `folded, the space under its head is the space over it: ${shut.gaps}`);
         assert(shut.after < open.after - 200, `what is under it moves up: ${open.after} -> ${shut.after}`);
         assert(shut.overflow <= 0, `nothing runs over at ${width}px: ${shut.overflow}`);
 

@@ -116,7 +116,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(asked.find(([k]) => k === "add")[1], { spec: FOLDER });
 
         // Installed: the folder's own name, its page from the folder's README
-        await view.locator(".lib-tabs .opt", { hasText: w.tab === "Plugins" ? "Installed" : "已安装" }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.tab === "Plugins" ? "Installed" : "已安装" }).click();
         const row = view.locator(".pm-row").first();
         await row.waitFor();
         assert.equal((await row.locator(".name span").first().innerText()).trim(), w.folderName, "the folder names it, not the whole path");

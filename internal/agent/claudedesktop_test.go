@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/gateway"
@@ -468,5 +469,76 @@ func TestClaudeDesktopMSIXStashBefore(t *testing.T) {
 		if _, err := os.Stat(d); err == nil {
 			t.Errorf("%s left behind", d)
 		}
+	}
+}
+
+// dumplings on Discord: Desktop 2.31226.0 from its MSIX on Windows runs in
+// the real %LOCALAPPDATA%\Claude-3p (its "Local State" there is the newest),
+// and the package's LocalCache copy, which magpie wrote too, is emptied.
+// Desktop is on magpie and the card doesn't say it was changed; the copy
+// Desktop reads turned back to 1p still does, and Reconnect with a tier on
+// one of magpie's models puts the gateway back, not only the tier.
+func TestClaudeDesktopMSIXChecksTheFoldersDesktopRuns(t *testing.T) {
+	home, _ := desktopSandbox(t)
+	old := desktopdir.OS
+	desktopdir.OS = "windows"
+	t.Cleanup(func() { desktopdir.OS = old })
+	if err := provider.Save(provider.Provider{ID: "v", Name: "V", Chat: "http://127.0.0.1:1/v1", Key: "k", Models: []string{"a", "b"}}); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(home, "AppData", "Local")
+	os.MkdirAll(filepath.Join(home, "AppData", "Roaming"), 0o755)
+	pkg := filepath.Join(local, "Packages", "Claude_pzs8sxrjxfjjc", "LocalCache")
+	pkg3p, real3p := filepath.Join(pkg, "Local", "Claude-3p"), filepath.Join(local, "Claude-3p")
+	desktopWrite(t, filepath.Join(pkg, "Roaming", "Claude", "Local State"), `{}`)
+	desktopWrite(t, filepath.Join(pkg3p, "Local State"), `{}`)
+	desktopWrite(t, filepath.Join(real3p, "Local State"), `{}`)
+	desktopWrite(t, filepath.Join(real3p, "claude_desktop_config.json"), `{"preferences":{"x":1}}`)
+	then := time.Now().Add(-48 * time.Hour)
+	for _, f := range []string{filepath.Join(pkg, "Roaming", "Claude", "Local State"), filepath.Join(pkg3p, "Local State")} {
+		os.Chtimes(f, then, then)
+	}
+	a := claudeDesktop(home)
+	if err := a.Field("provider").Set("magpie"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Field("sonnet").Set("v/a"); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.Check(); c != "" {
+		t.Fatalf("check: %s", c)
+	}
+	// the update leaves the package's Claude-3p empty
+	if err := os.RemoveAll(pkg3p); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(pkg3p, 0o755)
+	if c := a.Check(); c != "" {
+		t.Errorf("the package's copy Desktop no longer reads: %s", c)
+	}
+	if d := a.Drift(); d != nil && d.Kind == "unwired" {
+		t.Errorf("drift: %+v", d)
+	}
+	// the one Desktop runs in, turned back to 1p, is said
+	r := desktopPathsOf(filepath.Join(local, "Claude"), real3p)
+	desktopWrite(t, r.config3p, `{"deploymentMode":"1p","preferences":{"x":1}}`)
+	if c := a.Check(); !strings.Contains(c, "no longer 3p") || !strings.Contains(c, real3p) {
+		t.Fatalf("check: %q", c)
+	}
+	if d := a.Drift(); d == nil || d.Kind != "unwired" {
+		t.Fatalf("drift: %+v", d)
+	}
+	// Reconnect: the gateway back, with the tier
+	if err := a.Reapply(); err != nil {
+		t.Fatal(err)
+	}
+	if c := a.Check(); c != "" {
+		t.Errorf("after Reconnect: %s", c)
+	}
+	if m := desktopJSON(t, r.config3p); m["deploymentMode"] != "3p" || m["preferences"] == nil {
+		t.Errorf("%s: %v", r.config3p, m)
+	}
+	if got := a.Field("sonnet").Get(); got != "v/a" {
+		t.Errorf("sonnet: %q", got)
 	}
 }

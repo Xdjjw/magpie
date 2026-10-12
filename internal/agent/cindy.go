@@ -47,7 +47,7 @@ func CindyLink(url string) string {
 		Endpoints []cindyEndpoint `json:"endpoints"`
 	}{
 		Kind: "custom", Name: "Magpie", ID: magpieID,
-		Auth: map[string]any{"method": "apiKey", "apiKey": gateway.TokenFor("cindy")},
+		Auth: map[string]any{"method": "apiKey", "apiKey": agentKeyAt("cindy", url)},
 		Endpoints: []cindyEndpoint{
 			{"anthropic-messages", url, []string{"claude-code"}, models},
 			{"openai-responses", v1, []string{"codex"}, models},

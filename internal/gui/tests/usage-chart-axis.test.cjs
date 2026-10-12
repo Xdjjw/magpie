@@ -117,7 +117,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
             await p.route("**/*", serve(lang, currency, scale, false));
             await p.goto("http://magpie.test/");
             await p.locator('[data-view="usage"]').first().click();
-            await p.locator("#usageTab .opt").nth(1).click();
+            await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
             await p.locator("#ledChart svg").waitFor();
             for (let i = 0; i < 3; i++) {
               await p.locator("#ledMetric .opt").nth(i).click();

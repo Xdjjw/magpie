@@ -59,7 +59,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", server(lang));
         await page.goto("http://magpie.test/?view=plugins");
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (name) => view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: name }) });
 
         const alias = row("alias.middleware.js");
@@ -159,7 +159,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
         await page.goto("http://magpie.test/?view=plugins");
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (name) => view.locator(".pm-row").filter({ has: page.locator(".name", { hasText: name }) });
         const alias = row("alias.middleware.js");
         await alias.waitFor();

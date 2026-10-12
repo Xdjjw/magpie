@@ -1,6 +1,10 @@
 package gateway
 
-import "github.com/yetone/magpie/internal/provider"
+import (
+	"context"
+
+	"github.com/yetone/magpie/internal/provider"
+)
 
 // claudeFastBeta is the beta Claude's fast mode (speed "fast") is asked
 // under.
@@ -37,4 +41,20 @@ func fastPick(cands []candidate, pl planned, providerID, model string) {
 			}
 		}
 	}
+}
+
+// ownFastKey marks a try of a member or pick the user sent fast on a
+// provider they added by its address (provider.OwnFast, #1615): it is asked for service_tier
+// "priority" on its OpenAI API (forwardTranslated) whatever API the agent
+// spoke. An agent on Chat or Responses says it in its own body as well
+// (withFast), which a relayed request carries as it is.
+type ownFastKey struct{}
+
+func withOwnFast(ctx context.Context) context.Context {
+	return context.WithValue(ctx, ownFastKey{}, true)
+}
+
+func isOwnFast(ctx context.Context) bool {
+	v, _ := ctx.Value(ownFastKey{}).(bool)
+	return v
 }

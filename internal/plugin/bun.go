@@ -25,7 +25,8 @@ import (
 
 // BunVersion is the Bun magpie downloads to run plugins with the first
 // time one is needed, and the oldest it runs them on: newer releases are
-// taken as they come (see CheckBun). Update bunSums below when it changes.
+// taken as they come (see CheckBun). Update bunSums below, testenv.MinBun
+// and test.yml's bun-version when it changes.
 const BunVersion = "1.4.2"
 
 // bunSums are the SHA-256s of BunVersion's builds, from Bun's own

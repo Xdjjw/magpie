@@ -271,8 +271,12 @@ func Seal(b Bundle, pass string) ([]byte, error) {
 	return json.MarshalIndent(e, "", "  ")
 }
 
-// Open decrypts a backup.
+// Open decrypts a backup. A byte order mark in front of the JSON is read
+// through: the file is written back through edit.WriteAtomic, which keeps
+// the mark a Windows tool saved the file with (#1534), and a backup moved
+// through an editor that writes one opens as it is.
 func Open(data []byte, pass string) (Bundle, error) {
+	data = edit.TrimBOM(data)
 	var e envelope
 	if json.Unmarshal(data, &e) != nil {
 		// The JSON doesn't read whole. A backup a relay cut short ends in

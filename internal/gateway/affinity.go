@@ -126,7 +126,7 @@ func stickOf(key string) (stick, bool) {
 		return stick{}, false
 	}
 	var saved map[string]savedStick
-	if json.Unmarshal(b, &saved) != nil {
+	if decodeJSON(b, &saved) != nil {
 		return stick{}, false
 	}
 	for k, v := range saved {
@@ -330,10 +330,12 @@ func leastHeld(scope, key string, cs []candidate, pl planned) ([]candidate, plan
 		return cs, pl
 	}
 	if strings.HasPrefix(scope, provider.GroupPrefix) {
-		if _, ms, ok := provider.FindGroup(scope); ok {
+		if g, ms, ok := provider.FindGroup(scope); ok {
 			for _, m := range ms {
-				if len(m.Path) > 1 {
-					return cs, pl // a group in the group: its own routing orders its models (#576)
+				// a group in the group, or a provider routed its own way:
+				// its own routing orders its models or keys (#576)
+				if len(m.Path) > 1 || ownRouting(m.Provider, g) {
+					return cs, pl
 				}
 			}
 		}
@@ -487,7 +489,7 @@ func seals(body []byte, kinds ...string) [][sha256.Size]byte {
 	var q struct {
 		Input []sealedItem `json:"input"`
 	}
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil
 	}
 	var out [][sha256.Size]byte
@@ -544,17 +546,17 @@ func withoutRefused(key, who string, body []byte) ([]byte, bool) {
 		return nil, false
 	}
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(q["input"], &items) != nil {
+	if decodeJSON(q["input"], &items) != nil {
 		return nil, false
 	}
 	kept := items[:0:0]
 	for _, it := range items {
 		var t sealedItem
-		if json.Unmarshal(it, &t) == nil && sealedKinds[t.Type] && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
+		if decodeJSON(it, &t) == nil && sealedKinds[t.Type] && t.Enc != "" && r.seals[sha256.Sum256([]byte(t.Enc))] {
 			continue
 		}
 		kept = append(kept, it)
@@ -583,7 +585,7 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 	var q struct {
 		Input []sealedItem `json:"input"`
 	}
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	for _, it := range q.Input {
@@ -598,11 +600,11 @@ func withoutCompaction(body []byte) ([]byte, bool) {
 // types.
 func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return nil, false
 	}
 	var items []json.RawMessage
-	if json.Unmarshal(q["input"], &items) != nil {
+	if decodeJSON(q["input"], &items) != nil {
 		return nil, false
 	}
 	kept := items[:0:0]
@@ -610,7 +612,7 @@ func withoutKinds(body []byte, kinds ...string) ([]byte, bool) {
 		var t struct {
 			Type string `json:"type"`
 		}
-		if json.Unmarshal(it, &t) == nil && slices.Contains(kinds, t.Type) {
+		if decodeJSON(it, &t) == nil && slices.Contains(kinds, t.Type) {
 			continue
 		}
 		kept = append(kept, it)

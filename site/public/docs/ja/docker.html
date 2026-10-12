@@ -163,7 +163,7 @@ docker logs magpie</pre>
 
     <h2 id="share"><a class="anchor" href="#share">ゲートウェイキーとほかのマシン</a></h2>
     <ol class="steps">
-      <li><b>クライアントごとにキーを作る</b><span class="ui">ゲートウェイ</span> → <span class="ui">ゲートウェイキー</span>、またはターミナルで <code>docker exec magpie magpie gateway-key add "Laptop"</code>。新しい <code>sk-magpie-key-…</code> が表示されます。コンテナの外からのリクエストは、ホスト自身のものも含め、有効なゲートウェイキーが必要で、ないものは 401 になります。キーごとに日・週・月の上限と使えるモデルを決められます（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
+      <li><b>クライアントごとにキーを作る</b><span class="ui">ゲートウェイ</span> → <span class="ui">ゲートウェイキー</span>、またはターミナルで <code>docker exec magpie magpie gateway-key add "Laptop"</code>。新しい <code>sk-magpie-key-…</code> が表示されます。コンテナの外からのリクエストは、ホスト自身のものも含め、有効なゲートウェイキーが必要で、ないものは 401 になります。キーごとに日・週・月、または N 日ごとの上限と使えるモデルを決められます（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
       <li><b>ポートを公開する</b><code>-p 3425:3425</code>（または NAS の LAN や VPN のアドレスに限定して <code>-p 192.168.1.20:3425:3425</code>）と <code>-e MAGPIE_PUBLIC_URL=http://192.168.1.20:3425</code> を付けてコンテナを作り直します。</li>
     </ol>
     <p>ほかのコンピューターでは、エージェントをゲートウェイに向け、そのキーのどれかを API キーにします：OpenAI クライアントなら <code>http://192.168.1.20:3425/v1</code>、Anthropic や Gemini なら <code>http://192.168.1.20:3425</code>。モデル ID は <code>provider/model</code> かルーティンググループの名前で、<code>GET /v1/models</code> が一覧を返します。そのコンピューターでも magpie を動かしているなら、コンテナを<a href="/docs/ja/remote">リモート magpie</a> として追加すれば、magpie がエージェントを設定します。</p>

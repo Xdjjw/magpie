@@ -204,7 +204,7 @@
   // flashed the whole card, its cells coming in again). Handlers set as
   // properties come along; one added with addEventListener wouldn't, so
   // nothing morphed has one.
-  const HANDLERS = ["onclick", "onpointerenter", "onpointerleave"];
+  const HANDLERS = ["onclick", "onpointerenter", "onpointerleave", "onkeydown"];
   function morph(old, neu) {
     if (old.nodeName !== neu.nodeName || (old.nodeType !== 1 && old.nodeType !== 3)) { old.replaceWith(neu); return neu; }
     if (old.nodeType === 3) { if (old.data !== neu.data) old.data = neu.data; return old; }
@@ -250,7 +250,7 @@
     tip.hidden = true;
     const contents = el("div", "ctx-contents"), ch = el("div", "ctx-contents-head"), list = el("div", "ctx-rows");
     contents.append(ch, list);
-    let parts = null, cur = null, cacheShown = false, lastCache = null, cacheWhose = "", chKey = "";
+    let parts = null, cur = null, cacheShown = false, lastCache = null, cacheWhose = "", chKey = "", rid = 0;
     let tab = opts.tab || "all", more = false;
 
     const showTip = (target) => {
@@ -293,6 +293,16 @@
     };
     grid.addEventListener("pointerover", (e) => { if (cur && e.target.parentElement === grid) showTip(e.target); });
     grid.addEventListener("pointerleave", () => { tip.hidden = true; delete grid.dataset.f; });
+    // a cell clicked opens the text of what it shows (masaka on Discord)
+    grid.addEventListener("click", (e) => {
+      if (!cur || e.target.parentElement !== grid) return;
+      const c = cur.cells[[...grid.children].indexOf(e.target)];
+      if (!c) return;
+      e.stopPropagation();
+      const items = [...(cur.partOf.get(c.kind)?.items || [])].sort((a, b) => b.tokens - a.tokens);
+      tip.hidden = true;
+      openCtxText(rid, c.kind, items[c.item]);
+    });
 
     // the contents, part by part
     const drawRows = () => {
@@ -318,6 +328,8 @@
         if (it.n > 1 && it.tag !== "turns" && it.tag !== "more") row.append(el("span", "ctx-x", "×" + it.n));
         if (tg) row.append(el("code", "ctx-tag", tg));
         row.append(bar, el("span", "ctx-v", fmtK(it.tokens)));
+        // clicked, its text
+        clickable(row, () => openCtxText(rid, kind, it));
         // its cells light up
         row.onpointerenter = () => {
           grid.dataset.f = "item";
@@ -346,6 +358,7 @@
         parts = cur = null;
         return;
       }
+      rid = r.id;
       const window = p.window || 0;
       const full = window ? p.tokens / window : 0;
       const live = !r.done;
@@ -493,6 +506,7 @@
         const li = el("span", "ctx-leg");
         li.title = t(PART_NOTES[kind]);
         li.append(el("i", "dot k-" + kind), el("span", "n", partName(kind)), el("span", "v", fmtK(part.tokens)));
+        clickable(li, () => openCtxText(rid, kind));
         li.onpointerenter = () => { grid.dataset.f = kind; };
         li.onpointerleave = () => { delete grid.dataset.f; };
         legend.append(li);
@@ -547,6 +561,172 @@
     return card;
   }
   window.ctxCard = ctxCard;
+
+  // clickable makes e a button for the keyboard too, its handlers set as
+  // properties, so a morphed card keeps them
+  function clickable(e, go) {
+    e.setAttribute("role", "button");
+    e.tabIndex = 0;
+    e.classList.add("ctx-click");
+    e.onclick = (ev) => { ev.stopPropagation(); go(); };
+    e.onkeydown = (ev) => {
+      if (ev.key !== "Enter" && ev.key !== " ") return;
+      ev.preventDefault();
+      go();
+    };
+  }
+
+  // ---------- the text of a part (masaka on Discord) ----------
+
+  // A part of the card clicked opens what the request sent there, read
+  // from the request's body: an item alone (a tool, a file, a turn), or
+  // the part's items, each opened to its text. magpie keeps the last few
+  // requests' bodies, masked, in memory only, so an older one's text is
+  // gone. A long text comes a stretch at a time, so a prompt of megabytes
+  // doesn't hold the window up.
+  const TEXT_STEP = 20000, ITEM_STEP = 100;
+  const ROLE_NAMES = {
+    system: "System prompt", user: "You", assistant: "Assistant", thinking: "Thinking",
+    call: "Tool call", result: "Tool result", tool: "Tool definition", image: "Image", sealed: "Sealed",
+  };
+  async function readText(id, kind, item) {
+    const q = "id=" + encodeURIComponent(id) + "&kind=" + encodeURIComponent(kind) + (item === undefined ? "" : "&item=" + item);
+    // fetched, not api(): the text isn't looked through for accounts
+    const res = await fetch("/api/context/text?" + q);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new Error((await res.text()).trim() || res.statusText);
+    return res.json();
+  }
+  // a stretch of text, and a button for the next
+  function longText(text) {
+    const box = el("div", "ctx-text-box");
+    const pre = el("pre", "ctx-text");
+    let at = 0;
+    const more = el("button", "text ctx-text-more");
+    more.type = "button";
+    const step = () => {
+      pre.append(document.createTextNode(text.slice(at, at + TEXT_STEP)));
+      at = Math.min(text.length, at + TEXT_STEP);
+      more.hidden = at >= text.length;
+      more.textContent = t("Show more · {n} characters left", { n: (text.length - at).toLocaleString() });
+    };
+    more.onclick = (e) => { e.stopPropagation(); step(); };
+    step();
+    box.append(pre, more);
+    return box;
+  }
+  function pieceView(pc) {
+    const box = el("div", "ctx-piece");
+    const head = el("div", "ctx-piece-head");
+    if (pc.role) head.append(el("span", "ctx-role r-" + pc.role, t(ROLE_NAMES[pc.role] || pc.role)));
+    if (pc.name) head.append(el("code", "ctx-piece-name", pc.name));
+    head.append(el("span", "grow"));
+    if (pc.text) head.append(copyBtn(pc.text, pc.name || t(ROLE_NAMES[pc.role] || "Text")));
+    box.append(head);
+    if (pc.role === "image") box.append(el("div", "ctx-piece-note", t("An image: magpie doesn't show it here")));
+    else if (pc.role === "sealed") box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: (pc.size || 0).toLocaleString() })));
+    else {
+      if (pc.size) box.append(el("div", "ctx-piece-note", t("Sealed by the vendor, {n} bytes: only the vendor can read it", { n: pc.size.toLocaleString() })));
+      if (pc.text) box.append(longText(pc.text));
+      else if (!pc.size) box.append(el("div", "ctx-piece-note", t("Empty")));
+    }
+    return box;
+  }
+  async function openCtxText(id, kind, pick) {
+    if (!id) return;
+    const ed = el("div", "editor ctx-view wide");
+    const head = el("div", "ehead");
+    const title = el("b", "", partName(kind));
+    const total = el("span", "ctx-view-total");
+    head.append(el("i", "dot k-" + kind), title, el("span", "grow"), total);
+    const body = el("div", "ctx-view-body");
+    body.append(el("div", "ctx-view-wait", t("Reading…")));
+    const bar = el("div", "bar");
+    const close = el("button", "text primary", t("Close"));
+    close.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+    bar.append(el("span", "grow"), close);
+    ed.append(head, body, bar);
+    confirmAsk = ed;
+    openModal(ed);
+    $("#modal").classList.add("lib");
+    const gone = (list) => {
+      body.replaceChildren(el("p", "ctx-view-gone", t("This request's text is no longer kept: magpie keeps the text of the last {n} requests, in memory only, while it runs.", { n: list?.kept || 10 })));
+    };
+    let list;
+    try { list = await readText(id, kind); } catch (err) { body.replaceChildren(el("p", "ctx-view-gone", err.message)); return; }
+    if (confirmAsk !== ed) return;
+    if (!list) return gone();
+    const items = list.items || [];
+    total.textContent = fmtK(items.reduce((s, it) => s + it.tokens, 0)) + " " + t("tokens");
+    const note = el("p", "ctx-view-note", t("As magpie sent it, masked where masking is on. Kept in memory for the last {n} requests only.", { n: list.kept }));
+    // an item: its text alone; "N more" or the earlier turns: the part's list
+    const at = pick && pick.tag !== "more" && pick.tag !== "turns"
+      ? items.findIndex((it) => it.name === pick.name && (it.tag || "") === (pick.tag || "")) : -1;
+    const entry = (it, i, open) => {
+      const box = el("div", "ctx-vi");
+      const h = el("button", "ctx-vi-head");
+      h.type = "button";
+      h.setAttribute("aria-expanded", "false");
+      const tg = tagOf(it);
+      h.append(el("span", "tw"), itemLabel(it, kind));
+      h.querySelector(".tw").append(svg(CHEV, 10, 1.7));
+      if (it.n > 1) h.append(el("span", "ctx-x", "×" + it.n));
+      if (tg) h.append(el("code", "ctx-tag", tg));
+      h.append(el("span", "ctx-v", fmtK(it.tokens)));
+      const text = el("div", "ctx-vi-text");
+      text.hidden = true;
+      let read = null;
+      const show = async () => {
+        const on = text.hidden;
+        text.hidden = !on;
+        h.setAttribute("aria-expanded", String(on));
+        box.classList.toggle("open", on);
+        if (!on || read) return;
+        text.replaceChildren(el("div", "ctx-view-wait", t("Reading…")));
+        read = readText(id, kind, i).then((one) => {
+          const pieces = one?.items?.[i]?.pieces;
+          if (!pieces) { read = null; text.replaceChildren(el("p", "ctx-view-gone", t("This request's text is no longer kept: magpie keeps the text of the last {n} requests, in memory only, while it runs.", { n: list.kept }))); return; }
+          text.replaceChildren(...(pieces.length ? pieces.map(pieceView) : [el("div", "ctx-piece-note", t("Empty"))]));
+        }).catch((err) => { read = null; text.replaceChildren(el("p", "ctx-view-gone", err.message)); });
+      };
+      h.onclick = (e) => { e.stopPropagation(); show(); };
+      box.append(h, text);
+      if (open) show();
+      return box;
+    };
+    const showAll = () => {
+      title.textContent = partName(kind);
+      const rows = el("div", "ctx-vi-list");
+      let shown = 0;
+      const more = el("button", "text ctx-text-more");
+      more.type = "button";
+      const step = () => {
+        const next = items.slice(shown, shown + ITEM_STEP).map((it, j) => entry(it, shown + j, items.length === 1));
+        rows.append(...next);
+        shown += next.length;
+        more.hidden = shown >= items.length;
+        more.textContent = t("Show {n} more", { n: items.length - shown });
+      };
+      more.onclick = (e) => { e.stopPropagation(); step(); };
+      step();
+      body.replaceChildren(note, items.length ? rows : el("div", "ctx-empty", t("Nothing in it")), more);
+    };
+    if (at < 0) return showAll();
+    // the item alone, the part's other items a click away
+    title.textContent = partName(kind) + " · " + itemName(items[at]);
+    total.textContent = fmtK(items[at].tokens) + " " + t("tokens");
+    const all = el("button", "text ctx-view-all", t("All of {part} · {n}", { part: partName(kind), n: items.length }));
+    all.type = "button";
+    all.onclick = (e) => {
+      e.stopPropagation();
+      all.remove();
+      total.textContent = fmtK(items.reduce((s, it) => s + it.tokens, 0)) + " " + t("tokens");
+      showAll();
+    };
+    if (items.length > 1) bar.prepend(all);
+    body.replaceChildren(note, entry(items[at], at, true));
+  }
+  window.openCtxText = openCtxText;
   window.ctxFmt = fmtK;
 
   // ---------- the Usage page's Context tab ----------
@@ -724,6 +904,10 @@
   // ---------- tuned for you: the settings that would have spent the fewest tokens ----------
 
   let tuneData = null, tuneJSON = "", tuneRead = 0, tuneBusy = "";
+  // whether the last draw showed the history and the advice: what was on
+  // the pane already doesn't play its entrance again when the pane is
+  // redrawn (the other answering, the state, a filter, a click)
+  let ctxDrawn = false, tuneDrawn = false;
 
   const KNOBS = {
     compact: "Auto-compact",
@@ -732,31 +916,74 @@
   };
   const ttlName = (v) => v === "1h" ? t("1 hour") : v === "5m" ? t("5 min") : v || "—";
 
-  // curve draws what the range would have cost at each window, the one
-  // set and the best marked on it
-  function curve(c) {
-    const pts = c.curve || [];
+  // chart draws what each setting would have cost over the range, as the
+  // tokens it spends past the advice: the area over the advice's level is
+  // what the others waste, and the one set now says how much
+  let chartN = 0;
+  function chart(pts, current, best, show) {
     if (pts.length < 2) return null;
-    const W = 220, H = 44, pad = 4;
-    const xs = pts.map((p) => p.value), ys = pts.map((p) => p.cost);
-    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-    const x = (v) => pad + ((v - x0) / (x1 - x0 || 1)) * (W - 2 * pad);
-    const y = (v) => H - pad - ((v - y0) / (y1 - y0 || 1)) * (H - 2 * pad);
-    const d = pts.map((p, i) => (i ? "L" : "M") + x(p.value).toFixed(1) + " " + y(p.cost).toFixed(1)).join(" ");
-    const box = el("div", "ctx-tune-curve");
+    const near = (v) => pts.reduce((a, p) => Math.abs(p.value - v) < Math.abs(a.value - v) ? p : a, pts[0]);
+    const now = typeof current === "number" ? near(current) : pts.find((p) => p.value === current);
+    const top = typeof best === "number" ? near(best) : pts.find((p) => p.value === best);
+    if (!top) return null;
+    // measured from the advice, not the cheapest point: tune takes the
+    // largest window within 1% of it, and those cost nothing more here
+    const low = top.cost;
+    const extra = (p) => Math.max(0, p.cost - low);
+    const most = Math.max(...pts.map(extra));
+    if (!(most > 0)) return null;
+    const worst = pts.reduce((a, p) => p.cost > a.cost ? p : a, pts[0]);
+    const W = 300, H = 100, top0 = 22, base = 84;
+    const X = (i) => (i / (pts.length - 1)) * W;
+    const Y = (p) => base - (extra(p) / most) * (base - top0);
+    const xy = pts.map((p, i) => [X(i), Y(p)]);
+    // a smooth line through every point that never swings past its neighbours
+    let d = `M${xy[0][0].toFixed(1)} ${xy[0][1].toFixed(1)}`;
+    for (let i = 1; i < xy.length; i++) {
+      const [x0, y0] = xy[i - 1], [x1, y1] = xy[i], m = (x1 - x0) / 2;
+      d += ` C${(x0 + m).toFixed(1)} ${y0.toFixed(1)} ${(x1 - m).toFixed(1)} ${y1.toFixed(1)} ${x1.toFixed(1)} ${y1.toFixed(1)}`;
+    }
+    const id = "ctx-waste-" + ++chartN;
+    const box = el("div", "ctx-tune-chart");
     const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     s.setAttribute("viewBox", `0 0 ${W} ${H}`);
     s.setAttribute("preserveAspectRatio", "none");
-    const at = (v) => pts.reduce((a, p) => Math.abs(p.value - v) < Math.abs(a.value - v) ? p : a, pts[0]);
-    const now = at(c.current), best = at(c.best);
-    s.innerHTML = `<path class="line" d="${d}"/>` +
-      (now.value !== best.value ? `<circle class="now" cx="${x(now.value).toFixed(1)}" cy="${y(now.cost).toFixed(1)}" r="3"/>` : "") +
-      `<circle class="best" cx="${x(best.value).toFixed(1)}" cy="${y(best.cost).toFixed(1)}" r="3.5"/>`;
-    box.append(s);
-    const ends = el("div", "ctx-tune-ends");
-    ends.append(el("span", "", fmtK(x0)), el("span", "", fmtK(x1)));
-    box.append(ends);
-    box.dataset.tt = t("What the range would have cost at each window: lower is fewer tokens");
+    s.innerHTML = `<defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">` +
+      `<stop offset="0" class="hot"/><stop offset="1" class="cool"/></linearGradient></defs>` +
+      `<line class="level" x1="0" x2="${W}" y1="${base}" y2="${base}"/>` +
+      `<path class="area" fill="url(#${id})" d="${d} L${W} ${base} L0 ${base} Z"/>` +
+      `<path class="line" d="${d}"/>`;
+    const plot = el("div", "ctx-tc-plot");
+    plot.append(s);
+    box.append(plot);
+    const at = (p, cls, label) => {
+      const i = pts.indexOf(p);
+      const dot = el("span", "ctx-tc-dot " + cls);
+      dot.style.left = (i / (pts.length - 1)) * 100 + "%";
+      dot.style.top = (Y(p) / H) * 100 + "%";
+      if (label) {
+        const tag = el("b", "ctx-tc-tag", label);
+        if (i === 0) tag.classList.add("start");
+        if (i === pts.length - 1) tag.classList.add("end");
+        dot.append(tag);
+      }
+      dot.dataset.tt = p === top
+        ? t("{value}: the fewest tokens for how you work", { value: show(p.value) })
+        : t("{value}: {tokens} more tokens over the range (+{pct})", { value: show(p.value), tokens: fmtK(extra(p)), pct: pct(extra(p) / low) });
+      plot.append(dot);
+    };
+    if (worst !== now && worst !== top) at(worst, "worst", "+" + pct(extra(worst) / low));
+    at(top, "best", t("Leanest"));
+    if (now && now !== top) at(now, "now", "+" + pct(extra(now) / low));
+    const axis = el("div", "ctx-tc-x");
+    for (const p of new Set([pts[0], top, now, pts[pts.length - 1]].filter(Boolean))) {
+      const i = pts.indexOf(p);
+      const tick = el("span", (p === top ? "best" : p === now ? "now" : "") + (i === 0 ? " start" : i === pts.length - 1 ? " end" : ""), show(p.value));
+      tick.style.left = (i / (pts.length - 1)) * 100 + "%";
+      axis.append(tick);
+    }
+    box.append(axis);
+    box.dataset.tt = t("Tokens each setting would have spent past the leanest, on your own calls");
     return box;
   }
 
@@ -784,8 +1011,11 @@
     };
     vals.append(val("Now", cur, "now"));
     if (!same) vals.append(el("span", "ctx-tune-arrow", "→"), val("Best for you", best, "best"));
-    if (a.compact) { const c = curve(a.compact); if (c) vals.append(el("span", "grow"), c); }
     row.append(vals);
+    const c = a.compact
+      ? chart(a.compact.curve || [], r.current, r.best, show)
+      : chart([{ value: "5m", cost: r.short }, { value: "1h", cost: r.hour }], r.current, r.best, show);
+    if (c) row.append(c);
 
     const why = el("p", "ctx-tune-why");
     const f = r.facts || {};
@@ -865,7 +1095,7 @@
     const head = el("div", "row-head ctx-sess-head");
     head.append(el("span", "label", t("Tuned for you")), el("span", "grow"));
     pane.append(head);
-    pane.append(el("p", "usage-note", t("Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.")));
+    pane.append(el("p", "usage-note ctx-tune-note", t("Your own calls of the range, replayed setting by setting from your agents' session files: the settings that would have spent the fewest tokens, for how you work. Tokens are weighed as the vendor charges them: a cache read is a tenth of one.")));
     if (!tuneData) {
       pane.append(el("p", "usage-note", t("Working it out from your sessions…")));
       return;
@@ -894,14 +1124,17 @@
   function renderContext() {
     const pane = $("#contextPane");
     if (!pane) return;
-    const tools = el("div", "sess-tools ctx-tools");
-    tools.append(segs(CTX_RANGES.map(([id, n]) => [id, t(n)]), ctxDays, (id) => {
+    // the range sits in the Usage page's own head, where the other tabs keep
+    // theirs, so no row of its own stands empty above the pane
+    $("#ctxRange")?.replaceChildren(segs(CTX_RANGES.map(([id, n]) => [id, t(n)]), ctxDays, (id) => {
       ctxDays = id;
       try { localStorage.setItem("magpie.ctxDays", id); } catch {}
       loadContext();
     }));
-    tools.append(el("span", "grow"));
-    pane.replaceChildren(tools);
+    pane.replaceChildren();
+    pane.classList.toggle("still", ctxDrawn && !!ctxData);
+    pane.classList.toggle("tune-still", tuneDrawn && !!tuneData);
+    ctxDrawn = !!ctxData, tuneDrawn = !!tuneData;
     renderTune(pane);
     if (!ctxData) {
       pane.append(el("p", "usage-note", t("Reading the routing history…")));
@@ -938,6 +1171,7 @@
 
   async function loadContext() {
     const read = ++ctxRead, days = ctxDays;
+    if (tuneData && tuneData.days !== +days) tuneData = null;
     if (!ctxData || ctxData.days !== +days) { ctxData = null; renderContext(); }
     loadTune().catch((e) => status(e.message, "err"));
     const data = await api("context?days=" + days);
@@ -949,8 +1183,6 @@
     // history, drawn by the agents' ids until then
     const json = JSON.stringify([data, (state.clients || state.agents || []).map((a) => [a.id, a.name, a.icon])]);
     if (ctxData && json === ctxJSON) return;
-    const pane = $("#contextPane");
-    if (pane) pane.classList.toggle("still", !!ctxData);
     ctxData = data, ctxJSON = json;
     renderContext();
   }

@@ -26,7 +26,7 @@ async function fixture(t, engine, lang = "en", options = {}) {
   }] : [{ id: "codex", name: "Codex", path: "/fixture/.codex/config.toml", found: true, items: [
     ...["alpha", "beta"].map((ref) => ({ ref, fingerprint: `${ref}-${control.revisions[ref] || 1}`, from: "config.toml", status: imported.has(ref) ? "same" : "new",
       provider: { id: ref, name: ref === "alpha" ? "Alpha Relay" : "Beta Relay", responses: `https://${ref}.example/v1`, key: "sk-…1234", models: ["fixture-model"] } })),
-    { ref: "existing", status: "same", provider: { name: "Already here" } },
+    { ref: "existing", status: "same", existing: "Existing Relay", provider: { name: "Already here" } },
     { ref: "magpie", skip: "it points at magpie itself", provider: { name: "magpie" } },
   ] }];
   page.on("pageerror", (e) => errors.push(e.stack || e.message));
@@ -115,6 +115,8 @@ for (const engine of engines) {
       await picker.locator(".approw").first().waitFor();
       assert.equal(control.reads, 1);
       assert.equal(await picker.locator('.approw input:disabled').count(), 2);
+      // one already added names the provider that holds it (#1486)
+      assert.equal(await picker.locator(".approw", { hasText: "Already here" }).locator(".sub", { hasText: lang === "zh" ? "magpie 里已有 Existing Relay" : "magpie has Existing Relay already" }).count(), 1);
       await picker.locator(".approw", { hasText: "Beta Relay" }).locator("input").uncheck();
       await picker.locator(".bar .primary").click();
       await page.waitForFunction(() => document.querySelector("#providerDiscoveryCount").textContent.includes("1") && !document.querySelector("#providerDiscovery").hidden);
@@ -287,7 +289,7 @@ for (const engine of engines) {
       assert.equal(control.reads, 0);
       if (await page.locator("#addSheet").isHidden()) await page.locator("#addProvider").click();
       await page.locator("#addSheet").getByRole("button", { name: "Import…", exact: true }).click();
-      const picker = page.locator("#modal .importapps"), box = picker.locator(".approw input");
+      const picker = page.locator("#modal .importapps"), box = picker.locator(".approw input[type=\"checkbox\"]");
       await box.waitFor();
       assert.equal(await box.isChecked(), false);
       assert.equal(await box.isDisabled(), false, "manual import still allows selecting the configuration");

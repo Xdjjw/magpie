@@ -31,7 +31,10 @@ func enable(exe string) error {
 	return os.WriteFile(p, plist(exe), 0o644)
 }
 
-// plist is the launch agent for exe. AbandonProcessGroup: launchd kills
+// plist is the launch agent for exe. AssociatedBundleIdentifiers names the
+// app the program belongs to: without it, System Settings' Login Items
+// lists a launch agent under the name on its signature, the developer's
+// own (#1512), rather than as magpie with its icon. AbandonProcessGroup: launchd kills
 // whatever a job started once the job exits, and a restart to update is
 // the job quitting with the shell that opens the new version still
 // waiting for it to go — without the key, a magpie opened at login never
@@ -48,9 +51,31 @@ func plist(exe string) []byte {
 	<key>LimitLoadToSessionType</key><string>Aqua</string>
 	<key>ProcessType</key><string>Interactive</string>
 	<key>AbandonProcessGroup</key><true/>
-</dict>
+%s</dict>
 </plist>
-`, label, html.EscapeString(exe), Arg))
+`, label, html.EscapeString(exe), Arg, associated(exe)))
+}
+
+var bundleID = regexp.MustCompile(`<key>CFBundleIdentifier</key>\s*<string>([^<]+)</string>`)
+
+// associated is the AssociatedBundleIdentifiers entry for the app exe sits
+// in, read from that app's own Info.plist, so a build with another id
+// names its own. A program outside an app, or an app whose Info.plist
+// can't be read, has none: the key then names nothing at all.
+func associated(exe string) string {
+	macos := filepath.Dir(exe)
+	if filepath.Base(macos) != "MacOS" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(macos), "Info.plist"))
+	if err != nil {
+		return ""
+	}
+	m := bundleID.FindSubmatch(b)
+	if m == nil {
+		return ""
+	}
+	return fmt.Sprintf("\t<key>AssociatedBundleIdentifiers</key>\n\t<array><string>%s</string></array>\n", html.EscapeString(html.UnescapeString(string(m[1]))))
 }
 
 var program = regexp.MustCompile(`<key>ProgramArguments</key>\s*<array><string>([^<]*)</string>`)
@@ -68,7 +93,11 @@ func refresh() error {
 	if m == nil {
 		return nil // not one magpie wrote
 	}
-	want := plist(html.UnescapeString(string(m[1])))
+	exe := html.UnescapeString(string(m[1]))
+	if associated(exe) == "" && bytes.Contains(b, []byte("<key>AssociatedBundleIdentifiers</key>")) {
+		return nil // the app's Info.plist didn't read this time: not a reason to drop its name
+	}
+	want := plist(exe)
 	if bytes.Equal(b, want) {
 		return nil
 	}

@@ -439,4 +439,50 @@ func contextRoutesAPI(mux *http.ServeMux) {
 		}
 		writeJSON(rw, contextOf(contextRoutes(r, days), days))
 	})
+	// the text of a part of a request's prompt (masaka on Discord): the
+	// part's items, and one item's text when item is given. From the
+	// gateway this GUI runs, which keeps the last requests' masked bodies
+	// in memory only; 404 when the request's is no longer kept.
+	mux.HandleFunc("GET /api/context/text", func(rw http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		id, err := strconv.ParseInt(q.Get("id"), 10, 64)
+		if err != nil || id <= 0 {
+			http.Error(rw, "invalid route id", http.StatusBadRequest)
+			return
+		}
+		item := -1
+		if v := q.Get("item"); v != "" {
+			if item, err = strconv.Atoi(v); err != nil || item < 0 {
+				http.Error(rw, "invalid item", http.StatusBadRequest)
+				return
+			}
+		}
+		gw := served.Load()
+		if gw == nil {
+			http.Error(rw, "not kept", http.StatusNotFound)
+			return
+		}
+		pt, ok := gw.PromptText(id, q.Get("kind"), item >= 0)
+		if !ok {
+			http.Error(rw, "not kept", http.StatusNotFound)
+			return
+		}
+		if item >= 0 {
+			// the one item's text; the rest by name and size only
+			if item >= len(pt.Items) {
+				http.Error(rw, "invalid item", http.StatusBadRequest)
+				return
+			}
+			for i := range pt.Items {
+				if i != item {
+					pt.Items[i].Pieces = nil
+				}
+			}
+			if pt.Items[item].Pieces == nil {
+				pt.Items[item].Pieces = []gateway.PromptPiece{}
+			}
+		}
+		rw.Header().Set("Cache-Control", "no-store")
+		writeJSON(rw, pt)
+	})
 }

@@ -32,7 +32,7 @@ func TestClaudeLocalPermissionFailureIsNotAccountRefusal(t *testing.T) {
 			if fresh {
 				NoteClaudeLimits("a@example.com", []ClaudeLimit{{Kind: "five_hour", Used: .42}})
 			}
-			UsageClaudeVia(func(context.Context) (string, error) { return "", execErr })
+			UsageClaudeVia(func(context.Context, string) (string, error) { return "", execErr })
 			for range 2 {
 				q := card()
 				if fresh {
@@ -44,7 +44,7 @@ func TestClaudeLocalPermissionFailureIsNotAccountRefusal(t *testing.T) {
 				}
 			}
 			timeout := errors.New("network timeout")
-			UsageClaudeVia(func(context.Context) (string, error) { return "", timeout })
+			UsageClaudeVia(func(context.Context, string) (string, error) { return "", timeout })
 			retryClaudeUsage()
 			q := card()
 			if fresh {
@@ -112,7 +112,7 @@ func TestClaudeHeaderReceivedDuringFailedUsage(t *testing.T) {
 				NoteClaudeLimits("a@example.com", []ClaudeLimit{{Kind: "five_hour", Used: .42}})
 			}
 			runs := 0
-			UsageClaudeVia(func(context.Context) (string, error) {
+			UsageClaudeVia(func(context.Context, string) (string, error) {
 				runs++
 				NoteClaudeLimits("a@example.com", []ClaudeLimit{{Kind: "five_hour", Used: .7}})
 				return "", errors.New("offline")

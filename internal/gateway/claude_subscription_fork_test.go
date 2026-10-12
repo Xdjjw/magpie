@@ -57,7 +57,7 @@ func TestClaudeForksAnsweringTheLeadsCallsEachGetAnAnswer(t *testing.T) {
 	dir := t.TempDir()
 	testenv.Program(t, filepath.Join(dir, "claude"), `#!/bin/sh
 if [ "$1" = auth ]; then echo '{"loggedIn":true,"authMethod":"claude.ai","apiProvider":"firstParty","email":"lead@example.com","subscriptionType":"max"}'; exit 0; fi
-cb=$(printf '%s\n' "$@" | grep -o 'http://[^"]*/_magpie/claude-mcp/[A-Za-z0-9_-]*' | head -1)
+cb=$(cat "$(printf '%s\n' "$@" | grep -o '"claude-mcp-helper","[^"]*"' | head -1 | sed 's/.*","//; s/"$//')")
 say() {
   echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m","model":"claude-opus-5-5","usage":{"input_tokens":1}}}}'
   echo '{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"heard:'"$1"'"}}}'

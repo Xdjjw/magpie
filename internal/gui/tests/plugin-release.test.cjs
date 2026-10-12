@@ -83,7 +83,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.locator('#nav button[data-view="plugins"]').click();
         const view = page.locator("#view-plugins");
         await view.waitFor({ state: "visible" });
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const zed = view.locator(".pm-row").filter({ hasText: "Zed" });
         const chip = zed.locator(".pm-chip.moved");
         await chip.waitFor();

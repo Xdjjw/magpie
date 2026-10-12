@@ -6,12 +6,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v3/pkg/application"
 	"github.com/wailsapp/wails/v3/pkg/services/notifications"
+	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -42,8 +44,12 @@ func (n *notifier) start() error {
 			log.Println("notifications:", err)
 			return
 		}
-		// a click on one opens the Usage page
-		ns.OnNotificationResponse(func(notifications.NotificationResult) {
+		// a click on an alert opens the Usage page; on a turn's end, where
+		// the user goes is their agent, not magpie
+		ns.OnNotificationResponse(func(r notifications.NotificationResult) {
+			if strings.HasPrefix(r.Response.ID, turnNotice) {
+				return
+			}
 			n.h.whenReady(func() { application.InvokeAsync(func() { n.h.ShowMain("usage") }) })
 		})
 		n.ns = ns
@@ -84,11 +90,17 @@ func (n *notifier) problem() string {
 	return ""
 }
 
-func (n *notifier) send(title, body string) {
+// turnNotice is the id a turn's end is notified under, an alert's
+// "magpie-alert-"
+const turnNotice = "magpie-turn-"
+
+func (n *notifier) send(title, body string) { n.sendAs("magpie-alert-", title, body) }
+
+func (n *notifier) sendAs(kind, title, body string) {
 	if !n.allowed() {
 		return
 	}
-	id := fmt.Sprintf("magpie-alert-%d", time.Now().UnixNano())
+	id := fmt.Sprintf("%s%d", kind, time.Now().UnixNano())
 	if err := n.ns.SendNotification(notifications.NotificationOptions{ID: id, Title: title, Body: body}); err != nil {
 		log.Println("notifications:", err)
 	}
@@ -112,8 +124,13 @@ func (h *host) watchAlerts() {
 	go func() {
 		<-h.ready
 		// set before this run: asked now, so Settings can say if it was refused
-		if s := settings.Load(); s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 {
+		if s := settings.Load(); s.UsageAlert > 0 || s.BalanceAlert > 0 || s.ResetReminder > 0 || s.TurnDoneAlert > 0 {
 			go n.allowed()
+		}
+		// an agent's turn done, past the length set (itieniu on X)
+		gateway.TurnDone = func(t gateway.TurnEnd) {
+			title, body := turnDoneText(trayLang(settings.Load().Lang, systemLang), agentName(t.Agent), t)
+			n.sendAs(turnNotice, title, body)
 		}
 		provider.WatchQuotas(context.Background(), wake, func(a provider.QuotaAlert) {
 			s := settings.Load()

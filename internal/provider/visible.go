@@ -263,6 +263,32 @@ func SetHiddenModels(agent string, ids []string) error {
 	return nil
 }
 
+// OwnModelsHidden reports whether agent's pickers leave out the models it
+// reaches on its own, offering magpie's alone (#1642).
+func OwnModelsHidden(agent string) bool {
+	return slices.Contains(heldSettings().OwnModelsHidden, strings.ToLower(strings.TrimSpace(agent)))
+}
+
+// SetOwnModelsHidden switches agent's pickers between offering its own
+// models beside magpie's and offering magpie's alone.
+func SetOwnModelsHidden(agent string, on bool) error {
+	agent = strings.ToLower(strings.TrimSpace(agent))
+	if agent == "" {
+		return errors.New("no agent")
+	}
+	s := settings.Load()
+	if slices.Contains(s.OwnModelsHidden, agent) == on {
+		return nil
+	}
+	if on {
+		s.OwnModelsHidden = append(s.OwnModelsHidden, agent)
+		slices.Sort(s.OwnModelsHidden)
+	} else {
+		s.OwnModelsHidden = slices.DeleteFunc(s.OwnModelsHidden, func(a string) bool { return a == agent })
+	}
+	return settings.Save(s)
+}
+
 // Families are the families providers and groups are tagged with, sorted.
 func Families() []string {
 	var out []string

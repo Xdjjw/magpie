@@ -24,6 +24,11 @@ func PluginIcon(pp plugin.Provider) string {
 	return plugin.Icon(pp.Spec, pp.ID)
 }
 
+// PluginOwnIcon is the Icon value of a picture a plugin gave (a data:image
+// URI or an https URL), "" while there is none to show: an agent a
+// plugin adds shows it as a provider's does.
+func PluginOwnIcon(said string) string { return pluginOwnIcon(said) }
+
 // plugIcons are the pictures plugins gave, by their hash: the Icon value
 // each is kept as, and when one was last tried (a URL being fetched or
 // that failed, a data URI that isn't a picture).

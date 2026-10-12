@@ -107,7 +107,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await serverNames(), ["gamma", "beta", "Alpha"]);
 
         // the skills: by source at first, then one flat list by name
-        await page.locator("#view-library .lib-tabs .opt").nth(2).click();
+        await page.locator(":is(#view-library .lib-tabs .opt, .nav-s):visible").nth(2).click();
         await page.locator("#view-library .lib-group").first().waitFor();
         const skillBox = page.locator('.segs.sortby[data-sort="libSkills"]');
         assert.deepEqual(await skillBox.locator(".opt").allTextContents(), [w.source, "A→Z", "Z→A"]);
@@ -123,10 +123,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // each list keeps its own pick through a reload
         await openLib();
         assert.deepEqual(await skillNames(), ["pear", "mango", "kiwi", "cherry", "apple"]);
-        await page.locator("#view-library .lib-tabs .opt").nth(1).click();
+        await page.locator(":is(#view-library .lib-tabs .opt, .nav-s):visible").nth(1).click();
         await page.locator("#view-library .lib-body:not(.lib-skel) .lib-list .lib-row").first().waitFor();
         assert.deepEqual(await serverNames(), ["gamma", "beta", "Alpha"]);
-        await page.locator("#view-library .lib-tabs .opt").nth(2).click();
+        await page.locator(":is(#view-library .lib-tabs .opt, .nav-s):visible").nth(2).click();
         await pick("libSkills", 0);
         await page.locator("#view-library .lib-group").first().waitFor();
 
@@ -134,7 +134,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const pluginNames = () => names("#view-plugins .pm-list .pm-row > .who > .name > span:first-child");
         const openPlugins = async () => {
           await page.goto("http://magpie.test/?view=plugins");
-          await page.locator("#view-plugins .lib-tabs .opt").nth(1).click();
+          await page.locator(":is(#view-plugins .lib-tabs .opt, .nav-s):visible").nth(1).click();
           await page.locator("#view-plugins .pm-row").first().waitFor();
         };
         await openPlugins();

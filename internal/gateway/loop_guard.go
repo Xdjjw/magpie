@@ -61,6 +61,9 @@ type unitRun struct {
 	ring     [loopWindow]uint64
 	n        int // units seen
 	counts   map[uint64]*unitCount
+	// runOn is how many units in a row were cut at unitMost, with no break
+	// in them, as the same few words over and over (runOnWords)
+	runOn int
 }
 
 type unitCount struct {
@@ -74,6 +77,9 @@ type loopTrip struct {
 	reasoning bool
 	units     []string // the different units, the most frequent first
 	window    int
+	// runOn: the loop had no break in it, and units are its words and
+	// window how many characters it ran to
+	runOn bool
 }
 
 // message is what the agent and the logs are told.
@@ -89,6 +95,10 @@ func (t loopTrip) message() string {
 			break
 		}
 		quoted = append(quoted, fmt.Sprintf("%q", u))
+	}
+	if t.runOn {
+		return fmt.Sprintf("magpie ended this reply: the model's %s was stuck in a loop, its last %d characters the same over and over without a break (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
+			what, t.window, strings.Join(quoted, " "))
 	}
 	return fmt.Sprintf("magpie ended this reply: the model's %s was stuck in a loop, its last %d lines and sentences all among the same %d (%s), and would have run on to its output limit. Ask again, or set Settings › Models › Replies › Stop looping replies off",
 		what, t.window, len(t.units), strings.Join(quoted, " "))
@@ -250,9 +260,20 @@ func (r *unitRun) add(s string) (loopTrip, bool) {
 			r.lettered = r.lettered || unicode.IsLetter(c)
 		}
 		if r.cur.Len() >= unitMost {
+			// a unit this long has had no break: a loop with none in it
+			// ("mcp mcp mcp …", #1489) is never 256 of them before the
+			// reply's limit, so it is read on its own
+			if words, ok := runOnWords(r.cur.String()); ok {
+				if r.runOn++; r.runOn >= runOnUnits {
+					return loopTrip{units: words, window: r.runOn * unitMost, runOn: true}, true
+				}
+			} else {
+				r.runOn = 0
+			}
 			if t, ok := r.end(); ok {
 				return t, true
 			}
+			continue
 		}
 	}
 	return loopTrip{}, false
@@ -262,6 +283,15 @@ func (r *unitRun) add(s string) (loopTrip, bool) {
 // become a loop with it.
 func (r *unitRun) end() (loopTrip, bool) {
 	raw := r.cur.String()
+	if r.cur.Len() < unitMost {
+		// a break; a long unit before it that still runs on keeps the count
+		// (a loop broken into lines longer than unitMost)
+		if len(raw) < unitMost/8 {
+			r.runOn = 0
+		} else if _, ok := runOnWords(raw); !ok {
+			r.runOn = 0
+		}
+	}
 	r.cur.Reset()
 	r.stop, r.lettered = false, false
 	key, ok := unitKey(raw)
@@ -314,6 +344,61 @@ func (r *unitRun) end() (loopTrip, bool) {
 	}
 	return t, true
 }
+
+// runOnUnits is how many units cut at unitMost in a row, each the same
+// few words over and over, are a loop: some 2,000 tokens of it.
+const runOnUnits = 2
+
+// runOnWords says whether s, written with no break, is the same few words
+// over and over ("mcp mcp mcp …", #1489, or "mcpmcpmcp…"), and which. A
+// long line of prose, code, JSON, base64 or a table row has many different
+// words (its names, numbers and cells) or none.
+func runOnWords(s string) ([]string, bool) {
+	if !hasWord(s) {
+		return nil, false
+	}
+	// one piece repeated, a word or a few with no space between
+	for p := 1; p <= 64 && 4*p <= len(s); p++ {
+		i := p
+		for i < len(s) && s[i] == s[i-p] {
+			i++
+		}
+		if i == len(s) {
+			start := 0
+			for start < p && !utf8.RuneStart(s[start]) {
+				start++
+			}
+			// a few rounds of it, which a word cut anywhere is whole in
+			end := min(start+3*p, len(s))
+			for end < len(s) && !utf8.RuneStart(s[end]) {
+				end++
+			}
+			return []string{strings.TrimSpace(s[start:end])}, true
+		}
+	}
+	counts := map[string]int{}
+	var order []string
+	words := 0
+	for _, w := range strings.FieldsFunc(strings.ToLower(s), func(c rune) bool {
+		return !unicode.IsLetter(c) && !unicode.IsDigit(c) && c != '_'
+	}) {
+		words++
+		if counts[w]++; counts[w] == 1 {
+			order = append(order, w)
+		}
+		if len(counts) > runOnDistinct {
+			return nil, false
+		}
+	}
+	if words*32 < len(s) {
+		return nil, false // a few long words: not read as a loop
+	}
+	sort.SliceStable(order, func(i, j int) bool { return counts[order[i]] > counts[order[j]] })
+	return order, true
+}
+
+// runOnDistinct is the most different words a run-on loop has.
+const runOnDistinct = 8
 
 // unitKey is what tells a unit apart from others, and whether it counts:
 // its words, without case or its closing stop. A unit with no word in it

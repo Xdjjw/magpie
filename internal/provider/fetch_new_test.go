@@ -4,11 +4,14 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/testenv"
 )
 
 // An account signed in while magpie runs gets its vendor's list the next
@@ -61,8 +64,10 @@ func TestFetchNewAccount(t *testing.T) {
 		return out
 	}
 
-	// nothing signed in yet: nothing asked
-	FetchNew(time.Second)
+	// nothing signed in yet: nothing asked, and nothing missing
+	if FetchNew(time.Second) {
+		t.Fatal("missing a list with no account")
+	}
 	if n := asked.Load(); n != 0 {
 		t.Fatalf("asked %d times with no account", n)
 	}
@@ -78,7 +83,9 @@ func TestFetchNewAccount(t *testing.T) {
 	if ids()["hy4-preview"] {
 		t.Fatal("the vendor's model listed before its list was fetched")
 	}
-	FetchNew(5 * time.Second)
+	if FetchNew(5 * time.Second) {
+		t.Fatal("a list fetched said missing")
+	}
 	got := ids()
 	if !got["hy4-preview"] || !got["gpt-6-astra"] || len(got) != 3 {
 		t.Fatalf("after FetchNew: %v", got)
@@ -96,8 +103,14 @@ func TestFetchNewAccount(t *testing.T) {
 	newFetches.m = map[string]time.Time{}
 	newFetches.Unlock()
 	down.Store(true)
-	FetchNew(5 * time.Second)
-	FetchNew(5 * time.Second)
+	// missing both times: when it failed, and while it waits to ask again,
+	// so the terminal and magpie serve try once more later (#1789)
+	if !FetchNew(5 * time.Second) {
+		t.Fatal("a list that failed not said missing")
+	}
+	if !FetchNew(5 * time.Second) {
+		t.Fatal("a list waiting to be asked again not said missing")
+	}
 	if n := asked.Load(); n != 2 {
 		t.Fatalf("a failing vendor asked %d times, want once more", n-1)
 	}
@@ -105,8 +118,61 @@ func TestFetchNewAccount(t *testing.T) {
 	newFetchRetry = 0
 	defer func() { newFetchRetry = oldRetry }()
 	down.Store(false)
-	FetchNew(5 * time.Second)
+	if FetchNew(5 * time.Second) {
+		t.Fatal("missing after the list came")
+	}
 	if n := asked.Load(); n != 3 || !ids()["hy4-preview"] {
 		t.Fatalf("not asked again after the retry time: %d %v", n, ids())
+	}
+}
+
+// A CLI asked who is signed in for the first time, answering after a look's
+// wait, is waited for: `cursor-agent about` asks Cursor's servers, and at a
+// start with nothing kept from before it answered after the look, so the
+// terminal and magpie serve offered Cursor's fallback Auto alone (#1789).
+func TestFetchNewWaitsForASlowSignIn(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the fake cursor-agent is a shell script")
+	}
+	isolate(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	newFetches.Lock()
+	newFetches.m = map[string]time.Time{}
+	newFetches.Unlock()
+	exe := filepath.Join(home, "cursor-agent")
+	testenv.Program(t, exe, `#!/bin/sh
+case "$1" in
+about) /bin/sleep 1; echo '{"userEmail":"cursor@example.com","subscriptionTier":"pro"}' ;;
+models) printf 'Available models\n\nauto - Auto (default)\ncomposer-2.5 - Composer 2.5\n' ;;
+*) exit 1 ;;
+esac
+`)
+	wasExe, wasOut, wasFirst := CursorExecutable, cursorSignedOut, firstAsk
+	CursorExecutable = func() string { return exe }
+	cursorSignedOut = func() bool { return false }
+	firstAsk = 10 * time.Millisecond // the look gives up before `about` answers
+	t.Cleanup(func() {
+		CursorExecutable, cursorSignedOut, firstAsk = wasExe, wasOut, wasFirst
+		ForgetAccounts()
+	})
+	ForgetAccounts()
+
+	if FetchNew(time.Minute) {
+		t.Fatal("Cursor's list said missing")
+	}
+	p, err := Find("cursor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, m := range p.Available() {
+		ids = append(ids, m.ID)
+	}
+	if !slices.Contains(ids, "composer-2.5") {
+		t.Fatalf("FetchNew didn't wait for cursor-agent about: %v", ids)
 	}
 }

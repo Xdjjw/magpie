@@ -398,3 +398,47 @@ test("partners: the list's fetches are counted, one in ten", async () => {
     Math.random = random;
   }
 });
+
+// /api/icon fetches a picture for the app so its host sees Cloudflare, not
+// the user: nothing of the asker's request goes on, and only a picture
+// comes back.
+test("icon proxy passes on a picture and nothing of the asker", async () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const was = globalThis.fetch;
+  const asked = [];
+  globalThis.fetch = async (u, init = {}) => {
+    asked.push({ u: String(u), init });
+    if (String(u) === "https://author.example/logo.png") return new Response(PNG);
+    if (String(u) === "https://author.example/page") return new Response("<html><script>x</script></html>");
+    if (String(u) === "https://author.example/big.png") return new Response(new Uint8Array(2 << 20).fill(0x89));
+    if (String(u) === "https://author.example/gone.png") return new Response("no", { status: 404 });
+    throw new Error("a test reached " + u); // never the real network
+  };
+  try {
+    const req = new Request("https://usemagpie.ai/api/icon?url=" + encodeURIComponent("https://author.example/logo.png"), {
+      headers: { Cookie: "lang=zh", "User-Agent": "magpie/0.1.1168", "X-Forwarded-For": "203.0.113.9", "CF-Connecting-IP": "203.0.113.9" },
+    });
+    const res = await worker.fetch(req, {}, { waitUntil() {} });
+    assert.equal(res.status, 200);
+    assert.equal(res.headers.get("Content-Type"), "image/png");
+    assert.deepEqual(new Uint8Array(await res.arrayBuffer()), PNG);
+    const sent = asked.find((a) => a.u === "https://author.example/logo.png");
+    const h = new Headers(sent.init.headers);
+    assert.deepEqual([...h.keys()].sort(), ["accept", "user-agent"]);
+    assert.doesNotMatch(h.get("user-agent"), /0\.1\.1168/);
+
+    const ask = async (u) => (await worker.fetch(new Request("https://usemagpie.ai/api/icon?url=" + encodeURIComponent(u)), {}, { waitUntil() {} })).status;
+    assert.equal(await ask("https://author.example/page"), 415);
+    assert.equal(await ask("https://author.example/big.png"), 413);
+    assert.equal(await ask("https://author.example/gone.png"), 502);
+    assert.equal(await ask("http://author.example/logo.png"), 400);
+    assert.equal(await ask("https://u:p@author.example/logo.png"), 400);
+    assert.equal(await ask("https://author.example:8443/logo.png"), 400);
+    assert.equal(await ask("not a url"), 400);
+    assert.equal(await ask("https://usemagpie.ai/api/icon?url=x"), 400);
+    assert.equal(await ask("https://www.usemagpie.ai/logo.png"), 400);
+    assert.ok(asked.every((a) => !new URL(a.u).hostname.endsWith("usemagpie.ai")), "the worker asked itself");
+  } finally {
+    globalThis.fetch = was;
+  }
+});

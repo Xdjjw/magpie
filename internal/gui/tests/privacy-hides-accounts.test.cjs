@@ -96,16 +96,37 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page = await open(settings, null, "http://magpie.test/?view=settings&tab=privacy", saved);
       const row = (name) => page.locator("#redactList .row", { has: page.locator(".name", { hasText: new RegExp("^" + name + "$") }) });
       await row(w.hide).waitFor();
-      const y0 = await page.evaluate(() => scrollY);
+      const top = () => page.evaluate(() => document.querySelector("#view-settings").scrollTop);
+      const y0 = await top();
       await row(w.personal).getByRole("button", { name: w.on, exact: true }).click();
       await page.waitForFunction(() => localStorage.getItem("magpie.maskEmails") === "1");
       await page.waitForFunction(() => document.querySelector("#usageMask")?.getAttribute("aria-pressed") === "true");
       assert.ok(saved.some((b) => b.redactPersonal === true), JSON.stringify(saved));
       // the switch here says so, and turns it off again
       await page.waitForFunction((on) => [...document.querySelectorAll("#redactList .row")].some((r) => r.querySelector(".name")?.textContent === on.hide && r.querySelector(".opt.on")?.textContent === on.on), w);
-      await row(w.hide).getByRole("button", { name: w.off, exact: true }).click();
+      assert.equal(await top(), y0, "a click never scrolls");
+      // since Settings' search box (51042630e) the row sits under the
+      // window's foot at this size, and the reader scrolls to it with the
+      // wheel. Playwright's own scroll into view is code, which the click
+      // guard puts back; WebKit's click came after that and hit the foot
+      // (#1632)
+      const off = row(w.hide).getByRole("button", { name: w.off, exact: true });
+      const under = () => off.evaluate((b) => b.getBoundingClientRect().bottom > document.querySelector("footer.foot").getBoundingClientRect().top - 4);
+      await page.mouse.move(450, 300);
+      for (let i = 0; i < 30 && (await under()); i++) { await page.mouse.wheel(0, 60); await page.waitForTimeout(30); }
+      assert.equal(await under(), false, "the wheel brings the row into sight");
+      // a wheel step can still be landing (Chromium scrolls off the main
+      // thread): the place the click is measured from is where it settles
+      await page.evaluate(() => new Promise((done) => {
+        const v = document.querySelector("#view-settings");
+        let last = v.scrollTop, still = 0;
+        const look = () => { if (v.scrollTop === last) still++; else { last = v.scrollTop; still = 0; } if (still >= 10) done(); else requestAnimationFrame(look); };
+        requestAnimationFrame(look);
+      }));
+      const y1 = await top();
+      await off.click();
       await page.waitForFunction(() => localStorage.getItem("magpie.maskEmails") === "0");
-      assert.equal(await page.evaluate(() => scrollY), y0, "a click never scrolls");
+      assert.equal(await top(), y1, "a click never scrolls");
       // no coloured left border on the new row
       assert.equal(await row(w.hide).evaluate((r) => getComputedStyle(r).borderLeftWidth), "0px");
       await page.context().close();

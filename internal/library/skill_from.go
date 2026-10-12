@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -199,34 +200,95 @@ func remoteRepo(s string) string {
 }
 
 // noteFrom writes down, for the skills the library has already that a
-// repository being installed from has too, that they came from there,
-// when the library's SKILL.md is that repository's very own: installing
-// from it again groups them with the rest of it. root is where the
-// repository was fetched to.
-func noteFrom(src Source, root string, cands []Candidate) {
+// repository being installed from has too, that they came from there:
+// one whose SKILL.md is that repository's very own, and one traced to
+// nowhere by the same name when the library has others from there. A
+// pack added a while ago is mostly older copies (White Immortal on
+// Discord: 20 of mattpocock/skills' 38 grouped, the rest edited there
+// since), and a name the repository has beside others the user took
+// from it is that skill. root is where the repository was fetched to. It
+// gives how many it noted.
+func noteFrom(src Source, root string, cands []Candidate) int {
 	if src.Kind != "github" {
-		return
+		return 0
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	l, err := load()
 	if err != nil {
-		return
+		return 0
 	}
-	changed := false
+	tr := &tracer{}
+	have := slices.ContainsFunc(l.Skills, func(s *Skill) bool { return strings.EqualFold(tr.repoOf(s), src.Repo) })
+	noted := 0
+	var same []*Skill
 	for _, c := range cands {
 		s := l.skill(c.Name)
-		if s == nil || (s.Source != nil && s.Source.Kind == "github") || s.From == src.Repo {
+		if s == nil || (s.Source != nil && s.Source.Kind == "github") || strings.EqualFold(s.From, src.Repo) {
 			continue
 		}
 		mine, err1 := os.ReadFile(filepath.Join(skillDir(s.Name), "SKILL.md"))
 		theirs, err2 := os.ReadFile(filepath.Join(root, filepath.FromSlash(c.Path), "SKILL.md"))
-		if err1 != nil || err2 != nil || !bytes.Equal(bytes.TrimSpace(mine), bytes.TrimSpace(theirs)) {
+		if err1 != nil || err2 != nil {
 			continue
 		}
-		s.From, changed = src.Repo, true
+		if bytes.Equal(bytes.TrimSpace(mine), bytes.TrimSpace(theirs)) {
+			s.From, have = src.Repo, true
+			noted++
+		} else if tr.repoOf(s) == "" {
+			same = append(same, s)
+		}
 	}
-	if changed {
+	if have {
+		for _, s := range same {
+			s.From = src.Repo
+			noted++
+		}
+	}
+	if noted > 0 {
 		l.save()
 	}
+	return noted
+}
+
+// RegroupSkills traces the library's skills again (the Library page's
+// Group again): each GitHub repository a skill is traced to is fetched,
+// and the skills it has that aren't grouped with it yet are noted as from
+// there, as installing from it again would. It gives how many were
+// grouped; an error only when no repository could be fetched.
+func RegroupSkills() (int, error) {
+	l, err := load()
+	if err != nil {
+		return 0, err
+	}
+	tr := &tracer{}
+	var repos []string
+	seen := map[string]bool{}
+	for _, s := range l.Skills {
+		r := tr.repoOf(s)
+		if !repoRe.MatchString(r) || seen[strings.ToLower(r)] {
+			continue
+		}
+		seen[strings.ToLower(r)] = true
+		repos = append(repos, r)
+	}
+	noted, fetched := 0, 0
+	var first error
+	for _, r := range repos {
+		src := Source{Kind: "github", Repo: r}
+		root, err := fetch(src)
+		if err != nil {
+			if first == nil {
+				first = err
+			}
+			continue
+		}
+		fetched++
+		noted += noteFrom(src, root, candidates(root, ""))
+		os.RemoveAll(root)
+	}
+	if fetched == 0 && first != nil {
+		return 0, first
+	}
+	return noted, nil
 }

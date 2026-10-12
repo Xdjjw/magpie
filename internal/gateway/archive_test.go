@@ -174,15 +174,21 @@ type longVendor struct{}
 
 func (longVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	b, _ := io.ReadAll(r.Body)
-	words := strings.Repeat("lorem ipsum dolor ", 25000) // 450 KB
+	// Words that don't repeat: the same few words over and over with no
+	// break is a loop the loop guard ends (#1489).
+	var sb strings.Builder
+	for i := 0; sb.Len() < 450_000; i++ {
+		fmt.Fprintf(&sb, "word%d ", i)
+	}
+	words := sb.String() // 450 KB
 	if !strings.Contains(string(b), `"stream":true`) {
 		w.Header().Set("Content-Type", "application/json")
 		io.WriteString(w, `{"id":"c1","object":"chat.completion","model":"m1","choices":[{"index":0,"message":{"role":"assistant","content":"`+words+`RES-TAIL"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`)
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
-	for range 1000 {
-		io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"content":"`+words[:450]+`"}}]}`+"\n\n")
+	for i := range 1000 {
+		io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"content":"`+words[i*450:(i+1)*450]+`"}}]}`+"\n\n")
 	}
 	io.WriteString(w, `data: {"id":"c1","object":"chat.completion.chunk","model":"m1","choices":[{"index":0,"delta":{"content":"RES-TAIL"},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`+"\n\ndata: [DONE]\n\n")
 }

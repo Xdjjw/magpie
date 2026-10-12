@@ -555,6 +555,46 @@ func TestCallsCodexTook(t *testing.T) {
 	}
 }
 
+// An older rollout writes a call's token_count after its own tool's output
+// (shape from a real 2026-09-06 rollout, content stripped). Each call of a
+// turn of several is timed from what the model had last been given before
+// its first output item to its last, never from its own tool's output, which
+// read as 1 ms windows (Fallmonkey on Discord). A tool call over the read
+// buffer (a large patch) is read by its head.
+func TestCallsCodexTimedFromTheAsk(t *testing.T) {
+	d := setupCalls(t)
+	rollout := filepath.Join(d.codex, "sessions", "2026", "09", "20", "rollout-2026-09-20T10-00-00-0190aaaa-1111-7222-8333-444455556666.jsonl")
+	item := func(sec int, typ, extra string) string {
+		return fmt.Sprintf(`{"timestamp":"%s","type":"response_item","payload":{"type":"%s","id":"x"%s}}`, stamp(sec), typ, extra)
+	}
+	msg := func(sec int, role string) string { return item(sec, "message", `,"role":"`+role+`"`) }
+	big := `,"input":"` + strings.Repeat("x", 1200<<10) + `"`
+	lines := cxTurnLines(0, "t1", "gpt-6-sol", "high")
+	lines = append(lines,
+		msg(3, "developer"), msg(3, "user"),
+		item(10, "reasoning", ""), msg(11, "assistant"), item(12, "custom_tool_call", `,"call_id":"c1"`),
+		item(13, "custom_tool_call_output", `,"call_id":"c1"`),
+		tokenCountLine(13, cxUse(1000, 0, 0, 300, 100), cxUse(1000, 0, 0, 300, 100)), // asked at 3, answered by 12: 9 s
+		item(19, "reasoning", ""), item(21, "custom_tool_call", `,"call_id":"c2"`),
+		item(22, "custom_tool_call_output", `,"call_id":"c2"`),
+		tokenCountLine(22, cxUse(2500, 1000, 0, 500, 150), cxUse(1500, 1000, 0, 200, 50)), // from 13 to 21: 8 s
+		item(31, "reasoning", ""), item(51, "custom_tool_call", `,"call_id":"c3"`+big),
+		item(83, "custom_tool_call_output", `,"call_id":"c3"`),                               // the tool ran 32 s
+		tokenCountLine(83, cxUse(4000, 2500, 0, 1715, 450), cxUse(1500, 1500, 0, 1215, 300)), // from 22 to 51: 29 s
+		item(97, "reasoning", ""), msg(98, "assistant"),
+		tokenCountLine(98, cxUse(5600, 4000, 0, 1903, 500), cxUse(1600, 1500, 0, 188, 50)), // no tool: from 83 to its line, 15 s
+		cxDoneLine(98, "t1", 98000, 10000),
+	)
+	writeLines(t, rollout, lines...)
+	var took []int64
+	for _, c := range Calls(time.Time{}) {
+		took = append(took, c.Millis)
+	}
+	if fmt.Sprint(took) != "[15000 29000 8000 9000]" {
+		t.Fatalf("took %v", took)
+	}
+}
+
 // bare is a call without where it is in its file, which a test of what the
 // calls are has no want of.
 func bare(c Call) Call {

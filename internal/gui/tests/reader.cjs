@@ -31,4 +31,40 @@ async function click(page, locator) {
   await locator.click();
 }
 
-module.exports = { inView, click };
+// Settings is drawn from each read of the settings, and opening the page
+// reads them twice: the page's own read, then the window's load() once the
+// state is in. Every row is replaced by the second draw, so a row found
+// after the first is detached under whatever the test does to it next
+// (#1653: scrollIntoViewIfNeeded in WebKit on a busy machine). Call
+// watchSettingsReads before page.goto; settingsDrawn then waits until load()
+// has asked for its read and every read asked for has been drawn. A page is
+// watched once however many times it is opened.
+const watched = new WeakSet();
+async function watchSettingsReads(page) {
+  if (watched.has(page)) return;
+  watched.add(page);
+  await page.addInitScript(() => {
+    const reads = window.__settingsReads = { asked: 0, drawn: 0 };
+    const fetch0 = window.fetch;
+    window.fetch = function (input, init) {
+      const p = fetch0.apply(this, arguments);
+      const url = new URL(typeof input === "string" ? input : input.url, location.href);
+      if (url.pathname !== "/api/settings" || (init?.method || "GET") !== "GET") return p;
+      reads.asked++;
+      // drawn a task after its body is in: loadSettings draws in the
+      // microtasks that follow
+      const drawn = () => setTimeout(() => reads.drawn++);
+      return p.then((res) => {
+        const text = res.text;
+        res.text = function () { return text.call(this).finally(drawn); };
+        return res;
+      }, (e) => { drawn(); throw e; });
+    };
+  });
+}
+
+// load.done is set in the same run of load() that then asks for the
+// settings, with no wait between, so once it is set the read is counted.
+const settingsDrawn = (page) => page.waitForFunction(() => load.done && __settingsReads.asked === __settingsReads.drawn);
+
+module.exports = { inView, click, watchSettingsReads, settingsDrawn };

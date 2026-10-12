@@ -61,13 +61,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const nav = page.locator('#nav button[data-view="plugins"]');
         await page.waitForFunction(() => document.querySelector('#nav button[data-view="plugins"]')?.classList.contains("has-dot"));
         assert.equal(await nav.getAttribute("title"), w.out);
-        // the dot is drawn, small, inside the button
+        // the dot is drawn, small, inside the button (a little larger at the
+        // sidebar row's end than at a tab's corner)
         const dot = await nav.evaluate((b) => { const s = getComputedStyle(b, "::after"); return { w: s.width, pos: s.position }; });
-        assert.deepEqual(dot, { w: "5px", pos: "absolute" });
+        assert.deepEqual(dot, { w: await page.evaluate(() => document.body.classList.contains("side-nav")) ? "6px" : "5px", pos: "absolute" });
 
         await nav.click();
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const chip = view.locator(".pm-chip.soft", { hasText: w.auto });
         await chip.waitFor();
         assert.match(await chip.getAttribute("title"), w.from);

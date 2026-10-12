@@ -108,7 +108,7 @@ async function check(p, card, western, what) {
 // every other count the Usage page shows, in the one unit or the other
 const has = (x, western) => western ? !/[万亿]/.test(x) && /\d[KMB]\b/.test(x) : !/\d[KMB]\b/.test(x) && /[万亿]/.test(x);
 async function rest(p, western, what) {
-  await p.locator("#usageTab .opt").nth(0).click();
+  await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(0).click();
   await p.locator("#stats .kpi b").first().waitFor();
   const tiles = await p.locator("#stats .kpi").allInnerTexts();
   assert.equal(tiles[0].split("\n")[0], western ? "1.54B" : "15.4 亿", what + ": the Overview's tokens");
@@ -118,19 +118,19 @@ async function rest(p, western, what) {
   assert(tiles.some((x) => /(hit rate|命中率) 66%/.test(x)), `${what}: the Overview's hit rate in ${JSON.stringify(tiles)}`);
   assert.equal((await p.locator("#chart .peak").textContent()).trim(), western ? "1.46B" : "14.6 亿", what + ": the Overview chart's peak");
 
-  await p.locator("#usageTab .opt").nth(1).click();
+  await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
   await p.locator("#ledChart svg").waitFor();
   const sum = (await p.locator("#ledSum").textContent()).trim();
   assert(has(sum, western), `${what}: the Requests summary "${sum}"`);
   assert(sum.includes(western ? "15M" : "1540 万"), `${what}: the Requests summary "${sum}"`);
 
-  await p.locator("#usageTab .opt").nth(2).click();
+  await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(2).click();
   await p.waitForFunction(() => !document.querySelector("#sessStats .kpi.stale") && /\d/.test(document.querySelectorAll("#sessStats .kpi b")[1]?.textContent || ""));
   const st = await p.locator("#sessStats .kpi").allInnerTexts();
   assert.equal(st[1].split("\n")[0], western ? "1.54B" : "15.4 亿", what + ": the Sessions tokens");
   assert(st[0].includes(western ? "500M" : "5 亿"), `${what}: the Sessions median "${st[0]}"`);
   assert(has(st[3], western), `${what}: the Sessions cache "${st[3]}"`);
-  await p.locator("#usageTab .opt").nth(1).click();
+  await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
 }
 
 const settingsView = (p) => p.locator("#view-settings").evaluate((v) => v.scrollTop);
@@ -151,7 +151,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await p.route("**/*", serve(lang, store, false));
         const requests = async () => {
           await p.locator('[data-view="usage"]').first().click();
-          await p.locator("#usageTab .opt").nth(1).click();
+          await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
           await p.locator("#ledChart svg").waitFor();
         };
 
@@ -164,7 +164,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await p.locator("#prefs").click();
 
-        await p.locator("#setTab-usage").click();
+        await p.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await p.locator("#currencySegs .opt").first().waitFor();
         if (lang === "en") {
           assert.equal(await p.locator("#unitsRow").isHidden(), true, "no Number units row in English");

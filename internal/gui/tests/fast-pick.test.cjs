@@ -20,6 +20,8 @@ function fixtures() {
     { value: "magpie/codex/gpt-5.5", ref: "codex/gpt-5.5", label: "GPT-5.5", group: "ChatGPT", fastFor: "codex" },
     { value: "magpie/codex/gpt-5.4-mini", ref: "codex/gpt-5.4-mini", label: "GPT-5.4 mini", group: "ChatGPT" },
     { value: "magpie/zai/glm-5", ref: "zai/glm-5", label: "GLM-5", group: "Z.ai" },
+    // a GPT model on a provider the user added by its address (#1615)
+    { value: "magpie/rl/o4-mini", ref: "rl/o4-mini", label: "o4-mini", group: "Relay", fastFor: "codex", ownFast: true },
   ];
   const agents = [{ id: "codex", name: "Codex", path: "/test/codex", wired: true, fields: [{ key: "model", label: "model", value: "magpie/codex/gpt-5.5", options }] }];
   const providers = { providers: [{
@@ -62,10 +64,14 @@ function server(lang, posts, refuse) {
 }
 
 const said = {
-  en: { on: "GPT-5.5 is sent fast for Codex: quicker, at a higher price. Click to send it at the usual speed", off: "Send GPT-5.5 fast for Codex: quicker, at a higher price" },
-  zh: { on: "Codex 用 GPT-5.5 时走快速模式：更快，价格更高。点一下改回标准速度", off: "Codex 用 GPT-5.5 时走快速模式：更快，价格更高" },
-  ja: { on: "Codex の GPT-5.5 は高速モードで送ります：速く、料金は高め。クリックで標準速度に戻します", off: "Codex の GPT-5.5 を高速モードで送る：速く、料金は高め" },
-  de: { on: "GPT-5.5 geht für Codex im Schnellmodus: schneller, zu einem höheren Preis. Klicken für die normale Geschwindigkeit", off: "GPT-5.5 für Codex im Schnellmodus senden: schneller, zu einem höheren Preis" },
+  en: { on: "GPT-5.5 is sent fast for Codex: quicker, at a higher price. Click to send it at the usual speed", off: "Send GPT-5.5 fast for Codex: quicker, at a higher price",
+    ownOff: 'Ask your provider for OpenAI\'s fast mode (service_tier "priority") on o4-mini for Codex: quicker, at a higher price, where it serves it' },
+  zh: { on: "Codex 用 GPT-5.5 时走快速模式：更快，价格更高。点一下改回标准速度", off: "Codex 用 GPT-5.5 时走快速模式：更快，价格更高",
+    ownOff: 'Codex 用 o4-mini 时向你的服务商请求 OpenAI 的快速模式（service_tier "priority"）：服务商支持时更快，价格更高' },
+  ja: { on: "Codex の GPT-5.5 は高速モードで送ります：速く、料金は高め。クリックで標準速度に戻します", off: "Codex の GPT-5.5 を高速モードで送る：速く、料金は高め",
+    ownOff: 'Codex の o4-mini で、プロバイダーに OpenAI の高速モード（service_tier "priority"）を求める：対応していれば速く、料金は高め' },
+  de: { on: "GPT-5.5 geht für Codex im Schnellmodus: schneller, zu einem höheren Preis. Klicken für die normale Geschwindigkeit", off: "GPT-5.5 für Codex im Schnellmodus senden: schneller, zu einem höheren Preis",
+    ownOff: 'Deinen Anbieter für Codex bei o4-mini nach OpenAIs Schnellmodus (service_tier "priority") fragen: schneller, zu einem höheren Preis, wo er ihn anbietet' },
 };
 const row = '.row.agent[data-id="codex"]';
 const pop = "#pop:not([hidden]) #list li";
@@ -109,6 +115,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(fits, "the bolt fits in its row");
         assert.equal(await bolt.getAttribute("aria-pressed"), "false");
         assert.equal(await bolt.getAttribute("title"), said[lang].off);
+        // on the user's own provider fast is only asked for, and says so
+        const own = page.locator(pop).filter({ hasText: "o4-mini" }).first();
+        await own.hover();
+        assert.equal(await own.locator("button.fast").getAttribute("title"), said[lang].ownOff);
 
         await bolt.click();
         await page.waitForTimeout(150);

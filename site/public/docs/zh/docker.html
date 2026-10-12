@@ -163,7 +163,7 @@ docker logs magpie</pre>
 
     <h2 id="share"><a class="anchor" href="#share">网关密钥与其他机器</a></h2>
     <ol class="steps">
-      <li><b>给每个客户端生成一个密钥</b><span class="ui">网关</span> → <span class="ui">网关密钥</span>，或在终端里 <code>docker exec magpie magpie gateway-key add "Laptop"</code>，它会打印新的 <code>sk-magpie-key-…</code>。容器外的每个请求（包括宿主机自己的）都必须带一个启用的网关密钥，不带的返回 401。每个密钥可以有自己的每日、每周或每月上限和可用模型（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
+      <li><b>给每个客户端生成一个密钥</b><span class="ui">网关</span> → <span class="ui">网关密钥</span>，或在终端里 <code>docker exec magpie magpie gateway-key add "Laptop"</code>，它会打印新的 <code>sk-magpie-key-…</code>。容器外的每个请求（包括宿主机自己的）都必须带一个启用的网关密钥，不带的返回 401。每个密钥可以有自己的每日、每周、每月或每 N 天的上限和可用模型（<code>magpie gateway-key limit</code>、<code>magpie gateway-key models</code>）。</li>
       <li><b>发布端口</b>用 <code>-p 3425:3425</code>（或绑定到 NAS 的局域网或 VPN 地址，<code>-p 192.168.1.20:3425:3425</code>）并加上 <code>-e MAGPIE_PUBLIC_URL=http://192.168.1.20:3425</code> 重新创建容器。</li>
     </ol>
     <p>在其他电脑上，把 Agent 指向这个网关，用其中一个密钥作为 API key：OpenAI 客户端用 <code>http://192.168.1.20:3425/v1</code>，Anthropic 或 Gemini 客户端用 <code>http://192.168.1.20:3425</code>。模型 id 是 <code>provider/model</code> 或路由组的名字，<code>GET /v1/models</code> 会列出它们。如果那台电脑自己也运行 magpie，就把容器添加为<a href="/docs/zh/remote">远程 magpie</a>，由 magpie 替你配置 Agent。</p>

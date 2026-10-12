@@ -73,7 +73,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const narrow = width <= 600;
         assert.equal(await tracks(page, ".rt-stage"), narrow ? 2 : 3, "the stage's columns");
         assert.equal(await tracks(page, ".rt-reqs"), width < 800 ? 2 : 4, "the requests' columns");
-        assert.equal(await tracks(page, ".rt-cols"), width >= 1200 ? 2 : 1, "the requests and the accounts, side by side or one under the other");
+        // by the room the page has, the sidebar's aside (routing.js byWidth)
+        const room = await page.locator(".rt-more").first().evaluate((e) => e.getBoundingClientRect().width);
+        assert.equal(await tracks(page, ".rt-cols"), room >= 1150 ? 2 : 1, "the requests and the accounts, side by side or one under the other");
 
         // down to the end, by the wheel
         const box = await view.boundingBox();

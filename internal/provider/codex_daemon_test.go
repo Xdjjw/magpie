@@ -204,8 +204,9 @@ func TestRestartCodexDaemon(t *testing.T) {
 	if got := read(".args"); got != "app-server daemon restart" {
 		t.Errorf("args %q", got)
 	}
-	home, _ := os.UserHomeDir()
-	if got, want := read(".home"), filepath.Join(home, ".codex"); got != want {
+	// the daemon of the CODEX_HOME magpie writes auth.json in, which is the
+	// user's own CODEX_HOME when that is set
+	if got, want := read(".home"), "/somewhere/else"; got != want || filepath.Clean(got) != filepath.Dir(codexAuthPath()) {
 		t.Errorf("CODEX_HOME %q, want %q (where magpie writes auth.json)", got, want)
 	}
 	if got := read(".stdin"); got != "other" {

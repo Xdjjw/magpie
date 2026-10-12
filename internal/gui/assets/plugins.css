@@ -100,6 +100,8 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
    middleware leans teal, apart from the community badge's green */
 .pm-chip.kind.pv { color: color-mix(in srgb, var(--accent) 80%, var(--fg-2)); }
 .pm-chip.kind.mw { color: color-mix(in srgb, color-mix(in oklch, var(--green) 60%, var(--accent)) 80%, var(--fg-2)); }
+/* an agent leans warm, apart from both */
+.pm-chip.kind.ag { color: color-mix(in srgb, color-mix(in oklch, var(--amber) 55%, var(--accent)) 80%, var(--fg-2)); }
 .pm-chip.soft { background: none; box-shadow: inset 0 0 0 1px var(--line); color: var(--muted); }
 
 /* a plugin's one button */
@@ -112,6 +114,9 @@ button.pm-chip:disabled { cursor: default; opacity: .6; }
 .pm-act:hover:not(:disabled) { background: var(--pill-hover); color: var(--fg); }
 .pm-act.get { background: var(--accent-soft); color: var(--accent); }
 .pm-act.get:hover:not(:disabled) { background: var(--accent); color: var(--accent-fg); }
+/* an update out: Install's size, green for its own (#1587) */
+.pm-act.pm-up { background: var(--green-soft); color: var(--green); }
+.pm-act.pm-up:hover:not(:disabled) { background: var(--green); color: var(--card); }
 .pm-act.go { background: var(--accent); color: var(--accent-fg); }
 .pm-act.go:hover:not(:disabled) { filter: brightness(1.08); background: var(--accent); color: var(--accent-fg); }
 .pm-act.done { background: none; color: var(--green); padding: 0 8px; min-width: 0; }

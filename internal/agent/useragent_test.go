@@ -27,11 +27,31 @@ func TestAgentOf(t *testing.T) {
 		"hanako":                                   "hanako", // its key
 		"atomcode/5.2.1":                           "atomcode",
 		"cline ai-sdk/openai-compatible/3.0.37":    "cline",
+		"minimax-code":                             "minimax-code", // what magpie's entry sends
+		"MiniMaxCode":                              "minimax-code", // 0.6.8's own (#1605)
 		"":                                         "other",
 	}
 	for ua, want := range cases {
 		if got := usage.AgentOf(ua); got != want {
 			t.Errorf("%q: got %q want %q", ua, got, want)
+		}
+	}
+}
+
+// Every agent's own gateway key (gateway.TokenFor) names it in usage: the
+// ones that send no User-Agent of their own (StepCode, jcode, Prime Agent,
+// Snow…) are told by that key alone (#1605's check of the class).
+func TestEveryAgentNamedByItsKey(t *testing.T) {
+	seen := map[string]bool{}
+	for _, a := range Clients() {
+		seen[a.ID] = true
+		if got := usage.AgentOf(a.ID); got != a.ID {
+			t.Errorf("%s's key names %q", a.ID, got)
+		}
+	}
+	for _, id := range []string{"minimax-code", "stepcode", "jcode", "prime-agent", "snow"} {
+		if !seen[id] {
+			t.Errorf("%s isn't among the agents usage knows", id)
 		}
 	}
 }

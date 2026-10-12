@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // SessionIdentity is an account's public identity, without its credentials.
@@ -24,6 +25,9 @@ type SessionIdentity struct {
 // Callers must match the IDs recorded in a session; presence alone is not evidence
 // that the account served that session's requests.
 func SessionIdentities(codexDir string) []SessionIdentity {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	out := currentSessionIdentities(codexDir)
 	var saved []SessionIdentity
 	for _, l := range readLogins() {
@@ -104,6 +108,9 @@ func claudeSessionIdentity(b []byte) (SessionIdentity, bool) {
 }
 
 func currentSessionIdentities(codexDir string) []SessionIdentity {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	var out []SessionIdentity
 	// Cache only the identity parse, not another copy of the credential blob.
 	current, _ := filememo.Read("session codex identity", filepath.Join(codexDir, "auth.json"), func(b []byte) ([]SessionIdentity, error) {

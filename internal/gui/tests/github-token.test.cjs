@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const HOME = "/Users/aimer";
@@ -77,7 +78,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       const posted = [], st = { mask: "", from: "", env: false };
       await page.route("**/*", serve(lang, posted, st));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=network");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const list = page.locator("#githubList");
       const row = list.locator(".row.github-token");
       await row.waitFor();
@@ -131,7 +134,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       for (const st of [{ mask: "", from: "" }, { mask: "ghp_…0123", from: "settings" }]) {
         await page.unroute("**/*");
         await page.route("**/*", serve(lang, [], st));
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=library");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         const check = page.locator("#view-library button.lib-updall", { hasText: w.check });
         await check.waitFor();
         await check.click();

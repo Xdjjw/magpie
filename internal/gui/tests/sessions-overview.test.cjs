@@ -173,7 +173,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.ok(hs[2] > hs[1] && hs[1] > hs[3] && hs[3] > hs[0], String(hs));
         // wheeled to, as a person would: WebKit paints a scroll set from script late
         await page.mouse.move(500, 400);
-        for (let i = 0; i < 20 && (await shape.boundingBox()).y > 300; i++) await page.mouse.wheel(0, 200);
+        // no further than to a third down the view: a step past it can take the
+        // card out over the view's top, and the click then scrolls it back first
+        for (let i = 0; i < 20; i++) {
+          const y = (await shape.boundingBox()).y;
+          if (y <= 300) break;
+          await page.mouse.wheel(0, Math.min(200, y - 250));
+          await page.waitForTimeout(60);
+        }
         await page.waitForTimeout(300);
         const y = (await shape.boundingBox()).y;
         await shape.locator(".segs .opt").nth(2).click();
@@ -326,6 +333,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await t.test("nothing overflows, wide or narrow", async () => {
         for (const width of [1100, 560]) {
           await page.setViewportSize({ width, height: 760 });
+          // a frame on: the sidebar's room let go is a transition, if a
+          // reduced-motion one, that WebKit starts and settles in a frame
+          await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
           const over = await page.evaluate(() => [...document.querySelectorAll("#sessionsPane *")].filter((e) => e.offsetParent && e.getBoundingClientRect().right > document.documentElement.clientWidth + 1).map((e) => e.className));
           assert.deepEqual(over, [], "width " + width);
         }

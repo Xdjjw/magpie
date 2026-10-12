@@ -14,6 +14,7 @@ import (
 
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // What the Agents page says beside an agent's 「接入」 switch (the owner's
@@ -25,16 +26,24 @@ import (
 // Source is what an agent not connected to magpie runs on now: "sub" (a
 // Claude subscription), "chatgpt" (a ChatGPT sign-in), "key" (an API key
 // of its own), "providers:N" (N providers of its own); "" when unknown.
+//
+// With account discovery off (#1535) no sign-in is read for it: Claude
+// Code's account in .claude.json, Codex's auth.json and OpenCode's are
+// left alone, and only what the agent's own settings say is told.
 func (a *Agent) Source() string {
 	if a.WSL != "" || a.Path == "" {
 		return ""
 	}
 	dir := filepath.Dir(a.Path)
+	signIns := !settings.AccountDiscoveryOff()
 	switch a.ID {
 	case "claude":
 		// signed in to claude.ai: ~/.claude.json (or the one in
 		// CLAUDE_CONFIG_DIR) has the account
 		for _, p := range []string{filepath.Join(dir, ".claude.json"), filepath.Join(filepath.Dir(dir), ".claude.json")} {
+			if !signIns {
+				break
+			}
 			if v, _ := edit.GetJSON(p, "oauthAccount.accountUuid"); v != "" {
 				return "sub"
 			}
@@ -46,6 +55,9 @@ func (a *Agent) Source() string {
 			return "key"
 		}
 	case "codex":
+		if !signIns {
+			break
+		}
 		if codexChatGPT(dir) {
 			return "chatgpt"
 		}
@@ -63,7 +75,7 @@ func (a *Agent) Source() string {
 		}
 		home, _ := os.UserHomeDir()
 		var auth map[string]json.RawMessage
-		if b, err := os.ReadFile(filepath.Join(home, ".local", "share", a.ID, "auth.json")); err == nil && json.Unmarshal(b, &auth) == nil {
+		if b, err := readOwnAuth(filepath.Join(home, ".local", "share", a.ID, "auth.json")); err == nil && json.Unmarshal(b, &auth) == nil {
 			for k := range auth {
 				n[k] = true
 			}

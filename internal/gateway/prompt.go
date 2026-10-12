@@ -8,9 +8,12 @@ package gateway
 // the system blocks run together, and Codex's additional_tools lifted out.
 //
 // The sizes are estimated as the body is read, then scaled to the prompt
-// the vendor counted once it answers (calibrate). Only names are kept — the
-// instruction files' and read files' paths, the tools' names, "turn 3" —
-// never the prompt's text.
+// the vendor counted once it answers (calibrate). The Prompt keeps only
+// names — the instruction files' and read files' paths, the tools' names,
+// "turn 3" — never the prompt's text, and it is what goes in the routing
+// history on disk. An item's text is read again from the body only when
+// the context window card asks for it (PromptText), from the last few
+// requests' bodies the trace holds in memory (keepBody).
 
 import (
 	"encoding/json"
@@ -97,7 +100,37 @@ type promptBuilder struct {
 	turn  int
 	held  bool
 	calls map[string]toolCall // call id → what was called, for its result
+	// keep: each item's text is kept too, in pieces, by part and item
+	// (itemKey), for PromptText; off when only the sizes are read
+	keep   bool
+	pieces map[string][]PromptPiece
 }
+
+// PromptPiece is a stretch of an item's text as the request sent it: a
+// message, a tool's definition, a call and its input, what a tool
+// answered. An image or sealed reasoning is only named, with its size.
+type PromptPiece struct {
+	// Role: system, user, assistant, thinking, call, result, tool, image,
+	// sealed; "" for text that is the item itself (an instruction file)
+	Role string `json:"role,omitempty"`
+	Name string `json:"name,omitempty"` // the tool called or defined
+	Text string `json:"text,omitempty"`
+	Size int    `json:"size,omitempty"` // a sealed piece's bytes
+	raw  []byte // JSON (or a custom tool's text), Text once read out
+}
+
+func txt(role, s string) PromptPiece { return PromptPiece{Role: role, Text: s} }
+
+func rawPiece(role, name string, raw []byte) PromptPiece {
+	return PromptPiece{Role: role, Name: name, raw: raw}
+}
+
+var imagePiece = PromptPiece{Role: "image"}
+
+func sealedPiece(n int) PromptPiece { return PromptPiece{Role: "sealed", Size: n} }
+
+// itemKey is an item's key in its part: its tag and name.
+func itemKey(tag, name string) string { return tag + "\x00" + name }
 
 type toolCall struct {
 	name  string
@@ -108,7 +141,7 @@ func newPromptBuilder() *promptBuilder {
 	return &promptBuilder{parts: map[string]map[string]*PromptItem{}, calls: map[string]toolCall{}}
 }
 
-func (b *promptBuilder) add(kind, name, tag string, tokens int) {
+func (b *promptBuilder) add(kind, name, tag string, tokens int, pc PromptPiece) {
 	if tokens <= 0 {
 		return
 	}
@@ -117,7 +150,7 @@ func (b *promptBuilder) add(kind, name, tag string, tokens int) {
 		m = map[string]*PromptItem{}
 		b.parts[kind] = m
 	}
-	key := tag + "\x00" + name
+	key := itemKey(tag, name)
 	it := m[key]
 	if it == nil {
 		it = &PromptItem{Name: name, Tag: tag}
@@ -125,14 +158,17 @@ func (b *promptBuilder) add(kind, name, tag string, tokens int) {
 	}
 	it.N++
 	it.Tokens += tokens
+	if b.keep {
+		b.pieces[kind+"\x00"+key] = append(b.pieces[kind+"\x00"+key], pc)
+	}
 }
 
 // chat adds to the conversation's current turn.
-func (b *promptBuilder) chat(tokens int) {
+func (b *promptBuilder) chat(tokens int, pc PromptPiece) {
 	if b.turn == 0 {
 		b.turn = 1
 	}
-	b.add(PartChat, strconv.Itoa(b.turn), "turn", tokens)
+	b.add(PartChat, strconv.Itoa(b.turn), "turn", tokens, pc)
 }
 
 func (b *promptBuilder) newTurn() { b.turn++ }
@@ -322,7 +358,7 @@ func (b *promptBuilder) splitMemory(text string) string {
 			rest.WriteString(chunk[j:])
 			chunk = chunk[:j]
 		}
-		b.add(PartMemory, s.path, memoryTag(s.path, s.desc), tokensOf(chunk))
+		b.add(PartMemory, s.path, memoryTag(s.path, s.desc), tokensOf(chunk), txt("", chunk))
 	}
 	return rest.String()
 }
@@ -344,10 +380,10 @@ func harnessName(text, fallback string) string {
 func (b *promptBuilder) systemText(text, name string) {
 	rest := b.splitMemory(text)
 	if strings.HasPrefix(strings.TrimSpace(rest), "<skills_instructions>") {
-		b.add(PartMemory, "skills", "skills", tokensOf(rest))
+		b.add(PartMemory, "skills", "skills", tokensOf(rest), txt("system", rest))
 		return
 	}
-	b.add(PartSystem, harnessName(rest, name), "", tokensOf(rest))
+	b.add(PartSystem, harnessName(rest, name), "", tokensOf(rest), txt("system", rest))
 }
 
 // userText adds a user's text: an instruction file or reminder the agent
@@ -359,20 +395,20 @@ func (b *promptBuilder) userText(text string) (said bool) {
 		rest := b.splitMemory(t)
 		rest = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(rest), "<system-reminder>"), "</system-reminder>"))
 		if rest != "" {
-			b.add(PartMemory, "reminders", "reminder", tokensOf(rest))
+			b.add(PartMemory, "reminders", "reminder", tokensOf(rest), txt("user", rest))
 		}
 		return false
 	case agentsFor.MatchString(t):
 		m := agentsFor.FindStringSubmatch(t)
 		path := strings.TrimRight(m[2], "/") + "/" + m[1]
-		b.add(PartMemory, path, "project", tokensOf(t))
+		b.add(PartMemory, path, "project", tokensOf(t), txt("user", t))
 		return false
 	case strings.HasPrefix(t, "<environment_context>") || strings.HasPrefix(t, "<user_instructions>") ||
 		strings.HasPrefix(t, "<turn_aborted>") || strings.HasPrefix(t, "<user_shell_command>"):
-		b.add(PartSystem, harnessName(t, "context"), "", tokensOf(t))
+		b.add(PartSystem, harnessName(t, "context"), "", tokensOf(t), txt("user", t))
 		return false
 	}
-	b.chat(tokensOf(text))
+	b.chat(tokensOf(text), txt("user", text))
 	return true
 }
 
@@ -440,10 +476,10 @@ func filesOfCommand(cmd string) []string {
 func callOf(name string, input []byte) toolCall {
 	c := toolCall{name: name}
 	var args map[string]json.RawMessage
-	_ = json.Unmarshal(input, &args)
+	_ = decodeJSON(input, &args)
 	str := func(k string) string {
 		var s string
-		if json.Unmarshal(args[k], &s) == nil {
+		if decodeJSON(args[k], &s) == nil {
 			return s
 		}
 		return ""
@@ -462,7 +498,7 @@ func callOf(name string, input []byte) toolCall {
 	}
 	if cmd == "" {
 		var argv []string
-		if json.Unmarshal(args["command"], &argv) == nil {
+		if decodeJSON(args["command"], &argv) == nil {
 			cmd = strings.Join(argv, " ")
 		}
 	}
@@ -483,10 +519,13 @@ func callOf(name string, input []byte) toolCall {
 }
 
 // result adds what a tool answered: the files it read, or its output.
-func (b *promptBuilder) result(callID string, tokens int) {
+func (b *promptBuilder) result(callID string, tokens int, pc PromptPiece) {
 	c, ok := b.calls[callID]
 	if !ok {
 		c.name = "tool"
+	}
+	if pc.Name == "" {
+		pc.Name = c.name
 	}
 	if len(c.files) > 0 {
 		each := tokens / len(c.files)
@@ -499,25 +538,26 @@ func (b *promptBuilder) result(callID string, tokens int) {
 			if !readTools[c.name] {
 				tag = "shell"
 			}
-			b.add(PartFiles, f, tag, n)
+			b.add(PartFiles, f, tag, n, pc)
 		}
 		return
 	}
-	b.add(PartResults, c.name, "result", tokens)
+	b.add(PartResults, c.name, "result", tokens, pc)
 }
 
 // tool adds a tool definition: an MCP server's tools as one.
-func (b *promptBuilder) tool(name string, tokens int) {
+func (b *promptBuilder) tool(name string, tokens int, def []byte) {
+	pc := rawPiece("tool", name, def)
 	if strings.HasPrefix(name, "mcp__") {
 		rest := strings.TrimPrefix(name, "mcp__")
 		server := rest
 		if i := strings.Index(rest, "__"); i > 0 {
 			server = rest[:i]
 		}
-		b.add(PartTools, server, "mcp", tokens)
+		b.add(PartTools, server, "mcp", tokens, pc)
 		return
 	}
-	b.add(PartTools, name, "", tokens)
+	b.add(PartTools, name, "", tokens, pc)
 }
 
 // --- Anthropic Messages ---
@@ -538,11 +578,11 @@ type rawBlock struct {
 // blocksOf reads content that is a string or a list of blocks.
 func blocksOf(c json.RawMessage) []rawBlock {
 	var s string
-	if json.Unmarshal(c, &s) == nil {
+	if decodeJSON(c, &s) == nil {
 		return []rawBlock{{Type: "text", Text: s}}
 	}
 	var bs []rawBlock
-	_ = json.Unmarshal(c, &bs)
+	_ = decodeJSON(c, &bs)
 	return bs
 }
 
@@ -555,12 +595,12 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	for _, s := range blocksOf(req.System) {
 		if strings.HasPrefix(s.Text, "x-anthropic-billing-header") {
-			b.add(PartSystem, "billing", "", tokensOf(s.Text))
+			b.add(PartSystem, "billing", "", tokensOf(s.Text), txt("system", s.Text))
 			continue
 		}
 		b.systemText(s.Text, "prompt")
@@ -569,8 +609,8 @@ func (b *promptBuilder) anthropic(body []byte) bool {
 		var d struct {
 			Name string `json:"name"`
 		}
-		_ = json.Unmarshal(t, &d)
-		b.tool(d.Name, rawTokens(t))
+		_ = decodeJSON(t, &d)
+		b.tool(d.Name, rawTokens(t), t)
 	}
 	for _, m := range req.Messages {
 		bs := blocksOf(m.Content)
@@ -608,37 +648,41 @@ func (b *promptBuilder) anthropicBlock(role string, x rawBlock) {
 		if role == "user" {
 			b.userText(x.Text)
 		} else {
-			b.chat(tokensOf(x.Text))
+			b.chat(tokensOf(x.Text), txt(role, x.Text))
 		}
 	case "thinking":
-		b.chat(tokensOf(x.Thinking))
+		b.chat(tokensOf(x.Thinking), txt("thinking", x.Thinking))
 	case "redacted_thinking":
-		b.chat(tokensOf(x.Data) / 4)
+		b.chat(tokensOf(x.Data)/4, sealedPiece(len(x.Data)))
 	case "tool_use", "server_tool_use":
 		b.calls[x.ID] = callOf(x.Name, x.Input)
-		b.chat(tokensOf(x.Name) + rawTokens(x.Input))
+		b.chat(tokensOf(x.Name)+rawTokens(x.Input), rawPiece("call", x.Name, x.Input))
 	case "tool_result", "web_search_tool_result", "web_fetch_tool_result":
 		n := 0
+		var texts []string
 		for _, c := range blocksOf(x.Content) {
 			switch c.Type {
 			case "image", "document":
-				b.add(PartFiles, c.Type, "image", imageTokens)
+				b.add(PartFiles, c.Type, "image", imageTokens, imagePiece)
 			default:
 				n += tokensOf(c.Text)
+				texts = append(texts, c.Text)
 			}
 		}
+		pc := txt("result", strings.Join(texts, "\n"))
 		if len(x.Content) > 0 && x.Content[0] != '"' && x.Content[0] != '[' {
 			n = rawTokens(x.Content)
+			pc = rawPiece("result", "", x.Content)
 		}
-		b.result(x.ToolUseID, n)
+		b.result(x.ToolUseID, n, pc)
 	case "image", "document":
 		if x.Type == "document" && len(x.Source) > 0 && !strings.Contains(string(x.Source), `"base64"`) {
-			b.add(PartFiles, "document", "image", rawTokens(x.Source))
+			b.add(PartFiles, "document", "image", rawTokens(x.Source), rawPiece("", "", x.Source))
 			return
 		}
-		b.add(PartFiles, x.Type, "image", imageTokens)
+		b.add(PartFiles, x.Type, "image", imageTokens, imagePiece)
 	default:
-		b.chat(tokensOf(x.Text))
+		b.chat(tokensOf(x.Text), txt(role, x.Text))
 	}
 }
 
@@ -651,25 +695,25 @@ func (b *promptBuilder) responses(body []byte) bool {
 		Tools        []json.RawMessage `json:"tools"`
 		Previous     string            `json:"previous_response_id"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	b.held = req.Previous != ""
 	var ins string
-	if json.Unmarshal(req.Instructions, &ins) == nil && ins != "" {
+	if decodeJSON(req.Instructions, &ins) == nil && ins != "" {
 		b.systemText(ins, "prompt")
 	}
 	for _, t := range req.Tools {
 		b.responsesTool(t)
 	}
 	var s string
-	if json.Unmarshal(req.Input, &s) == nil {
+	if decodeJSON(req.Input, &s) == nil {
 		b.newTurn()
 		b.userText(s)
 		return true
 	}
 	var items []json.RawMessage
-	_ = json.Unmarshal(req.Input, &items)
+	_ = decodeJSON(req.Input, &items)
 	for _, it := range items {
 		b.responsesItem(it)
 	}
@@ -685,7 +729,7 @@ func (b *promptBuilder) responsesTool(t json.RawMessage) {
 			Name string `json:"name"`
 		} `json:"function"`
 	}
-	_ = json.Unmarshal(t, &d)
+	_ = decodeJSON(t, &d)
 	name := d.Name
 	if name == "" && d.Function != nil {
 		name = d.Function.Name
@@ -708,13 +752,13 @@ func (b *promptBuilder) responsesTool(t json.RawMessage) {
 		if rest, ok := strings.CutPrefix(name, "mcp__"); ok {
 			tag, name = "mcp", strings.TrimRight(strings.SplitN(rest, "__", 2)[0], "_")
 		}
-		b.add(PartTools, name, tag, rawTokens(t))
+		b.add(PartTools, name, tag, rawTokens(t), rawPiece("tool", name, t))
 		if p := b.parts[PartTools][tag+"\x00"+name]; p != nil {
 			p.N += len(d.Tools) - 1
 		}
 		return
 	}
-	b.tool(name, rawTokens(t))
+	b.tool(name, rawTokens(t), t)
 }
 
 func (b *promptBuilder) responsesItem(raw json.RawMessage) {
@@ -734,7 +778,7 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 		Encrypted string          `json:"encrypted_content"`
 		Action    json.RawMessage `json:"action"`
 	}
-	if json.Unmarshal(raw, &it) != nil {
+	if decodeJSON(raw, &it) != nil {
 		return
 	}
 	if it.Type == "" && it.Role != "" {
@@ -758,25 +802,31 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 			}
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens)
+					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
 					continue
 				}
 				b.userText(p.text)
 			}
 		default:
 			for _, p := range parts {
-				b.chat(tokensOf(p.text))
+				b.chat(tokensOf(p.text), txt("assistant", p.text))
 			}
 		}
 	case "reasoning":
 		n := 0
+		var said []string
 		for _, s := range it.Summary {
 			n += tokensOf(s.Text)
+			said = append(said, s.Text)
 		}
 		// the reasoning itself, sealed: about three quarters of its
 		// base64 is what was sealed
 		n += len(it.Encrypted) * 3 / 4 / 4
-		b.chat(n)
+		pc := txt("thinking", strings.Join(said, "\n\n"))
+		if len(it.Encrypted) > 0 {
+			pc.Size = len(it.Encrypted)
+		}
+		b.chat(n, pc)
 	case "function_call", "custom_tool_call", "local_shell_call", "tool_search_call":
 		input := []byte(it.Arguments)
 		if it.Type == "custom_tool_call" {
@@ -786,31 +836,34 @@ func (b *promptBuilder) responsesItem(raw json.RawMessage) {
 			input = it.Action
 		}
 		b.calls[it.CallID] = callOf(it.Name, input)
-		b.chat(tokensOf(it.Name) + (len(input)+3)/4)
+		b.chat(tokensOf(it.Name)+(len(input)+3)/4, rawPiece("call", it.Name, input))
 	case "function_call_output", "custom_tool_call_output", "local_shell_call_output", "tool_search_output":
 		n := 0
 		var s string
-		if json.Unmarshal(it.Output, &s) == nil {
+		if decodeJSON(it.Output, &s) == nil {
 			n = tokensOf(s)
 		} else {
+			var texts []string
 			for _, p := range responsesContent(it.Output) {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens)
+					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
 					continue
 				}
 				n += tokensOf(p.text)
+				texts = append(texts, p.text)
 			}
+			s = strings.Join(texts, "\n")
 		}
 		if it.Type == "tool_search_output" {
 			for _, t := range it.Tools {
 				b.responsesTool(t)
 			}
 		}
-		b.result(it.CallID, n)
+		b.result(it.CallID, n, txt("result", s))
 	case "compaction", "compaction_summary":
-		b.add(PartChat, "compacted", "compacted", rawTokens(raw))
+		b.add(PartChat, "compacted", "compacted", rawTokens(raw), sealedPiece(len(raw)))
 	default:
-		b.chat(rawTokens(raw))
+		b.chat(rawTokens(raw), rawPiece("", it.Type, raw))
 	}
 }
 
@@ -821,14 +874,14 @@ type rPart struct {
 
 func responsesContent(c json.RawMessage) []rPart {
 	var s string
-	if json.Unmarshal(c, &s) == nil {
+	if decodeJSON(c, &s) == nil {
 		return []rPart{{text: s}}
 	}
 	var ps []struct {
 		Type string `json:"type"`
 		Text string `json:"text"`
 	}
-	_ = json.Unmarshal(c, &ps)
+	_ = decodeJSON(c, &ps)
 	out := make([]rPart, 0, len(ps))
 	for _, p := range ps {
 		out = append(out, rPart{text: p.Text, image: p.Type == "input_image" || p.Type == "input_file" || p.Type == "image_url"})
@@ -855,7 +908,7 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 		} `json:"messages"`
 		Tools []json.RawMessage `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	for _, t := range req.Tools {
@@ -874,31 +927,37 @@ func (b *promptBuilder) chatCompletions(body []byte) bool {
 			}
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens)
+					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
 					continue
 				}
 				b.userText(p.text)
 			}
 		case "tool", "function":
 			n := 0
+			var texts []string
 			for _, p := range parts {
 				if p.image {
-					b.add(PartFiles, "image", "image", imageTokens)
+					b.add(PartFiles, "image", "image", imageTokens, imagePiece)
 					continue
 				}
 				n += tokensOf(p.text)
+				texts = append(texts, p.text)
 			}
-			b.result(m.ToolCallID, n)
+			b.result(m.ToolCallID, n, txt("result", strings.Join(texts, "\n")))
 		default:
-			n := tokensOf(m.Reasoning)
+			// its reasoning, what it said and its calls, a piece each
+			b.chat(tokensOf(m.Reasoning), txt("thinking", m.Reasoning))
+			n := 0
+			var texts []string
 			for _, p := range parts {
 				n += tokensOf(p.text)
+				texts = append(texts, p.text)
 			}
+			b.chat(n, txt("assistant", strings.Join(texts, "\n")))
 			for _, c := range m.ToolCalls {
 				b.calls[c.ID] = callOf(c.Function.Name, []byte(c.Function.Arguments))
-				n += tokensOf(c.Function.Name) + tokensOf(c.Function.Arguments)
+				b.chat(tokensOf(c.Function.Name)+tokensOf(c.Function.Arguments), rawPiece("call", c.Function.Name, []byte(c.Function.Arguments)))
 			}
-			b.chat(n)
 		}
 	}
 	return true
@@ -935,7 +994,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			Decls []json.RawMessage `json:"functionDeclarations"`
 		} `json:"tools"`
 	}
-	if json.Unmarshal(body, &req) != nil {
+	if decodeJSON(body, &req) != nil {
 		return false
 	}
 	if req.System != nil {
@@ -948,8 +1007,8 @@ func (b *promptBuilder) gemini(body []byte) bool {
 			var n struct {
 				Name string `json:"name"`
 			}
-			_ = json.Unmarshal(d, &n)
-			b.tool(n.Name, rawTokens(d))
+			_ = decodeJSON(d, &n)
+			b.tool(n.Name, rawTokens(d), d)
 		}
 	}
 	for _, c := range req.Contents {
@@ -965,7 +1024,7 @@ func (b *promptBuilder) gemini(body []byte) bool {
 					id = "name:" + p.FunctionCall.Name
 				}
 				b.calls[id] = callOf(p.FunctionCall.Name, p.FunctionCall.Args)
-				b.chat(tokensOf(p.FunctionCall.Name) + rawTokens(p.FunctionCall.Args))
+				b.chat(tokensOf(p.FunctionCall.Name)+rawTokens(p.FunctionCall.Args), rawPiece("call", p.FunctionCall.Name, p.FunctionCall.Args))
 			case p.FunctionResponse != nil:
 				id := p.FunctionResponse.ID
 				if id == "" {
@@ -974,11 +1033,15 @@ func (b *promptBuilder) gemini(body []byte) bool {
 				if _, ok := b.calls[id]; !ok {
 					b.calls[id] = toolCall{name: p.FunctionResponse.Name}
 				}
-				b.result(id, rawTokens(p.FunctionResponse.Response))
+				b.result(id, rawTokens(p.FunctionResponse.Response), rawPiece("result", "", p.FunctionResponse.Response))
 			case len(p.InlineData) > 0 || len(p.FileData) > 0:
-				b.add(PartFiles, "image", "image", imageTokens)
+				b.add(PartFiles, "image", "image", imageTokens, imagePiece)
 			case c.Role == "model":
-				b.chat(tokensOf(p.Text))
+				role := "assistant"
+				if p.Thought {
+					role = "thinking"
+				}
+				b.chat(tokensOf(p.Text), txt(role, p.Text))
 			default:
 				b.userText(p.Text)
 			}
@@ -1027,12 +1090,14 @@ func windowFor(id, model string) int {
 
 // inspectPrompt reads the request's prompt beside it, putting the estimate
 // in the trace as soon as it is read; wait returns it, for the route's
-// end to scale to what was counted.
-func (s *Server) inspectPrompt(tr *Route, from provider.Protocol, body []byte) (wait func() *Prompt) {
+// end to scale to what was counted. masked is the body as the vendor would
+// get it with masking on, kept a while for the card's text (PromptText).
+func (s *Server) inspectPrompt(tr *Route, from provider.Protocol, body, masked []byte) (wait func() *Prompt) {
 	ch := make(chan *Prompt, 1)
 	go func() {
 		p := promptOf(from, body)
 		if p != nil {
+			s.trace.keepBody(tr.ID, from, masked)
 			s.trace.update(tr, func(t *Route) {
 				if t.Prompt == nil {
 					t.Prompt = p

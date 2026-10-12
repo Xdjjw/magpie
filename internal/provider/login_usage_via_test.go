@@ -61,9 +61,9 @@ func TestUsageClaudeViaWaitsForRunsThroughTheOld(t *testing.T) {
 	claudeCLIUsage.RUnlock()
 	t.Cleanup(func() { UsageClaudeVia(old) })
 	swapWaits(t, func(block func()) {
-		UsageClaudeVia(func(context.Context) (string, error) {
+		UsageClaudeVia(func(context.Context, string) (string, error) {
 			block()
 			return "", nil
 		})
-	}, func() { _, _ = readClaudeUsage(context.Background()) }, func() { UsageClaudeVia(nil) })
+	}, func() { _, _ = readClaudeUsage(context.Background(), "") }, func() { UsageClaudeVia(nil) })
 }

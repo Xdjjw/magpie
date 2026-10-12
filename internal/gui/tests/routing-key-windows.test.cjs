@@ -48,10 +48,12 @@ const scenes = {
       { id: "relay#a", provider: "relay", name: "Relay", who: "relay-a", kind: "key", model: "gpt-6-astra", routing: "usage", tokens: 100, ...week(95, 30) },
     ],
   },
-  // #1016: Kimi Code (China) with one key on, its 5 hours 49% used
+  // #1016: Kimi Code (China) with one key on, its 5 hours 49% used; its
+  // week, the biggest window, renews later (#1778: the share and the reset
+  // a row says are of one window, as Factory's week and not its month)
   lone: {
     order: [
-      { id: "kimi-code-cn", provider: "kimi-code-cn", name: "Kimi Code (China)", kind: "provider", model: "kimi-for-coding", known: true, used: 49, renews: [ahead(26), ahead(2)] },
+      { id: "kimi-code-cn", provider: "kimi-code-cn", name: "Kimi Code (China)", kind: "provider", model: "kimi-for-coding", known: true, used: 49, renews: [ahead(26), ahead(2)], usedRenews: ahead(2) },
     ],
   },
   // keys whose windows aren't read: as before
@@ -153,7 +155,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       test(`${engine} ${lang} ${width}px: one key on still says what it has left`, async (t) => {
         const { page, errors, say, row, why } = await open(t, engine, lang, "lone", width);
         assert.equal((await why()).trim(), await say("{name} has one key on — nothing to choose between.", { name: "Kimi Code (China)" }));
-        const used = (await say("{n} used · renews in {d}", { n: "49%" })).split("{d}")[0];
+        // the 5 hours' share renews with the 5 hours, in 2 h, not the week's 26
+        const used = await say("{n} used · renews in {d}", { n: "49%", d: await say("{n} h", { n: "2" }) });
         // its row in the story has a bar; it answered, so it says that
         const key = row("Kimi Code (China)");
         assert.equal(await key.locator(".bar i").evaluate((i) => i.style.width), "49%");

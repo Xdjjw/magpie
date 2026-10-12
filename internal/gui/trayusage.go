@@ -63,6 +63,7 @@ func trayWindows(q provider.SubscriptionQuota) []provider.QuotaWindow {
 // spells it out: each window's use, or what is left of it (left), and when
 // it starts again.
 func trayUsageText(q provider.SubscriptionQuota, now time.Time, left bool) (label, tip string) {
+	q.Name = trayName(q)
 	if q.Error != "" {
 		return "", q.Name + ": " + q.Error
 	}
@@ -142,14 +143,14 @@ func trayUsageCards(ctx context.Context, ids []string) []provider.SubscriptionQu
 	if len(ids) == 0 {
 		return nil
 	}
-	return trayPick(provider.Quotas(ctx), ids)
+	return trayPick(provider.Quotas(ctx), ids, time.Now())
 }
 
-func trayPick(cards []provider.SubscriptionQuota, ids []string) []provider.SubscriptionQuota {
+func trayPick(cards []provider.SubscriptionQuota, ids []string, now time.Time) []provider.SubscriptionQuota {
 	var out []provider.SubscriptionQuota
 	for _, id := range ids {
 		if pid, ok := strings.CutSuffix(id, trayInUse); ok {
-			if q, ok := trayInUseCard(cards, pid); ok {
+			if q, ok := trayInUseCard(cards, pid, now); ok {
 				out = append(out, q)
 			}
 			continue
@@ -163,17 +164,28 @@ func trayPick(cards []provider.SubscriptionQuota, ids []string) []provider.Subsc
 
 // trayInUse ends a card id that follows a subscription's account in use
 // ("claude|*") rather than naming one: with several accounts, the one the
-// gateway goes to first is the one worth watching, whichever it is now.
+// gateway is sending to is the one worth watching, whichever it is now.
 const trayInUse = "|*"
 
 // trayInUseAccount is the account of an agent's the gateway goes to first;
 // a var for tests.
 var trayInUseAccount = provider.InUseLogin
 
+// trayServedFresh is how lately an account must have answered through the
+// gateway for the menu bar to take it as the one in use; a var for tests.
+var trayServedFresh = time.Hour
+
 // trayInUseCard is the card of the provider's account in use, named with
-// the account so the tooltip says which it is; the provider's first card
-// when magpie can't tell (the account in use first among them).
-func trayInUseCard(cards []provider.SubscriptionQuota, pid string) (provider.SubscriptionQuota, bool) {
+// the account so the tooltip says which it is: the one that answered a
+// request through the gateway last, within trayServedFresh — the gateway
+// moves on from a spent account, and under Smart picks any, as soon as it
+// asks, which the account the agent is signed in to can lag (okingkee on
+// X: A used up, B answering, the menu bar still on A) — else the one
+// InUseLogin reckons the gateway goes to first; else the one that answered
+// last at all (a plugin's accounts, which InUseLogin doesn't know); the
+// provider's first card when magpie can't tell (the account in use first
+// among them).
+func trayInUseCard(cards []provider.SubscriptionQuota, pid string, now time.Time) (provider.SubscriptionQuota, bool) {
 	var mine []provider.SubscriptionQuota
 	for _, q := range cards {
 		if q.Provider == pid {
@@ -185,16 +197,40 @@ func trayInUseCard(cards []provider.SubscriptionQuota, pid string) (provider.Sub
 	}
 	q := mine[0]
 	if len(mine) > 1 {
-		if user := trayInUseAccount(pid); user != "" {
-			if i := slices.IndexFunc(mine, func(q provider.SubscriptionQuota) bool { return strings.EqualFold(q.User, user) }); i >= 0 {
-				q = mine[i]
+		last := -1
+		for i, c := range mine {
+			if c.LastServedAt != nil && (last < 0 || c.LastServedAt.After(*mine[last].LastServedAt)) {
+				last = i
 			}
 		}
+		in := -1
+		if user := trayInUseAccount(pid); user != "" {
+			in = slices.IndexFunc(mine, func(q provider.SubscriptionQuota) bool { return strings.EqualFold(q.User, user) })
+		}
+		switch {
+		case last >= 0 && now.Sub(*mine[last].LastServedAt) < trayServedFresh:
+			q = mine[last]
+		case in >= 0:
+			q = mine[in]
+		case last >= 0:
+			// a plugin's accounts are no sign-in InUseLogin knows (#1516):
+			// the one that answered last, however long ago, over the first
+			q = mine[last]
+		}
 	}
-	if q.User != "" {
-		q.Name += " · " + q.User
+	if q.User != "" && q.Alias == "" {
+		q.Name += " · " + q.User // a named account's name is trayName's
 	}
 	return q, true
+}
+
+// trayName is how the tooltip names a card: by the name the user gave its
+// account, or the key plan it stands in for, after the card's (#1515).
+func trayName(q provider.SubscriptionQuota) string {
+	if q.Alias != "" {
+		return q.Name + " · " + q.Alias
+	}
+	return q.Name
 }
 
 // trayCell is a card as the Mac's menu bar draws it: its logo, and its

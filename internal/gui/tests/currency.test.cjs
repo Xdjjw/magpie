@@ -94,7 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Settings: the currency row, its rate in the tooltip
         await page.locator("#prefs").click();
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await page.locator("#currencySegs .opt").first().waitFor();
         const segs = page.locator("#currencySegs .opt");
         assert.equal(await segs.count(), 2);
@@ -109,6 +109,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // ¥ CNY moves nothing
         await page.locator("#currencySegs").hover();
         for (let i = 0; i < 20 && !(await view(page)); i++) { await page.mouse.wheel(0, 200); await page.waitForTimeout(20); }
+        // and back until the row is clear of the header, as a reader would
+        // before clicking it: a button partly under the header is scrolled
+        // into view by the browser as it takes focus
+        for (let i = 0; i < 40; i++) {
+          const box = await segs.nth(1).boundingBox();
+          if (box && box.y >= 60) break;
+          await page.mouse.wheel(0, -60);
+          await page.waitForTimeout(30);
+        }
         const before = await view(page);
         assert(before > 0, "the settings list must be long enough to scroll");
         const tall = () => page.locator("#view-settings").evaluate((v) => v.getBoundingClientRect().height);
@@ -132,7 +141,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // and back to Settings, ¥ CNY is still picked after a reload
         await page.reload();
         await page.locator("#prefs").click();
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await page.locator("#currencySegs .opt").first().waitFor();
         assert.equal(await page.locator('#currencySegs .opt', { hasText: cny }).evaluate((b) => b.classList.contains("on")), true);
 
@@ -181,7 +190,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         // Settings agrees
         await page.locator("#prefs").click();
-        await page.locator("#setTab-usage").click();
+        await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
         await page.locator("#currencySegs .opt").first().waitFor();
         assert.equal(await page.locator("#currencySegs .opt", { hasText: cny }).evaluate((b) => b.classList.contains("on")), true);
 

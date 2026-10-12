@@ -59,3 +59,39 @@ func TestQuotasLastServed(t *testing.T) {
 }
 
 func ptr(t time.Time) *time.Time { return &t }
+
+// The Usage page's cards are told it too (okingkee on X): the page and the
+// tray panel show the account that answered last in full, and the menu
+// bar's "account in use" follows it. A remote magpie's card is that one's,
+// and the cache the cards are read from keeps none of it.
+func TestCardsLastServed(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	now := time.Now().Truncate(time.Second)
+	NoteServed(Provider{ID: "codex", Account: &Account{Agent: "codex", User: "B@x.com"}}, now.Add(-time.Minute))
+	NoteServed(Provider{ID: "solo", Key: "sk-solo"}, now.Add(-2*time.Hour))
+	subs := []SubscriptionQuota{
+		{Provider: "codex", User: "a@x.com"},
+		{Provider: "codex", User: "b@x.com"},
+		{Provider: "codex", User: "b@x.com", From: "studio"},
+	}
+	balances := []SubscriptionQuota{{Provider: "solo"}}
+	got := cardsServed(subs, nil, balances, LastServed())
+	if len(got) != 4 {
+		t.Fatalf("cards: %+v", got)
+	}
+	want := []*time.Time{nil, ptr(now.Add(-time.Minute)), nil, ptr(now.Add(-2 * time.Hour))}
+	for i, q := range got {
+		if (q.LastServedAt == nil) != (want[i] == nil) || q.LastServedAt != nil && !q.LastServedAt.Equal(*want[i]) {
+			t.Errorf("%d %s %q from %q: lastServedAt %v, want %v", i, q.Provider, q.User, q.From, q.LastServedAt, want[i])
+		}
+	}
+	if subs[1].LastServedAt != nil || balances[0].LastServedAt != nil {
+		t.Error("the cards read from were written to")
+	}
+	if b, _ := json.Marshal(got[1]); !strings.Contains(string(b), `"lastServedAt":"`) {
+		t.Errorf("json %s", b)
+	}
+}

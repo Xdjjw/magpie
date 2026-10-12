@@ -114,7 +114,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // the Usage page's requests: each row, its tooltip, and the period's
       await page.goto("http://magpie.test/");
       await page.locator('[data-view="usage"]').first().click();
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator("#ledWrap .led tbody tr").first().waitFor();
       await page.waitForTimeout(300);
       const heads = await page.locator(".led thead th").evaluateAll((ths) => ths.filter((th) => th.offsetParent).map((th) => th.textContent));

@@ -71,12 +71,14 @@ var ErrNoURL = errors.New("type the base URL first")
 // Detect asks each of Chat, Responses, Anthropic and Gemini at the URL p has for
 // it, else at base as it takes it (DetectBase), the smallest request, and
 // says what each answered, in that order. model is asked on all three;
-// with none, one from p's list is picked for each — a Claude model on
-// Anthropic's, an OpenAI one on Responses — and with no list, the vendor
-// is asked for one first (a GET of its models, which costs nothing).
-// Only those URLs are asked, and only a key's provider: a sign-in's API
-// is its agent's.
-func (p Provider) Detect(ctx context.Context, base, model string) ([]Detection, error) {
+// with none, one is picked for each — a Claude model on Anthropic's, an
+// OpenAI one on Responses — from picked, the models the editor's form has
+// and hasn't saved yet (#1545: a relay with no model list is asked for
+// the models typed in the form, not only after a Save), else from p's
+// list, and with no list the vendor is asked for one first (a GET of its
+// models, which costs nothing). Only those URLs are asked, and only a
+// key's provider: a sign-in's API is its agent's.
+func (p Provider) Detect(ctx context.Context, base, model string, picked ...string) ([]Detection, error) {
 	q, err := p.detecting(base)
 	if err != nil {
 		return nil, err
@@ -85,7 +87,14 @@ func (p Provider) Detect(ctx context.Context, base, model string) ([]Detection, 
 	model = strings.TrimSpace(model)
 	var ids []string
 	if model == "" {
-		ids = q.detectModels(ctx)
+		for _, m := range picked {
+			if m = strings.TrimSpace(m); m != "" && !slices.Contains(ids, m) {
+				ids = append(ids, m)
+			}
+		}
+		if len(ids) == 0 {
+			ids = q.detectModels(ctx)
+		}
 	}
 	out := make([]Detection, len(detectProtocols))
 	var wg sync.WaitGroup
@@ -162,7 +171,7 @@ func (q Provider) detectOne(proto Protocol, m string, wait time.Duration) (Detec
 	}
 	return d, func(ctx context.Context) Result {
 		u, body := tiny(k, proto, UpstreamName(q, m))
-		return probe(ctx, k, proto, u, k.Prepare([]byte(body)), m, wait)
+		return probe(ctx, k, proto, u, k.tested(body), m, wait)
 	}
 }
 

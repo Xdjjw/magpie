@@ -32,12 +32,15 @@ func TestDirectCountsOnlySessionFileCalls(t *testing.T) {
 	// while its Codex session file names Codex: the same call, not one of
 	// the agents' own
 	Append(Record{Time: now.Add(-30 * time.Minute), Agent: "miyi-helper", Provider: "codex", Model: "gpt-6", Input: 700, Output: 70, CacheRead: 300, Millis: 9000, Status: 200, Session: "h1"})
+	// a Claude Code call the gateway saw, told by the request id both name
+	Append(Record{Time: now.Add(-3 * time.Hour), Agent: "claude-cli/2", Provider: "relay", Model: "m", Input: 9, Output: 9, Status: 200, Session: "g2", RequestID: "req_1"})
 	old := LogCalls
 	LogCalls = func(time.Time) []sessions.Call {
 		return []sessions.Call{
 			{Time: now.Add(-time.Hour), Agent: "codex", Session: "c1", Model: "gpt-6", Tokens: sessions.Tokens{Input: 1000, Output: 100}},
 			{Time: now.Add(-2 * time.Hour), Agent: "codex", Session: "c1", Model: "gpt-6", Tokens: sessions.Tokens{Input: 3000, Output: 300}},
 			{Time: now.Add(-30*time.Minute + 9500*time.Millisecond), Agent: "codex", Session: "h1", Model: "gpt-6", Tokens: sessions.Tokens{Input: 700, Output: 70, CacheRead: 300}},
+			{Time: now.Add(-3*time.Hour + time.Minute), Agent: "claude-code", Session: "c2", Model: "m", RequestID: "req_1", Tokens: sessions.Tokens{Input: 9, Output: 9}},
 		}
 	}
 	t.Cleanup(func() { LogCalls = old })
@@ -55,8 +58,16 @@ func TestDirectCountsOnlySessionFileCalls(t *testing.T) {
 	if d.Cost == 0 || d.Unpriced != 0 {
 		t.Fatalf("not priced: %+v", d.Totals)
 	}
+	// Direct and Summaries work the same out from the ledger's index
+	// without pricing the gateway's calls (Vantiboo1ean, ~750k requests)
+	_, both := Summaries(Month)
+	for _, got := range []Summary{Direct(Month), both} {
+		if got.Totals != d.Totals || len(got.Agents) != 1 || len(got.Models) != 1 || len(got.Sessions) != 1 || got.Sessions[0] != d.Sessions[0] {
+			t.Fatalf("Direct %+v, from the ledger %+v", got, d)
+		}
+	}
 	// the gateway's calls are Summarize's alone
-	if s := Summarize(Month); s.Calls != 2 || len(s.Agents) != 2 {
+	if s := Summarize(Month); s.Calls != 3 || len(s.Agents) != 3 {
 		t.Fatalf("summary %+v", s.Totals)
 	}
 	// a period that starts after the calls has none of them

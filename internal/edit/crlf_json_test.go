@@ -57,3 +57,58 @@ func TestSetJSONItemIntoEmptyCRLFArray(t *testing.T) {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
+
+// A member or element taken off its own line in a CRLF file takes its \r\n
+// with it: the \r used to stop the line end from going, so every set and
+// delete on a Windows settings.json left one more blank line behind.
+func TestDelJSONTakesCRLFLine(t *testing.T) {
+	in := "{\r\n  \"env\": {\r\n    \"A\": \"1\"\r\n  },\r\n  \"m\": 1\r\n}\r\n"
+	p := tmpFile(t, "settings.json", in)
+	for _, key := range []string{"env.B", "z"} {
+		if err := SetJSON(p, KV{Path: key, Value: "2"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := DelJSON(p, key); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, p); got != in {
+			t.Fatalf("%s set and deleted: got %q, want %q", key, got, in)
+		}
+	}
+	if err := DelJSON(p, "m"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := read(t, p), "{\r\n  \"env\": {\r\n    \"A\": \"1\"\r\n  }\r\n}\r\n"; got != want {
+		t.Fatalf("last member deleted: got %q, want %q", got, want)
+	}
+	out, err := PatchJSON([]byte(in), nil, []string{"env"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(out), "{\r\n  \"m\": 1\r\n}\r\n"; got != want {
+		t.Fatalf("first member deleted: got %q, want %q", got, want)
+	}
+}
+
+func TestDelJSONItemTakesCRLFLine(t *testing.T) {
+	in := "[\r\n\t{\r\n\t\t\"name\": \"other\"\r\n\t}\r\n]\r\n"
+	p := tmpFile(t, "models.json", in)
+	for range 2 {
+		if err := SetJSONItem(p, map[string]string{"name": "magpie"}, map[string]any{"name": "magpie"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := DelJSONItem(p, map[string]string{"name": "magpie"}); err != nil {
+			t.Fatal(err)
+		}
+		if got := read(t, p); got != in {
+			t.Fatalf("set and deleted: got %q, want %q", got, in)
+		}
+	}
+	p = tmpFile(t, "models2.json", "[\r\n\t{\"name\": \"magpie\"},\r\n\t{\"name\": \"other\"}\r\n]\r\n")
+	if err := DelJSONItem(p, map[string]string{"name": "magpie"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := read(t, p), "[\r\n\t{\"name\": \"other\"}\r\n]\r\n"; got != want {
+		t.Fatalf("first element deleted: got %q, want %q", got, want)
+	}
+}

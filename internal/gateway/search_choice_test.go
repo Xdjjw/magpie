@@ -78,6 +78,18 @@ func TestSearcherChosen(t *testing.T) {
 
 	// automatic: Anthropic's API comes before OpenAI's
 	want("ant", "claude-haiku-4-5", "")
+	choose("off")
+	if p, m, ok := searcher(); ok {
+		t.Errorf("disabled searcher = %s %s", p.ID, m)
+	}
+	if got := SearcherUnused(); got != "" {
+		t.Errorf("disabled search reported as unavailable: %q", got)
+	}
+	if canSearch() {
+		t.Error("disabled providers still offer search without an API")
+	}
+	choose("")
+	want("ant", "claude-haiku-4-5", "")
 	if got := AutoSearcher(); got != "Anthropic · claude-haiku-4-5" {
 		t.Errorf("auto = %q", got)
 	}

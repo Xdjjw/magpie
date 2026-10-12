@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"net/url"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -36,6 +37,44 @@ func TestPluginCLIHasTheProxy(t *testing.T) {
 		if got := u.Query().Get(k); got != proxy {
 			t.Errorf("a CLI started with the %s environment has HTTPS_PROXY %q, want %q", k, got, proxy)
 		}
+	}
+}
+
+// larchsis on 𝕏: a plugin's sign-in on Windows 11 said its download
+// failed, with a proxy set in magpie and none in the system. The plugin
+// downloads in a Node program it starts, and Node's fetch goes past
+// HTTPS_PROXY unless NODE_USE_ENV_PROXY=1 says to take it, so the proxy
+// the host handed on was never used. It is said with the proxy, and a
+// value the plugin set itself is kept.
+func TestPluginNodeTakesTheProxy(t *testing.T) {
+	sandbox(t)
+	const proxy = "http://127.0.0.1:7892"
+	t.Setenv("HTTPS_PROXY", proxy)
+	t.Setenv("HTTP_PROXY", proxy)
+	t.Setenv("NODE_USE_ENV_PROXY", "") // restored after the test
+	os.Unsetenv("NODE_USE_ENV_PROXY")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("testdata/cliproxy/index.js")
+	if _, err := Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Authorize(ctx, "cliproxy", 0, nil, NewAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	u, err := url.Parse(a.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	q := u.Query()
+	for _, k := range []string{"inheritedNode", "copiedNode"} {
+		if got := q.Get(k); got != "1" {
+			t.Errorf("%s: a program the plugin starts with the proxy has NODE_USE_ENV_PROXY %q, want 1", k, got)
+		}
+	}
+	if got := q.Get("ownNode"); got != "0" {
+		t.Errorf("the plugin's own NODE_USE_ENV_PROXY=0 became %q", got)
 	}
 }
 

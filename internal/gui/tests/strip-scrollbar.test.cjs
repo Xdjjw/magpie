@@ -3,8 +3,10 @@
 // scrollbar, arrows and all, under them. The strip (and a provider's region
 // picker, which shares its class) set scrollbar-width, and in Chromium — so
 // WebView2 — that drops every ::-webkit-scrollbar rule, the app's thin thumb
-// with them. Off a Mac the strip now scrolls under a 6px thumb; on a Mac it
-// is left to the system's overlay bar.
+// with them. Off a Mac the strip now scrolls under a 6px thumb. On a Mac it
+// scrolls with no bar: the system's overlay bar showed over the options for a
+// moment after a scroll and took their clicks (#1620, tencent-cloud's
+// "clicked right after the strip scrolled" clicks it in WebKit).
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -34,8 +36,9 @@ test("off a Mac the overflowing strip scrolls under the app's 6px thumb, not the
   assert.equal(g.bar, 6);
 });
 
-test("on a Mac the strip keeps the system's bar", async () => {
+test("on a Mac the strip scrolls with no bar over its options", async () => {
   const g = await gutter(true);
   assert.ok(g.scrolls, "the strip overflows");
-  assert.notEqual(g.bar, 6);
+  assert.equal(g.width, "none");
+  assert.equal(g.bar, 0);
 });

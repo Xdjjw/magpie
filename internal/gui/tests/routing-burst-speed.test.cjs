@@ -89,7 +89,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.mouse.wheel(0, rb.y + rb.height - lb.y - lb.height + 6);
           await page.waitForTimeout(200);
         }
-        const was = await row.evaluate((e) => e.getBoundingClientRect().top);
+        // measure once the page holds still: the day's rows arriving grow the
+        // page above the list, and the day button's click is kept in place by
+        // scrolling the view, which can land after the last row is in
+        const was = await row.evaluate(async (e) => {
+          let last = NaN;
+          for (let i = 0; i < 60; i++) {
+            await new Promise((r) => requestAnimationFrame(r));
+            const top = e.getBoundingClientRect().top;
+            if (top === last) return top;
+            last = top;
+          }
+          return last;
+        });
         const scrolled = await page.evaluate(() => [scrollX, scrollY, document.scrollingElement.scrollTop]);
         await row.click();
         await page.waitForTimeout(300);

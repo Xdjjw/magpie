@@ -359,22 +359,10 @@ type file struct {
 }
 
 // ClaudeDir is Claude Code's folder: $CLAUDE_CONFIG_DIR, else ~/.claude.
-func ClaudeDir() string {
-	if d := appdir.Getenv("CLAUDE_CONFIG_DIR"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".claude")
-}
+func ClaudeDir() string { return appdir.ClaudeDir() }
 
 // CodexDir is Codex's folder: $CODEX_HOME, else ~/.codex.
-func CodexDir() string {
-	if d := appdir.Getenv("CODEX_HOME"); d != "" {
-		return d
-	}
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex")
-}
+func CodexDir() string { return appdir.CodexHome() }
 
 func stat(f *file) bool {
 	fi, err := os.Stat(f.path)
@@ -466,6 +454,7 @@ func Dirs() []string {
 		{FactoryDir(), filepath.Join(FactoryDir(), "sessions")},
 		{CursorDir(), filepath.Join(CursorDir(), "chats")},
 		{AlmaDir(), almaDB()},
+		{MiniMaxDir(), minimaxSessions()},
 	} {
 		if _, err := os.Stat(d.sessions); err == nil {
 			out = append(out, d.dir)
@@ -739,40 +728,84 @@ func refresh(want, all []file) {
 	}
 	generation := cacheGeneration
 	mu.Unlock()
-	var wg sync.WaitGroup
 	ch := make(chan int)
+	finished := make(chan int, len(jobs))
 	for i := 0; i < min(max(8, 2*runtime.NumCPU()), 32, len(todo)); i++ {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
 			for i := range ch {
 				j := &jobs[i]
+				release := readSlot()
+				end := readBegin()
+				if parseHook != nil {
+					parseHook()
+				}
 				j.parsed = parse(j.f, j.old)
+				end()
+				release()
 				if (j.parsed.Claude != nil && !windows[j.f.path]) || (j.parsed.Claude == nil && !recentRevision(j.parsed.Mod, j.parsed.revisionWeight(), time.Now())) {
 					j.parsed = j.parsed.withoutRevisions()
 				}
 				progress.files.Add(1)
 				progress.read.Add(left[j.f.path])
+				finished <- i
 			}
 		}()
 	}
-	for i := range jobs {
-		ch <- i
-	}
-	close(ch)
-	wg.Wait()
-	mu.Lock()
-	for _, j := range jobs {
-		// A concurrent read may already have published a newer parse.
-		if generation == cacheGeneration && cache[j.f.path] == j.old {
-			cache[j.f.path] = j.parsed
+	go func() {
+		for i := range jobs {
+			ch <- i
+		}
+		close(ch)
+	}()
+	// publish puts the parses finished since last time in the cache.
+	publish := func(done []int) {
+		for _, i := range done {
+			j := &jobs[i]
+			// A concurrent read may already have published a newer parse.
+			if generation == cacheGeneration && cache[j.f.path] == j.old {
+				cache[j.f.path] = j.parsed
+			}
 		}
 	}
+	// What is read is kept on disk every checkpointEvery, not only at the
+	// end: a first read of a long history on a slow disk runs for minutes,
+	// and a magpie quit before the end (its CPU full, #1665) kept nothing
+	// of it, so the next start read it all again.
+	tick := time.NewTicker(checkpointEvery)
+	defer tick.Stop()
+	var done []int
+	for n := 0; n < len(jobs); {
+		select {
+		case i := <-finished:
+			done = append(done, i)
+			n++
+		case <-tick.C:
+			if len(done) == 0 {
+				continue
+			}
+			mu.Lock()
+			publish(done)
+			if generation == cacheGeneration {
+				saveCache()
+			}
+			mu.Unlock()
+			done = done[:0]
+		}
+	}
+	mu.Lock()
+	publish(done)
 	progress.finish()
 	if generation == cacheGeneration {
 		saveCache()
 	}
 }
+
+// checkpointEvery is how often a long read of changed files keeps what it
+// has read so far on disk.
+var checkpointEvery = 5 * time.Second
+
+// parseHook, when a test sets it, runs before each changed file is parsed.
+var parseHook func()
 
 // progress is how far the reading of changed files has got, for the page to
 // show while it waits: files and bytes read of those to read.

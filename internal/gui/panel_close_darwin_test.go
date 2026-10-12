@@ -50,8 +50,11 @@ func init() {
 			}
 		}
 	}
+	// Shown is windowOpen, covered or not: Wails' IsVisible is the window's
+	// occlusion, and under a window over the whole screen (a remote-desktop
+	// server's) the shown panel never read as shown (#1661).
 	visible := func(w *application.WebviewWindow) func() bool {
-		return func() bool { return application.InvokeSyncWithResult(w.IsVisible) }
+		return func() bool { return application.InvokeSyncWithResult(func() bool { return windowOpen(w) }) }
 	}
 	alive := func() bool { _, ok := app.Window.GetByName("panel"); return ok }
 	app.Event.OnApplicationEvent(events.Common.ApplicationStarted, func(*application.ApplicationEvent) {

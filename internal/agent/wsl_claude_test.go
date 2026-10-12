@@ -164,6 +164,9 @@ func TestWSLClaudePick(t *testing.T) {
 		nat := t.TempDir()
 		os.MkdirAll(filepath.Join(nat, ".claude"), 0o755)
 		os.WriteFile(filepath.Join(nat, ".claude", "settings.json"), []byte(before), 0o644)
+		// syncHome's CLAUDE_CONFIG_DIR names the sandbox's own ~/.claude,
+		// which native Claude Code now reads (#1482): this one's is nat's
+		t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(nat, ".claude"))
 		n := claude(nat)
 		n.Field("model").Set("relay/glm-4.6")
 		n.Field("effort").Set("max")

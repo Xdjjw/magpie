@@ -11,6 +11,26 @@ import (
 	"github.com/yetone/magpie/internal/settings"
 )
 
+func TestSettingsSearchProviderOff(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	h := Handler(nil, nil)
+	for _, body := range []string{`{"searcher":"off"}`, `{"theme":"dark","searcher":"off"}`} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("saving %s: %d %s", body, rec.Code, rec.Body)
+		}
+		if got := settings.Load().Searcher; got != "off" {
+			t.Fatalf("searcher = %q, want off", got)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest("POST", "/api/settings", strings.NewReader(`{"searcher":"missing-provider"}`)))
+	if rec.Code != http.StatusBadRequest || settings.Load().Searcher != "off" {
+		t.Fatalf("invalid provider changed the choice: %d %s", rec.Code, rec.Body)
+	}
+}
+
 // The Settings page sends only its own choices. What the settings keep per
 // model — every name, level, price and image answer the user gave of a model
 // on a page of its own — is set elsewhere, so a save from this page has to

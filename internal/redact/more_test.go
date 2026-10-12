@@ -91,7 +91,7 @@ func TestMoreKinds(t *testing.T) {
 			t.Errorf("%q: %d masked, want %d: %q", c.in, n, len(c.gone), out)
 		}
 		for _, g := range c.gone {
-			if strings.Contains(out, g.value) {
+			if strings.Contains(unmarked(out), g.value) {
 				t.Errorf("%q: %q still in %q", c.in, g.value, out)
 			}
 			if p := placeholder(g.kind, g.value); !strings.Contains(out, p) {

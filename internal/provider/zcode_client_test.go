@@ -167,10 +167,11 @@ func TestZCodeStartSentAsTheApp(t *testing.T) {
 	env := strings.Join([]string{
 		"# Environment",
 		"You have been invoked in the following environment:",
+		// /work/proj isn't on this computer and Claude Code didn't say:
+		// whether it is a git repository is unknown, and the shell is
+		// magpie's, not the agent's; neither is said (#86)
 		"- Primary working directory: /work/proj",
-		"- Is a git repository: no",
 		"- Platform: " + zcodePlatform(),
-		"- Shell: zsh",
 		"- OS Version: " + osVersion,
 		"- You are powered by the model named zai-api/GLM-5.3-Flash.",
 	}, "\n")

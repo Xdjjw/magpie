@@ -39,6 +39,7 @@ const zh = {
 
   "sponsor.by": "赞助商",
   "sponsor.yylx": "Claude 与 GPT 的一站式 API 网关，为 Claude Code 调优。",
+  "sponsor.apinebula": "一个接口，接入全球顶尖 AI 模型，按量计费，低至原价 1 折。",
   "sponsor.become": "成为赞助商",
   "agents.agents": "支持的 Agent",
   "agents.models": "支持的模型",
@@ -164,6 +165,7 @@ const ja = {
 
   "sponsor.by": "スポンサー",
   "sponsor.yylx": "Claude と GPT をまとめた API ゲートウェイ。Claude Code 向けに調整済み。",
+  "sponsor.apinebula": "世界のトップ AI モデルにひとつの API で。従量課金、定価の 10% から。",
   "sponsor.become": "スポンサーになる",
   "agents.agents": "対応エージェント",
   "agents.models": "対応モデル",
@@ -289,6 +291,7 @@ const de = {
 
   "sponsor.by": "Gesponsert von",
   "sponsor.yylx": "Ein API-Zugangspunkt für Claude und GPT, abgestimmt auf Claude Code.",
+  "sponsor.apinebula": "Eine API für die besten KI-Modelle der Welt. Abrechnung nach Verbrauch, ab 10 % des Listenpreises.",
   "sponsor.become": "Sponsor werden",
   "agents.agents": "Jeder Agent",
   "agents.models": "Jedes Modell",

@@ -64,6 +64,7 @@ func viaMagpie(agent, prefix string) []Option {
 		// a model with a fast mode is switched fast in the picker (#954)
 		if provider.CanFast(e.Provider, e.Model) {
 			o.FastFor, o.Fast = agent, slices.Contains(fast, e.ID)
+			o.OwnFast = provider.OwnFast(e.Provider, e.Model)
 		}
 		out = append(out, o)
 	}
@@ -110,6 +111,10 @@ func magpieModels(agent string) []catalog.Model {
 	// a model magpie describes images to takes them (provider.Described)
 	seen := provider.Described != nil && provider.Described()
 	st, find := settings.Load(), provider.GroupFinder()
+	members := func(id string) []provider.Member {
+		_, ms, _ := find(id)
+		return ms
+	}
 	for i, e := range shown {
 		m := catalog.Model{ID: e.ID, Name: labels[i], Provider: firstOf(e.Provider.Catalogs()), Efforts: e.Efforts, Images: e.Images || seen, ImageInput: e.ImageInput, Context: e.Context, Output: e.Output, AgentsV2: e.AgentsV2, Reasoning: e.Reasoning}
 		// where Codex and Claude Code compact it (#876): a threshold the
@@ -125,15 +130,39 @@ func magpieModels(agent string) []catalog.Model {
 			m.ImageInput = &yes
 		}
 		// APIs is the one to ask it on for the gateway to relay the request
-		// as it is; none for a group, whose members may each want another
+		// as it is. A group's members may each want another, so a group has
+		// one only when every member is served best on Responses (#1594,
+		// ObsidianArch02): Pi, omp, droid and dsh then ask it there, and a
+		// GPT group's tool-call arguments stream as the member sends them
+		// instead of being held for a Chat answer
 		if e.Group == "" {
 			if n := e.Provider.Native(e.Model); n != "" {
 				m.APIs = []string{string(n)}
 			}
+		} else if allResponses(members(e.ID)) {
+			m.APIs = []string{string(provider.Responses)}
 		}
+		// the service tiers Codex is offered on it, as the gateway's own
+		// lists offer them: Fast in the Codex CLI magpie writes
+		// magpie-models.json for (#1530)
+		provider.CodexTiers(&m, e, members)
 		out = append(out, m)
 	}
 	return out
+}
+
+// allResponses reports whether a group's members are all served best on
+// Responses, so the gateway relays a Responses request to whichever it
+// picks. A group with none, or one member on another API, is false: a
+// Messages-only group stays on Chat too, as the thinking a Claude member
+// takes is known by its own model, not by the group's id.
+func allResponses(ms []provider.Member) bool {
+	for _, m := range ms {
+		if m.Provider.Native(m.Model) != provider.Responses {
+			return false
+		}
+	}
+	return len(ms) > 0
 }
 
 // maxTokens is the output limit an agent is handed for m, kept within the

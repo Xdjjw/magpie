@@ -209,7 +209,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await q.fill("");
 
         // Installed: why one didn't load, an update, a removal
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const rows = view.locator(".pm-row");
         await rows.first().waitFor();
         assert.equal(await rows.count(), 2);

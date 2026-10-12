@@ -36,6 +36,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/desktopdir"
 	"github.com/yetone/magpie/internal/edit"
@@ -115,19 +116,20 @@ func claudeDesktop(home string) *Agent {
 					}
 				}
 			}
-			return false
+			// installed on Windows and not yet opened: none of them yet
+			return desktopdir.Installed(desktopdir.OS, home, os.Getenv)
 		},
 		Notice: func() string {
 			if desktopWiredAny(ps) {
-				return "Claude Desktop reads this at start-up — quit and reopen it to run on magpie (Code and Cowork, no Anthropic sign-in)."
+				return noticeClaudedesktop1.String()
 			}
-			return "Claude Desktop reads this at start-up — quit and reopen it to sign in with Anthropic again."
+			return noticeClaudedesktop2.String()
 		},
 		Check: func() string {
 			if !desktopWiredAny(ps) {
 				return ""
 			}
-			for _, p := range ps {
+			for _, p := range desktopRead(ps) {
 				if msg := desktopCheck(p); msg != "" {
 					if len(ps) > 1 {
 						msg += " (" + p.dir3p + ")"
@@ -169,6 +171,28 @@ func claudeDesktop(home string) *Agent {
 	}
 }
 
+// desktopRead are the sets of Desktop's folders whose wiring counts: the
+// one whose Claude-3p Desktop ran in last, which is where it reads
+// deploymentMode and the gateway from, or every set when it has run in
+// none. Magpie writes both of a packaged Desktop's sets, not knowing the
+// build: 2.31226's MSIX keeps Claude-3p out of the package
+// (ExcludedDirectory), so the package's copy is one Desktop no longer
+// reads, and one gone from there (emptied by an update) isn't Desktop off
+// magpie (dumplings on Discord: "配置已变更" while Desktop ran on magpie).
+func desktopRead(ps []desktopPaths) []desktopPaths {
+	var newest time.Time
+	var at []desktopPaths
+	for _, p := range ps {
+		if t := desktopdir.LastRun(p.dir3p); t.After(newest) {
+			newest, at = t, []desktopPaths{p}
+		}
+	}
+	if at == nil {
+		return ps
+	}
+	return at
+}
+
 // desktopCheck is what keeps one set of Desktop's folders off magpie's
 // gateway, "" for nothing.
 func desktopCheck(p desktopPaths) string {
@@ -181,7 +205,7 @@ func desktopCheck(p desktopPaths) string {
 		return "Claude Desktop uses another gateway configuration now (appliedId in configLibrary/_meta.json), not magpie's"
 	}
 	return wiringOff("Claude Desktop", p.prof, func(k string) (string, bool) { return edit.GetJSON(p.prof, k) },
-		"inferenceGatewayBaseUrl", gateway.URL(), "inferenceGatewayApiKey", gateway.TokenFor("claude-desktop"))
+		"inferenceGatewayBaseUrl", gateway.URL(), "inferenceGatewayApiKey", agentKey("claude-desktop"))
 }
 
 // desktopTierFields pick the model each of Claude Code's tiers runs on in
@@ -353,7 +377,7 @@ func desktopOn(p desktopPaths) error {
 	kvs := []edit.KV{
 		{Path: "inferenceProvider", Value: "gateway"},
 		{Path: "inferenceGatewayBaseUrl", Value: gateway.URL()},
-		{Path: "inferenceGatewayApiKey", Value: gateway.TokenFor("claude-desktop")},
+		{Path: "inferenceGatewayApiKey", Value: agentKey("claude-desktop")},
 		{Path: "inferenceGatewayAuthScheme", Value: "bearer"},
 	}
 	// policies seeded once: the user may tighten them in Desktop
@@ -480,3 +504,9 @@ func desktopEmpty(b []byte) bool {
 	var m map[string]json.RawMessage
 	return json.Unmarshal(b, &m) == nil && len(m) == 0
 }
+
+// what claudedesktop says after a change (notice.go)
+var (
+	noticeClaudedesktop1 = newNotice("Claude Desktop reads this at start-up — quit and reopen it to run on magpie (Code and Cowork, no Anthropic sign-in).")
+	noticeClaudedesktop2 = newNotice("Claude Desktop reads this at start-up — quit and reopen it to sign in with Anthropic again.")
+)

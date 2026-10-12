@@ -79,7 +79,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", server(lang, posts));
       await page.goto("http://magpie.test/?view=usage");
       await page.locator("#prefs").click();
-      await page.locator("#setTab-usage").click();
+      await page.locator(":is(#setTab-usage, .nav-s[data-of=setTab-usage]):visible").click();
       const pill = page.locator("#trayUsagePick button");
       await pill.waitFor();
       await pill.scrollIntoViewIfNeeded();

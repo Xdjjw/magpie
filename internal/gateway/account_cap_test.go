@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,50 @@ func TestWindowCapsHoldTheAccount(t *testing.T) {
 	for _, want := range []string{"usage cap reached", "(me@example.com) is at 45%", "past its 40% cap", "spare@example.com", "past its 10% cap"} {
 		if !strings.Contains(body, want) {
 			t.Errorf("no %q in %s", want, body)
+		}
+	}
+}
+
+// Codex's auto-review on codex-auto-review is free on a ChatGPT sign-in,
+// counted in none of its windows (#1593, hywang1230): an account past its
+// usage cap still takes it, through Codex's own backend path and as
+// codex/codex-auto-review, while its turns on any other model stay held.
+func TestAccountCapLetsAutoReviewThrough(t *testing.T) {
+	codexSignedIn(t)
+	b := newResetBackend(t)
+	capUsage(t, map[string]float64{"me@example.com": 92})
+	if err := provider.SetAccountCap("codex", "me@example.com", 90); err != nil {
+		t.Fatal(err)
+	}
+	srv := New()
+	post := func(path, model string) (int, string) {
+		t.Helper()
+		b.mu.Lock()
+		b.tried = nil
+		b.mu.Unlock()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", path, strings.NewReader(`{"model":"`+model+`","stream":true,"input":"review this"}`))
+		req.Header.Set("Authorization", "Bearer chatgpt-token")
+		req.Header.Set("chatgpt-account-id", "acct-1")
+		srv.Handler().ServeHTTP(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	for _, c := range []struct{ path, model string }{
+		{CodexPath + "/responses", "codex-auto-review"},
+		{"/v1/responses", "codex/codex-auto-review"},
+	} {
+		code, body := post(c.path, c.model)
+		if tried, _ := b.seen(); code != 200 || !strings.Contains(body, "pong") || tried != "acct-1" {
+			t.Errorf("%s %s: %d %s tried %q", c.path, c.model, code, body, tried)
+		}
+	}
+	for _, c := range []struct{ path, model string }{
+		{CodexPath + "/responses", "gpt-5.5"},
+		{"/v1/responses", "codex/gpt-5.5"},
+	} {
+		code, body := post(c.path, c.model)
+		if tried, _ := b.seen(); code != 429 || !strings.Contains(body, "usage cap reached") || tried != "" {
+			t.Errorf("%s %s: %d %s tried %q", c.path, c.model, code, body, tried)
 		}
 	}
 }

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -55,6 +56,83 @@ func TestCodexAutoReviewStandIn(t *testing.T) {
 	New().Handler().ServeHTTP(rec, req)
 	if rec.Code == 404 || modelOf(f.got) != "m1" {
 		t.Fatalf("auto-review: %d %s, upstream %s", rec.Code, rec.Body.String(), f.got)
+	}
+}
+
+// Adam on Discord: Codex's auto-review was answered 404 magpie knows no
+// model "codex-auto-review". Codex's config may name its model as a routing
+// group's bare name (or Codex's spelling of a group's model, #750), which
+// its turns reach; the review stood in for by that name reaches the group
+// too. And a Codex whose config magpie doesn't read as on magpie (another
+// provider table, a profile, its own CODEX_HOME, another computer) has its
+// review go to the model its turns went to, as Codex reviews on the
+// conversation's model; before any turn it is still turned away.
+func TestCodexAutoReviewReachesItsTurnsModel(t *testing.T) {
+	setHome(t, t.TempDir())
+	f := &fake{t: t}
+	setup(t, provider.Chat, f)
+	p, _ := provider.Find("fake")
+	p.Models = []string{"m1", "m2"}
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.SaveGroup(provider.Group{ID: "my-group", Name: "Mine", Members: []string{"fake/m2"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	ask := func(s *Server, model string, review bool) *httptest.ResponseRecorder {
+		f.got = nil
+		f.reply = sse(
+			`data: {"id":"c1","choices":[{"index":0,"delta":{"content":"ok"}}]}`,
+			`data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":1}}`,
+			`data: [DONE]`)
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", "/v1/responses", strings.NewReader(`{"model":"`+model+`","input":"review this","stream":true}`))
+		req.Header.Set("User-Agent", "codex_cli_rs/0.162.0 (Mac OS 26.2.0; arm64) Apple_Terminal/455")
+		// Codex, known here by its token, as the agents package isn't
+		// there to name its User-Agent
+		req.Header.Set("Authorization", "Bearer "+TokenFor("codex"))
+		if review {
+			req.Header.Set("x-openai-subagent", "guardian")
+		}
+		s.Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	t.Cleanup(func() { StandIn = nil })
+
+	// a config magpie doesn't read as Codex's on magpie: no stand-in
+	StandIn = func(string, string) string { return "" }
+	s := New()
+	if rec := ask(s, "codex-auto-review", true); rec.Code != 404 {
+		t.Fatalf("a review before any turn: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := ask(s, "fake/m1", false); rec.Code != 200 {
+		t.Fatalf("a turn: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := ask(s, "codex-auto-review", true); rec.Code != 200 || modelOf(f.got) != "m1" {
+		t.Fatalf("the review after a turn: %d %s, upstream %s", rec.Code, rec.Body.String(), f.got)
+	}
+	// another unknown name, not a review, is still turned away
+	if rec := ask(s, "gpt-nope", false); rec.Code != 404 {
+		t.Fatalf("an unknown turn model: %d", rec.Code)
+	}
+
+	// config.toml: model = "my-group" (and "Mine", the group's name), a
+	// group of fake/m2: the review goes to the group, not to the last
+	// turn's fake/m1
+	for _, name := range []string{"my-group", "Mine"} {
+		StandIn = func(agent, model string) string {
+			if agent == "codex" {
+				return name
+			}
+			return ""
+		}
+		s := New()
+		if rec := ask(s, "codex-auto-review", true); rec.Code != 200 || modelOf(f.got) != "m2" {
+			t.Fatalf("%s: the review %d %s, upstream %s", name, rec.Code, rec.Body.String(), f.got)
+		}
+		if rec := ask(s, name, false); rec.Code != 200 || modelOf(f.got) != "m2" {
+			t.Fatalf("%s: a turn %d %s", name, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -136,5 +214,80 @@ func TestClaudeTierStandInByFamily(t *testing.T) {
 	StandIn = func(string, string) string { return "" }
 	if code, body := ask("claude-fable-5-1", cc); code != 200 || modelOf(f.got) != "claude-fable-5-1" {
 		t.Errorf("not routed: %d %s, upstream got %q", code, body, modelOf(f.got))
+	}
+}
+
+// tbxark on X: a script Claude Code starts (a hook, its statusline, a
+// plugin's) inherits its ANTHROPIC_BASE_URL and token, and asked magpie
+// for claude-sonnet-4-6 as Python-urllib: 404 unknown model, while Claude
+// Code's own requests went to its tier. A client magpie knows as no agent,
+// with the plain token, naming a Claude id magpie doesn't serve, gets
+// Claude Code's tier, on /v1/messages and count_tokens; an id the user
+// serves goes where it is served, and an agent magpie gave a token keeps
+// what it asked for.
+func TestClaudeTierForAScriptClaudeCodeStarted(t *testing.T) {
+	setHome(t, t.TempDir())
+	f := &fake{t: t, ctype: "application/json", reply: `{"id":"msg","type":"message","role":"assistant","content":[{"type":"text","text":"OK"}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":1}}`}
+	up := setup(t, provider.Anthropic, f)
+	p, _ := provider.Find("fake")
+	p.Models = []string{"main", "flash", "grok", "sol"}
+	if err := provider.Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Save(provider.Provider{ID: "anth", Name: "Anth", Key: "k", Anthropic: up.URL, Models: []string{"claude-sonnet-5"}}); err != nil {
+		t.Fatal(err)
+	}
+	var askedFor []string
+	StandIn = func(agent, model string) string {
+		askedFor = append(askedFor, agent)
+		if agent != "claude" {
+			return ""
+		}
+		switch {
+		case strings.Contains(model, "sonnet"):
+			return "fake/grok"
+		case strings.Contains(model, "opus"):
+			return "fake/sol"
+		}
+		return "fake/main"
+	}
+	t.Cleanup(func() { StandIn = nil })
+	ask := func(path, model, ua, key string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest("POST", path, strings.NewReader(`{"model":"`+model+`","max_tokens":5,"messages":[{"role":"user","content":"hi"}]}`))
+		req.Header.Set("User-Agent", ua)
+		req.Header.Set("x-api-key", key)
+		New().Handler().ServeHTTP(rec, req)
+		return rec
+	}
+	const urllib = "Python-urllib/3.12"
+	for asked, want := range map[string]string{"claude-sonnet-4-6": "grok", "claude-opus-5-5": "sol"} {
+		if rec := ask("/v1/messages", asked, urllib, Token); rec.Code != 200 || modelOf(f.got) != want {
+			t.Errorf("%s from a script: %d %s, upstream got %q, want %q", asked, rec.Code, rec.Body.String(), modelOf(f.got), want)
+		}
+	}
+	for _, ua := range []string{"", "anthropic-python/0.75.0"} {
+		if rec := ask("/v1/messages", "claude-sonnet-4-6", ua, Token); rec.Code != 200 || modelOf(f.got) != "grok" {
+			t.Errorf("%q: %d %s, upstream got %q", ua, rec.Code, rec.Body.String(), modelOf(f.got))
+		}
+	}
+	// count_tokens is counted for the model the turn goes to
+	f.got = nil
+	if rec := ask("/v1/messages/count_tokens", "claude-sonnet-4-6", urllib, Token); rec.Code != 200 || modelOf(f.got) != "grok" {
+		t.Errorf("count_tokens from a script: %d %s, upstream got %q", rec.Code, rec.Body.String(), f.got)
+	}
+	// a Claude id the user serves is sent as asked
+	if rec := ask("/v1/messages", "claude-sonnet-5", urllib, Token); rec.Code != 200 || modelOf(f.got) != "claude-sonnet-5" {
+		t.Errorf("served id: %d %s, upstream got %q", rec.Code, rec.Body.String(), modelOf(f.got))
+	}
+	// an agent magpie gave its own token isn't taken for Claude Code
+	askedFor = nil
+	if rec := ask("/v1/messages", "claude-sonnet-4-6", urllib, TokenFor("codex")); rec.Code != 404 || slices.Contains(askedFor, "claude") {
+		t.Errorf("an agent's token: %d %s, stand-ins asked %v", rec.Code, rec.Body.String(), askedFor)
+	}
+	// Claude Code not routed through magpie: still unknown
+	StandIn = func(string, string) string { return "" }
+	if rec := ask("/v1/messages", "claude-sonnet-4-6", urllib, Token); rec.Code != 404 {
+		t.Errorf("not routed: %d %s", rec.Code, rec.Body.String())
 	}
 }

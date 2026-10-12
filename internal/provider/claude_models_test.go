@@ -92,6 +92,84 @@ func TestClaudeAccountServesModelsListedSinceItsFetch(t *testing.T) {
 	}
 }
 
+// The picks wakaka's and the owner's Claude accounts had saved: every
+// model listed then, newest first, with no PickedFrom kept beside them, as
+// providers.json held them on 2026-10-10. Haiku 5.5, listed since, was
+// never served: agents are given the picks alone.
+var claudeAllPicked = []string{"claude-sonnet-5-5", "claude-opus-5-5", "claude-fable-5-1", "claude-opus-5", "claude-sonnet-5", "claude-fable-5", "claude-opus-4-8", "claude-opus-4-7", "claude-sonnet-4-6", "claude-opus-4-6", "claude-opus-4-5", "claude-opus-4-5-20251101", "claude-haiku-4-5", "claude-haiku-4-5-20251001", "claude-sonnet-4-5", "claude-sonnet-4-5-20250929"}
+
+// mdOpus41 is an older row, for a model listed before the picks were
+// saved and left unpicked.
+const mdOpus41 = `"claude-opus-4-1":{"id":"claude-opus-4-1","name":"Claude Opus 4.1","family":"claude-opus","reasoning":true,"tool_call":true,"release_date":"2025-08-05","last_updated":"2025-08-05","limit":{"context":200000,"output":32000}}`
+
+func claudeExposed(t *testing.T) []string {
+	t.Helper()
+	p, ok := find(All(), "claude")
+	if !ok || p.Account == nil {
+		t.Fatalf("claude: %+v %v", p, ok)
+	}
+	return modelIDs(p.Exposed())
+}
+
+// A model models.dev lists after the user picked every model the Claude
+// account listed is served beside those picks (wakaka on Discord: Haiku
+// 5.5 still missing after 9b51428e, whose list had it, as the picks held
+// it out); one listed then and left unpicked stays out.
+func TestClaudePicksOfEveryModelTakeOnesListedSince(t *testing.T) {
+	home := claudeHome(t)
+	claudeSignIn(t, home, time.Now().Add(time.Hour))
+	t.Cleanup(catalog.Reset)
+	writeAnthropicCatalog(t, mdOpus55, mdHaiku55)
+
+	// picks saved before PickedFrom was kept, as the reporter's are
+	if err := store(file{Providers: []Provider{{ID: "claude", Models: claudeAllPicked}}}); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeExposed(t); !slices.Contains(got, "claude-haiku-5-5") || !slices.Contains(got, "claude-sonnet-5-5") {
+		t.Fatalf("all picked before Haiku 5.5 was listed: %v", got)
+	}
+	if p, _ := find(All(), "claude"); !slices.Contains(p.Picks(), "claude-haiku-5-5") {
+		t.Fatalf("the editor's picks: %v", p.Picks())
+	}
+	// an older model the user left unpicked: the picks aren't all of them
+	writeAnthropicCatalog(t, mdOpus55, mdHaiku55, mdOpus41)
+	if got := claudeExposed(t); slices.Contains(got, "claude-haiku-5-5") || slices.Contains(got, "claude-opus-4-1") {
+		t.Fatalf("picks that left one out took more: %v", got)
+	}
+
+	// picks saved now keep what was listed: Haiku 5.5 unticked stays out
+	writeAnthropicCatalog(t, mdOpus55, mdHaiku55)
+	if err := SetModels("claude", []string{"claude-opus-5-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := claudeExposed(t); !slices.Equal(got, []string{"claude-opus-5-5"}) {
+		t.Fatalf("Haiku 5.5 left unpicked: %v", got)
+	}
+	// and every model picked, before Haiku 5.5 was listed, takes it then
+	writeAnthropicCatalog(t, mdOpus55)
+	if err := SetModels("claude", []string{"claude-opus-5-5", "claude-sonnet-5-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := find(All(), "claude"); !slices.Equal(p.PickedFrom, []string{"claude-opus-5-5"}) {
+		t.Fatalf("listed with the picks: %v", p.PickedFrom)
+	}
+	writeAnthropicCatalog(t, mdOpus55, mdHaiku55)
+	if got := claudeExposed(t); !slices.Equal(got, []string{"claude-haiku-5-5", "claude-opus-5-5", "claude-sonnet-5-5"}) {
+		t.Fatalf("listed since every model was picked: %v", got)
+	}
+	// a Save of the same picks keeps the list they were picked from
+	if err := SetModels("claude", []string{"claude-opus-5-5", "claude-sonnet-5-5", " claude-opus-5-5"}); err != nil {
+		t.Fatal(err)
+	}
+	p, _ := find(All(), "claude")
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := find(All(), "claude"); !slices.Equal(p.PickedFrom, []string{"claude-opus-5-5"}) {
+		t.Fatalf("listed after a Save of the same picks: %v", p.PickedFrom)
+	}
+}
+
 // Factory's list is magpie's own too (droid's registry, compiled in): a
 // model a newer magpie adds is served at once, not held out by the copy an
 // older one's fetch kept.

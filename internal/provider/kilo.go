@@ -78,7 +78,7 @@ func (p Provider) kiloModels(ctx context.Context) ([]catalog.Model, string, erro
 		req.Header.Set("Authorization", "Bearer "+p.Key)
 	}
 	for k, v := range p.Headers {
-		req.Header[k] = []string{v}
+		catalog.PutUserHeader(req.Header, k, v)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {

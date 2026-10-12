@@ -12,6 +12,10 @@
 //                          their website and key links through /go
 //   /go/<id>/keys[/<region>], /go/<id>/site[/<region>]
 //                          a partner's key page or website, counted
+//   /api/icon?url=<https URL>
+//                          a picture a plugin, market or import link names,
+//                          fetched here so its host sees Cloudflare, not the
+//                          user (the app fetches every remote icon this way)
 //   /download              the Apple Silicon dmg
 //   /download/mac-arm64    the same;  /download/mac-intel  the Intel dmg
 //   /download/windows      the Windows app (x64);  /download/windows-arm64
@@ -87,6 +91,7 @@ export default {
         .map((r) => ({ ...r, notes: inLang(r.notes, lang) }));
       return json({ releases: pick }, 200, cacheFor(got));
     }
+    if (url.pathname === "/api/icon") return icon(url.searchParams.get("url"));
     if (url.pathname === "/download" || url.pathname.startsWith("/download/")) {
       const want = url.pathname.split("/")[2] || "mac-arm64";
       const got = await latest(ctx, env);
@@ -572,6 +577,90 @@ async function checksums(tag) {
     if (hash && name) sums[name] = hash;
   }
   return sums;
+}
+
+// ---- icons ------------------------------------------------------------------
+
+// An icon a plugin's package.json, a market listing or an import link names
+// is fetched here, not by the app, so its host learns nothing about who
+// looks: a plugin author's https picture would otherwise see the IP of
+// everyone who opened Discover. Nothing of the asker's request is passed
+// on, only the picture comes back, and Cloudflare keeps it a day.
+export const ICON_MAX = 1 << 20; // the app's MaxIcon
+
+export async function icon(raw) {
+  let u;
+  try {
+    u = new URL(raw);
+  } catch {
+    return new Response("not a URL\n", { status: 400 });
+  }
+  if (u.protocol !== "https:" || u.username || u.password || (u.port && u.port !== "443"))
+    return new Response("only a public https picture\n", { status: 400 });
+  // the app asks for usemagpie.ai's own pictures straight; asking here for
+  // one would only send the worker round to itself
+  if (u.hostname === "usemagpie.ai" || u.hostname.endsWith(".usemagpie.ai"))
+    return new Response("a usemagpie.ai picture is fetched as it is\n", { status: 400 });
+  let res;
+  try {
+    res = await fetch(u.toString(), {
+      headers: { Accept: "image/*", "User-Agent": "magpie-icon/1 (+https://usemagpie.ai)" },
+      redirect: "follow",
+      signal: AbortSignal.timeout(10000),
+      // a missing or failing picture is asked for again soon, not in a day
+      cf: { cacheEverything: true, cacheTtlByStatus: { "200-299": 86400, "404": 300, "500-599": 0 } },
+    });
+  } catch (e) {
+    return new Response("could not fetch the picture\n", { status: 502 });
+  }
+  if (!res.ok) return new Response(`the picture's host answered ${res.status}\n`, { status: 502 });
+  const b = await readUpTo(res, ICON_MAX + 1);
+  if (b.byteLength > ICON_MAX) return new Response("the picture is over 1 MB\n", { status: 413 });
+  const type = imageType(new Uint8Array(b));
+  if (!type) return new Response("not a picture\n", { status: 415 });
+  return new Response(b, {
+    headers: {
+      "Content-Type": type,
+      "Cache-Control": "public, max-age=86400",
+      "X-Content-Type-Options": "nosniff",
+      "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+    },
+  });
+}
+
+async function readUpTo(res, max) {
+  const r = res.body.getReader();
+  const parts = [];
+  let n = 0;
+  while (n < max) {
+    const { done, value } = await r.read();
+    if (done) break;
+    parts.push(value);
+    n += value.byteLength;
+  }
+  r.cancel().catch(() => {});
+  const out = new Uint8Array(Math.min(n, max));
+  let at = 0;
+  for (const p of parts) {
+    const take = p.subarray(0, out.length - at);
+    out.set(take, at);
+    at += take.length;
+    if (at >= out.length) break;
+  }
+  return out.buffer;
+}
+
+// imageType is the picture's type by its bytes, as the app's StoreIcon
+// takes them: PNG, JPEG, GIF, WebP, ICO or SVG; "" for anything else.
+export function imageType(b) {
+  const at = (i, ...xs) => xs.every((x, k) => b[i + k] === x);
+  if (at(0, 0x89, 0x50, 0x4e, 0x47)) return "image/png";
+  if (at(0, 0xff, 0xd8, 0xff)) return "image/jpeg";
+  if (at(0, 0x47, 0x49, 0x46, 0x38)) return "image/gif";
+  if (at(0, 0x52, 0x49, 0x46, 0x46) && at(8, 0x57, 0x45, 0x42, 0x50)) return "image/webp";
+  if (at(0, 0, 0, 1, 0)) return "image/x-icon";
+  if (new TextDecoder().decode(b.subarray(0, 1024)).toLowerCase().includes("<svg")) return "image/svg+xml";
+  return "";
 }
 
 function json(v, status = 200, headers = {}) {

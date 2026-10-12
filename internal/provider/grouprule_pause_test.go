@@ -46,7 +46,7 @@ func TestPauseRuleCleanAndMatch(t *testing.T) {
 		{rules[1], "claude", 10, false},
 		{Rule{Use: "a/x", Time: peak}, "claude", 10, false}, // a send-to rule pauses nothing
 	} {
-		if got := c.r.Pauses(c.agent, at(2, c.hour, 0)); got != c.want {
+		if got := c.r.Pauses(c.agent, "", at(2, c.hour, 0)); got != c.want {
 			t.Errorf("%+v %s %d: %v", c.r, c.agent, c.hour, got)
 		}
 	}
@@ -94,17 +94,17 @@ func TestPausedOut(t *testing.T) {
 	}
 	// the group's own model, at its effort, and a group in it's own pause
 	g := Group{ID: "top", Rules: []Rule{{Use: "b/y", Pause: true, Time: peak}}}
-	kept, paused := PausedOut(g, ms, "claude", at(2, 10, 0))
+	kept, paused := PausedOut(g, ms, "claude", "", at(2, 10, 0))
 	if strings.Join(names(kept), ",") != "a/x,c/m" || len(paused) != 2 || paused[0].Member != "d/m" || paused[0].Group != "cheap" || paused[1].Member != "b/y:high" || paused[1].Group != "" {
 		t.Fatalf("%v %+v", names(kept), paused)
 	}
 	// a group in the group named: all its models
 	g.Rules = []Rule{{Use: "group/cheap", Pause: true, Time: peak}}
-	if kept, _ = PausedOut(g, ms, "claude", at(2, 10, 0)); strings.Join(names(kept), ",") != "a/x,b/y" {
+	if kept, _ = PausedOut(g, ms, "claude", "", at(2, 10, 0)); strings.Join(names(kept), ",") != "a/x,b/y" {
 		t.Fatal(names(kept))
 	}
 	// outside the hours, nobody
-	if kept, paused = PausedOut(g, ms, "claude", at(2, 19, 0)); len(kept) != 4 || len(paused) != 0 {
+	if kept, paused = PausedOut(g, ms, "claude", "", at(2, 19, 0)); len(kept) != 4 || len(paused) != 0 {
 		t.Fatal(names(kept), paused)
 	}
 }

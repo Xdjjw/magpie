@@ -82,7 +82,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       });
       page.setDefaultTimeout(5000);
       const errors = [], posts = [];
-      page.on("pageerror", (e) => errors.push(e.message));
+      // WebKit reports a ResizeObserver round left to the next frame as a page
+      // error; Chromium doesn't. As the page first lays out, the view's
+      // scrollbar comes and goes in one frame (#rt 362 -> 352 -> 362), so the
+      // width marks and the stage are told twice, past the loop's depth. The
+      // round is delivered on the next frame and nothing is painted wrong.
+      page.on("pageerror", (e) => { if (!/^ResizeObserver loop completed with undelivered notifications/.test(e.message)) errors.push(e.message); });
       await page.route("**/*", serve(lang, posts));
       await page.goto("http://magpie.test/?view=routing");
       await page.locator(".rt-groups > .rt-group").nth(1).waitFor();

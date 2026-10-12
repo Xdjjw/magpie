@@ -14,17 +14,23 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/filelock"
 )
 
 // savedTokenMu keeps two requests from refreshing one saved account at
-// once: the second would spend a refresh token the first just rotated.
-var savedTokenMu sync.Mutex
+// once: the second would spend a refresh token the first just rotated. It
+// holds across magpies too (#1674): the gateway's refresh and one by a
+// magpie run from a terminal would each spend the same refresh token.
+var savedTokenMu = filelock.Mutex{Path: func() string { return loginsPath() + ".renew.lock" }}
 
 // SetLoginOn puts a saved account in use beside the agent's own, or takes
 // it out. The account the agent is signed in to is always in use.
 func SetLoginOn(agent, user string, on bool) error {
+	if discoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	if pp, ok := pluginOfAgent(agent); ok {
 		return setPluginLoginOn(pp, user, on)
 	}

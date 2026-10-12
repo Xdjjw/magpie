@@ -210,6 +210,37 @@ func TestRenewRefusedForGood(t *testing.T) {
 	}
 }
 
+// A token endpoint that takes no public client and no client_secret_post
+// is registered with and signed in to by client_secret_basic, whatever it
+// lists first (RFC 8414's list has no order of preference): one listing
+// private_key_jwt or tls_client_auth before it was asked to register
+// magpie for that, which it can't do, and turned the sign-in away.
+func TestSignInBySecretBasic(t *testing.T) {
+	home(t)
+	for _, methods := range [][]string{
+		{"private_key_jwt", "client_secret_basic"},
+		{"tls_client_auth", "client_secret_jwt", "client_secret_basic"},
+		{"client_secret_basic"},
+	} {
+		f := mcpauthtest.New(t)
+		f.AuthMethods = methods
+		f.SignIn(t, "neon")
+		if got := f.Registered[len(f.Registered)-1]["token_endpoint_auth_method"]; got != "client_secret_basic" {
+			t.Fatalf("%v: registered for %v", methods, got)
+		}
+		if r, _ := mcpauth.Get("neon"); r.AuthMethod != "client_secret_basic" || r.Secret == "" || r.Access == "" || f.Exchanged != 1 {
+			t.Fatalf("%v: record %+v, exchanged %d", methods, r, f.Exchanged)
+		}
+	}
+	// client_secret_post is still taken over basic where both are
+	f := mcpauthtest.New(t)
+	f.AuthMethods = []string{"private_key_jwt", "client_secret_basic", "client_secret_post"}
+	f.SignIn(t, "kc")
+	if r, _ := mcpauth.Get("kc"); r.AuthMethod != "client_secret_post" || f.Exchanged != 1 {
+		t.Fatalf("both: record %+v", r)
+	}
+}
+
 // An authorization server that is an OpenID provider, as Vercel's is, gives
 // a refresh token only to a sign-in that asks for offline_access, while the
 // server names only "openid": magpie asks for it too when the authorization

@@ -203,7 +203,7 @@ func anteAt(at place) *Agent {
 		Bin: "ante", Dir: dir, Path: path,
 		Notice: func() string {
 			if Running(`(^|/)ante( |$)`) {
-				return "Ante reads its catalog at start-up — restart open ante sessions to use this."
+				return noticeAnte.String()
 			}
 			return ""
 		},
@@ -347,8 +347,8 @@ func anteModelJSON(m catalog.Model) map[string]any {
 	if m.Context > 0 {
 		e["context_limit"] = m.Context
 	}
-	if m.Output > 0 {
-		e["max_tokens"] = maxTokens(m)
+	if n := anteMaxTokens(m); n > 0 {
+		e["max_tokens"] = n
 	}
 	// Ante's ladder is per provider and model family; a model magpie knows
 	// the levels of says which of them Ante may send. No default "effort" is
@@ -359,6 +359,25 @@ func anteModelJSON(m catalog.Model) map[string]any {
 		e["supported_efforts"] = anteEfforts(m.Efforts)
 	}
 	return e
+}
+
+// anteMaxTokens is m's reply limit as Ante's catalog takes it: under the
+// window, never equal to it. Ante 0.2.9 skips an entry whose max_tokens is
+// not less than its context_limit —
+//
+//	warning: skipped catalog entry providers.magpie.preferred_models.b/eq:
+//	max_tokens (128000) must be less than context_limit (128000)
+//
+// and maxTokens hands out a reply limit capped at the window, so a model
+// whose list gives the same number for both (or a larger output) went
+// missing from Ante, and with it magpie's provider when that was the model
+// picked (#1179). Such a model is told one token less than its window.
+func anteMaxTokens(m catalog.Model) int {
+	n := maxTokens(m)
+	if m.Context > 0 && n >= m.Context {
+		n = m.Context - 1
+	}
+	return n
 }
 
 // anteLadder is Ante's effort scale, ascending, and the magpie level each
@@ -409,3 +428,8 @@ func anteEfforts(levels []string) []string {
 	}
 	return out
 }
+
+// what ante says after a change (notice.go)
+var (
+	noticeAnte = newNotice("Ante reads its catalog at start-up — restart open ante sessions to use this.")
+)

@@ -11,11 +11,17 @@ func TestIsolate(t *testing.T) {
 		t.Setenv(k, os.Getenv(k)) // restored after the test
 	}
 	os.Setenv("CODEX_HOME", filepath.Join(t.TempDir(), "codex"))
+	t.Setenv("HTTPS_PROXY", "http://127.0.0.1:9") // the machine's own, which net/http would freeze into its first read
 	home, err := Isolate()
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { remove(home) })
+	for _, k := range proxyVars {
+		if _, ok := os.LookupEnv(k); ok {
+			t.Errorf("%s is still set", k)
+		}
+	}
 	for _, f := range []func() (string, error){os.UserHomeDir, os.UserConfigDir, os.UserCacheDir} {
 		if p, err := f(); err != nil || !within(p, home) {
 			t.Errorf("%q (%v) is outside %q", p, err, home)

@@ -26,6 +26,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/settings"
@@ -107,11 +108,32 @@ func (g Group) Live() Group {
 	return g
 }
 
-// Group is a routing group.
+// PatienceOff, PatienceDefault and PatienceLongest are a group's
+// Patience: none, the seconds a group waits that hasn't set it, and the
+// most it may.
+const (
+	PatienceOff     = -1
+	PatienceDefault = 60
+	PatienceLongest = 240
+)
+
+// Waits is how long a request to the group may be kept for its members to
+// come back (Patience), 0 for not at all.
+func (g Group) Waits() time.Duration {
+	switch {
+	case g.Patience < 0:
+		return 0
+	case g.Patience == 0:
+		return PatienceDefault * time.Second
+	}
+	return time.Duration(min(g.Patience, PatienceLongest)) * time.Second
+}
+
 // ContextSmallest is a group's Context when agents are told the window of
 // its smallest member.
 const ContextSmallest = -1
 
+// Group is a routing group.
 type Group struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
@@ -137,6 +159,14 @@ type Group struct {
 	// waits as long as it takes. The last one left is always waited for,
 	// and the slow one doesn't rest.
 	FirstToken int `json:"firstToken,omitempty"`
+	// Patience is how many seconds more a request may be kept, once every
+	// member has failed and nothing of a reply has been sent, for the
+	// members that failed in a way that passes —
+	// busy, overloaded, rate limited for a moment — to be asked again
+	// after a pause, in turn, until one answers (#1418). 0 is
+	// PatienceDefault; PatienceOff gives the agent the last one's error
+	// once each has been asked.
+	Patience int `json:"patience,omitempty"`
 	// Off are the members switched off: kept where they are in the
 	// order, with their rules, but sent nothing until switched on again,
 	// so trying a group without one doesn't mean taking it out.
@@ -180,6 +210,13 @@ type Group struct {
 	// Family is a tag the group goes by in which agents are shown it
 	// (settings' Visible), with its id.
 	Family string `json:"family,omitempty"`
+	// Unlists keeps the models the group names, or its patterns match,
+	// out of the lists agents and the gateway's model list show (#1783):
+	// they are offered through the group alone, as a provider kept for
+	// routing groups offers its own (Provider.Unlisted), and a request
+	// naming one is still served. A group in it keeps its own, as it
+	// says. Not while the group is switched off.
+	Unlists bool `json:"unlists,omitempty"`
 	// Auto is set on a group magpie found: one model served by several
 	// providers. It is derived, never stored.
 	Auto bool `json:"auto,omitempty"`
@@ -664,8 +701,8 @@ func groupEntries(entries []Entry) []Entry {
 			continue
 		}
 		ms := membersIn(entries, all, g)
-		if len(ms) == 0 {
-			continue
+		if len(ms) == 0 || DecisionGroup(ms) {
+			continue // a decision group answers System One, no agent's conversation
 		}
 		e := Entry{ID: GroupPrefix + g.ID, Model: ms[0].Model, Name: g.Name, Provider: ms[0].Provider, Group: g.ID, Named: !g.Auto}
 		var fixed []string // the efforts members are fixed at
@@ -845,6 +882,10 @@ func SaveGroup(g Group) error {
 		g.Name = g.ID
 	}
 	g.FirstToken = max(g.FirstToken, 0)
+	if g.Patience < 0 {
+		g.Patience = PatienceOff
+	}
+	g.Patience = min(g.Patience, PatienceLongest)
 	if g.Context < 0 {
 		g.Context = ContextSmallest
 	}
@@ -896,10 +937,10 @@ func SaveGroup(g Group) error {
 	if err := groupsInGroup(g, groupsIn(entries)); err != nil {
 		return err
 	}
-	for _, m := range g.Members {
-		if IsDecider(m) {
-			return fmt.Errorf("%s decides a group's model and effort; it holds no conversation, so it can only be the group's classifier", m)
-		}
+	// decision models make a group of their own, asked at /v1/systemone,
+	// never one with models that hold conversations (decide_group.go)
+	if err := cleanDecisionGroup(&g, groupsIn(entries)); err != nil {
+		return err
 	}
 	if g.Routing != Ordered && g.Routing != Rotate && g.Routing != LeastUsed && g.Routing != Pace && g.Routing != Manual {
 		g.Routing = ""

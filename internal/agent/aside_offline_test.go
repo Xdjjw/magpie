@@ -18,7 +18,7 @@ func TestAsideInitialReadOffersStageWithoutWrites(t *testing.T) {
 	settings, models := asideHome(t)
 	c := newAsideConnection(here(""))
 	before := readFile(settings) + readFile(models) + readFile(c.record)
-	asideRead = func() (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
+	asideRead = func(string) (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
 	asideSet = func(string, string) error { t.Fatal("unavailable apply called daemon set"); return nil }
 	err := mustFindAside(t).Pick("model", "magpie/relay/glm-4.6")
 	var unavailable *RuntimeUnavailableError
@@ -39,7 +39,10 @@ func TestAsideOfflineDisconnectRestoresWithoutDaemon(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("offline disconnect read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) {
+		t.Fatal("offline disconnect read daemon")
+		return nil, nil
+	}
 	asideSet = func(string, string) error { t.Fatal("offline disconnect set daemon"); return nil }
 	t.Setenv("PATH", t.TempDir())
 	// no desktop app either, whatever this machine has installed: the
@@ -95,7 +98,7 @@ func TestAsideUnavailableBoundary(t *testing.T) {
 			c := newAsideConnection(here(""))
 			before := readFile(settings) + readFile(models) + readFile(c.record)
 			reads := 0
-			asideRead = func() (map[string]json.RawMessage, error) { reads++; return nil, errors.New("offline") }
+			asideRead = func(string) (map[string]json.RawMessage, error) { reads++; return nil, errors.New("offline") }
 			asideSet = func(string, string) error { t.Fatal("set before availability confirmed"); return nil }
 			err := mustFindAside(t).Pick(tt.key, tt.value)
 			var unavailable *RuntimeUnavailableError
@@ -143,12 +146,12 @@ func TestAsidePostReadFailuresNeverOfferOffline(t *testing.T) {
 			case "readback failure":
 				inner := asideRead
 				reads := 0
-				asideRead = func() (map[string]json.RawMessage, error) {
+				asideRead = func(account string) (map[string]json.RawMessage, error) {
 					reads++
 					if reads > 1 {
 						return nil, errors.New("readback")
 					}
-					return inner()
+					return inner(account)
 				}
 			}
 			err := a.Pick("fast", "magpie/relay/glm-4.6")
@@ -188,7 +191,7 @@ func TestAsideOfflineRestoresCompleteSelectionsAndPreservesUserChanges(t *testin
 	if err := edit.SetJSON(settings, edit.KV{Path: "modelCategories.standard", Value: changed}); err != nil {
 		t.Fatal(err)
 	}
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("offline read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) { t.Fatal("offline read daemon"); return nil, nil }
 	asideSet = func(string, string) error { t.Fatal("offline set daemon"); return nil }
 	if err := a.DisconnectOffline(); err != nil {
 		t.Fatal(err)
@@ -253,7 +256,7 @@ func TestAsideOfflinePlanGuards(t *testing.T) {
 				writeFile(t, c.record, `{"fields":{}}`)
 			}
 			before := readFile(settings) + readFile(models) + readFile(c.record)
-			asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("guard read daemon"); return nil, nil }
+			asideRead = func(string) (map[string]json.RawMessage, error) { t.Fatal("guard read daemon"); return nil, nil }
 			asideSet = func(string, string) error { t.Fatal("guard set daemon"); return nil }
 			if err := a.Native.ExecuteOffline(plan); err == nil {
 				t.Fatal("unsafe plan accepted")
@@ -281,7 +284,10 @@ func TestAsideOfflineLegacyRecordDoesNotResurrect(t *testing.T) {
 	if err := a.Native.ExecuteOffline(plan); err == nil {
 		t.Fatal("changed legacy restore point accepted")
 	}
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("legacy offline read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) {
+		t.Fatal("legacy offline read daemon")
+		return nil, nil
+	}
 	if err := a.DisconnectOffline(); err != nil {
 		t.Fatal(err)
 	}
@@ -339,7 +345,7 @@ func TestAsideDisconnectUnavailableOnlyAtInitialRead(t *testing.T) {
 			}
 			switch kind {
 			case "initial":
-				asideRead = func() (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
+				asideRead = func(string) (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
 			case "record":
 				dir := filepath.Dir(newAsideConnection(here("")).record)
 				os.Chmod(dir, 0500)
@@ -351,12 +357,12 @@ func TestAsideDisconnectUnavailableOnlyAtInitialRead(t *testing.T) {
 			case "readback":
 				inner := asideRead
 				reads := 0
-				asideRead = func() (map[string]json.RawMessage, error) {
+				asideRead = func(account string) (map[string]json.RawMessage, error) {
 					reads++
 					if reads > 1 {
 						return nil, errors.New("offline")
 					}
-					return inner()
+					return inner(account)
 				}
 			}
 			err = a.Native.Execute(plan)
@@ -387,7 +393,7 @@ func TestAsideCorruptRecordDoesNotOfferStageWhenOffline(t *testing.T) {
 	asideHome(t)
 	c := newAsideConnection(here(""))
 	writeFile(t, c.record, "{corrupt")
-	asideRead = func() (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
+	asideRead = func(string) (map[string]json.RawMessage, error) { return nil, errors.New("offline") }
 	err := mustFindAside(t).Pick("model", "native/unlisted")
 	var unavailable *RuntimeUnavailableError
 	if err == nil || errors.As(err, &unavailable) {
@@ -438,7 +444,7 @@ func TestAsideOfflineUnsetDefaultIsRemoved(t *testing.T) {
 	if err := a.Native.Stage("model", "magpie/relay/glm-4.6"); err != nil {
 		t.Fatal(err)
 	}
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("offline read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) { t.Fatal("offline read daemon"); return nil, nil }
 	if err := a.DisconnectOffline(); err != nil {
 		t.Fatal(err)
 	}
@@ -485,7 +491,10 @@ func TestAsideOfflineImageRestoresFullSavedObject(t *testing.T) {
 	if err := a.Native.Stage("image", "magpie/art/gpt-image-1"); err != nil {
 		t.Fatal(err)
 	}
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("offline image read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) {
+		t.Fatal("offline image read daemon")
+		return nil, nil
+	}
 	asideSet = func(string, string) error { t.Fatal("offline image set daemon"); return nil }
 	if err := a.DisconnectOffline(); err != nil {
 		t.Fatal(err)
@@ -522,7 +531,7 @@ func TestAsideOfflineProviderWriteFailureRollsBackAllFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { os.Chmod(targetDir, 0700) })
-	asideRead = func() (map[string]json.RawMessage, error) { t.Fatal("rollback read daemon"); return nil, nil }
+	asideRead = func(string) (map[string]json.RawMessage, error) { t.Fatal("rollback read daemon"); return nil, nil }
 	if err := a.Native.ExecuteOffline(plan); err == nil {
 		t.Fatal("provider write should fail")
 	}

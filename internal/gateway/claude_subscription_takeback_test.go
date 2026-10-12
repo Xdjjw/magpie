@@ -34,7 +34,7 @@ func takebackClaude(t *testing.T) string {
 	log := filepath.Join(dir, "stdin.log")
 	script := `#!/bin/sh
 echo "args $*" >> ` + log + `
-cb=$(printf '%s\n' "$@" | grep -o 'http://[^"]*/_magpie/claude-mcp/[A-Za-z0-9_-]*' | head -1)
+cb=$(cat "$(printf '%s\n' "$@" | grep -o '"claude-mcp-helper","[^"]*"' | head -1 | sed 's/.*","//; s/"$//')")
 n=0
 me=$$
 start() { echo '{"type":"stream_event","event":{"type":"message_start","message":{"id":"m'$n'","model":"claude-sonnet-5","usage":{"input_tokens":1}}}}'; }

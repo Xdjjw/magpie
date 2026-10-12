@@ -251,22 +251,35 @@ func TestKeyAllowanceNeverWaits(t *testing.T) {
 	if err := Save(p); err != nil {
 		t.Fatal(err)
 	}
-	var wg sync.WaitGroup
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
+	// sub2api is held until release, so the looks coming back at all is
+	// their not waiting for it (#1617). The deadline only turns a wait into
+	// a FAIL, and is short of the read's own 30s.
+	type look struct {
+		a  Allowance
+		ok bool
+	}
+	looked := make(chan look, 10)
 	for range 10 {
-		wg.Add(1)
 		go func() {
-			defer wg.Done()
-			start := time.Now()
-			if a, ok := KeyAllowance(p); ok || a != nil {
-				t.Errorf("known before it was read: %+v", a)
-			}
-			if d := time.Since(start); d > time.Second {
-				t.Errorf("waited %v", d)
-			}
+			a, ok := KeyAllowance(p)
+			looked <- look{a, ok}
 		}()
 	}
-	wg.Wait()
-	close(release)
+	hang := time.After(10 * time.Second)
+	for range 10 {
+		select {
+		case l := <-looked:
+			if l.ok || l.a != nil {
+				t.Fatalf("known before it was read: %+v", l.a)
+			}
+		case <-hang:
+			t.Fatal("a look waited for the held read")
+		}
+	}
+	let()
 	a := waitAllowance(t, p, func(Allowance) bool { return true })
 	if used, _ := a.For("gpt-6-astra", time.Now()); used != 90 {
 		t.Fatalf("used = %v of %+v", used, a)

@@ -149,9 +149,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const side = await card.evaluate((c) => getComputedStyle(c).borderLeftWidth);
         assert.equal(side, "0px");
         // on every tab
-        await page.locator("#view-library .lib-tabs .opt").first().click();
+        await page.locator(":is(#view-library .lib-tabs .opt, .nav-s):visible").first().click();
         await card.waitFor();
-        await page.locator("#view-library .lib-tabs .opt").nth(2).click();
+        await page.locator(":is(#view-library .lib-tabs .opt, .nav-s):visible").nth(2).click();
         await page.locator("#view-library .lib-body:not(.lib-skel) .lib-row").first().waitFor();
 
         const again = card.getByRole("button", { name: words[lang].again });

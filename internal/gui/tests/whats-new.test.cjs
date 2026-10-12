@@ -19,6 +19,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -101,7 +102,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.on("pageerror", (e) => errors.push(e.message));
         page.on("dialog", (d) => { errors.push("dialog: " + d.message()); d.dismiss(); });
         await page.route("**/*", serve(lang, ctl));
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/" + q);
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         await page.locator("#agents").waitFor({ state: "attached" });
         return { page, errors };
       };
@@ -209,7 +212,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       // Settings → What's new → Open opens them again, the waiting update's first
       ctl.update = { state: "ready", current: "0.1.604", latest: "0.1.605", notes: "## New Features\n\n- A new thing. (#470)", url: "https://github.com/yetone/magpie-releases/releases/tag/v0.1.605" };
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=about");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const notesRow = page.locator("#about .row.pref.whatsnew-row");
       assert.equal(await notesRow.locator(".name").textContent(), w.again);
       const again = notesRow.getByRole("button", { name: w.open, exact: true });

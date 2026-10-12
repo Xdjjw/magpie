@@ -174,7 +174,7 @@
 /* an email, hidden: stand-in letters of its shape, softly blurred —
    coming in out of focus when asked for */
 .pii { filter: blur(2.2px); opacity: .5; user-select: none; }
-.masking .pii { animation: rtpii .35s ease-out both; }
+.masking .pii { animation: rtpii .35s ease-out backwards; }
 @keyframes rtpii { from { filter: blur(0); opacity: 1; } }
 #view-routing .rt { margin: 0; }
 .rt-more { padding-bottom: 12px; }
@@ -294,6 +294,19 @@ button.rt-session { cursor: pointer; }
 .rt-prov .ic, .rt-prov .ic img, .rt-prov .ic svg { width: 14px; height: 14px; }
 .rt-prov > span:last-child { margin-left: auto; font-size: 10.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 999px; padding: 0 7px; }
 .rt-prov:not(:first-child) { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 10px; }
+/* a routing named where it can be changed: a way to where it is set */
+.rt-go { cursor: pointer; }
+.rt-go::after { content: " ›"; }
+/* :focus-visible in rules of its own: Safari before 15.4 drops a list
+   holding it whole, hover included */
+.rt-prov > span.rt-go:hover { color: var(--fg); border-color: var(--fg); }
+.rt-prov > span.rt-go:focus-visible { color: var(--fg); border-color: var(--fg); }
+.rt-hub i.rt-go:hover { box-shadow: 0 0 0 3px var(--card-2), 0 0 0 4px var(--fg); }
+.rt-hub i.rt-go:focus-visible { box-shadow: 0 0 0 3px var(--card-2), 0 0 0 4px var(--fg); }
+.rt-go:focus-visible { outline: none; }
+.rt-found { animation: rtfound 1.4s ease-out; }
+@keyframes rtfound { 0%, 40% { box-shadow: inset 0 0 0 2px var(--fg); } 100% { box-shadow: inset 0 0 0 2px transparent; } }
+@media (prefers-reduced-motion: reduce) { .rt-found { animation: none; } }
 .rt-act { display: grid; gap: 3px; padding: 6px 12px 6px 33px; font-size: 12px; }
 .rt-act .nm { display: flex; gap: 6px; min-width: 0; }
 .rt-act .nm b { font-weight: 560; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -343,7 +356,7 @@ button.rt-session { cursor: pointer; }
    of logos in, spilling it over the card's left edge onto the name (ARNO
    on Discord) */
 .rt-group .rt-ghandle.ag-handle { position: relative; align-items: center; justify-content: center; width: auto; min-width: 24px; height: 24px; padding: 0 3px; }
-.rt-group .rt-ghandle::before { content: ""; position: absolute; left: -8px; top: 50%; width: 5px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3.5px 3.75px; opacity: 0; transition: opacity .15s; }
+.rt-group .rt-ghandle::before { content: ""; position: absolute; left: -7px; top: 50%; width: 5px; height: 11px; margin-top: -5.5px; background: radial-gradient(circle, var(--muted) .9px, transparent 1.2px) 0 0 / 3.5px 3.75px; opacity: 0; transition: opacity .15s; }
 .rt-group:is(:hover, .dragging) .rt-ghandle::before, .rt-group .rt-ghandle.open::before { opacity: 1; }
 /* apart: Safari before 15.4 drops a whole selector list with :focus-visible in it */
 .rt-group .rt-ghandle:focus-visible::before { opacity: 1; }
@@ -416,7 +429,7 @@ button.rt-session { cursor: pointer; }
 @media (max-width: 760px), (pointer: coarse) and (max-width: 1024px) {
   body.web .rt-group {
     display: grid; grid-template-columns: auto minmax(0, 1fr) auto; /* the logos as wide as they are */
-    gap: 6px 8px; padding: 12px;
+    gap: 6px 8px; padding: 12px 12px 12px 14px; /* the grip's room, as wide */
   }
   body.web .rt-group .tags { display: flex; flex-wrap: wrap; grid-column: 2 / -1; grid-row: 2; }
   body.web .rt-group > .text { grid-column: 3; grid-row: 1; }
@@ -437,6 +450,11 @@ button.rt-session { cursor: pointer; }
   body.web .rt-pool .lab small { padding-top: 6px; }
   body.web .rt-pool .segs { flex-wrap: wrap; }
   body.web .rt-stats { flex-wrap: wrap; gap: 10px 16px; }
+  /* the upstream a request went to takes a line of its own on a phone,
+     so the reasoning beside the provider isn't cut to two letters */
+  body.web .rt-req .to.upstreamed { flex-wrap: wrap; row-gap: 0; }
+  body.web .rt-req .to.upstreamed .said { flex: 1 1 0; min-width: 0; }
+  body.web .rt-req .to .upstream { flex-basis: 100%; padding-left: 12px; }
   body.web #view-routing > .row-head .note { flex: 1 1 100%; order: 1; margin: 0; }
 }
 .rt-gsec .segs .opt { white-space: nowrap; }
@@ -509,6 +527,10 @@ button.rt-session { cursor: pointer; }
 .rt-cond.tk { cursor: text; }
 .rt-cond.in { cursor: text; }
 .rt-cond.in input, .editor .rt-cond.in input[type="text"] { width: 24ch; }
+.rt-cond.fd { cursor: text; }
+.rt-cond.fd input, .editor .rt-cond.fd input[type="text"] { width: 24ch; }
+.rt-cond.xf { cursor: text; }
+.rt-cond.xf input, .editor .rt-cond.xf input[type="text"] { width: 24ch; }
 /* a rule's hours: two times in the pill, typed; one that isn't a time is marked */
 .rt-cond.tm { cursor: text; }
 .rt-cond.tm input.clock, .editor .rt-cond.tm input.clock[type="text"] { width: 5.5ch; text-align: center; }
@@ -639,3 +661,26 @@ button.rt-session { cursor: pointer; }
     .rt-req .meta { grid-column: 2; grid-row: 3; justify-content: flex-start; }
   }
 }
+/* templates: groups for common needs made of the user's own models, each
+   added in a click (provider.Templates) */
+.rt-gtpl { padding: 10px 12px 12px; display: grid; gap: 8px; }
+.rt-gtpl-head { font-size: 12px; color: var(--muted); }
+/* Import a group (laincatx on X): the text pasted, then what came of it */
+.rt-gimport { padding: 10px 12px 12px; display: grid; gap: 8px; min-width: 0; border-bottom: 1px solid var(--line); }
+.rt-gimport-text { width: 100%; box-sizing: border-box; min-height: 72px; padding: 7px 9px; border-radius: 7px; border: 1px solid var(--line); background: var(--card); color: var(--fg); font-family: var(--code-font, var(--code)); font-size: 12px; line-height: 1.45; resize: vertical; outline: none; overflow-wrap: anywhere; }
+.rt-gimport-text:focus { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); }
+.rt-gimport .acts { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.rt-gimport-done { font-size: 12.5px; font-weight: 600; }
+.rt-gimport-missing, .rt-gimport-note { font-size: 12px; line-height: 1.45; color: var(--muted); overflow-wrap: anywhere; }
+.rt-gimport-missing { color: var(--danger, #d66); }
+.rt-gtpl-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 8px; }
+.rt-gtpl-card { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; }
+.rt-gtpl-card .hd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rt-gtpl-card .hd b { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
+.rt-gtpl-card .hd .ic, .rt-gtpl-card .hd .ic-stack { flex: none; }
+.rt-gtpl-card .desc { font-size: 11.5px; line-height: 1.45; color: var(--muted); }
+.rt-gtpl-card .mem { font-size: 11.5px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rt-gtpl-card .mem.why { color: var(--faint); white-space: normal; }
+.rt-gtpl-card.off b { color: var(--muted); }
+.rt-gtpl-card .acts { display: flex; align-items: center; gap: 8px; margin-top: auto; padding-top: 4px; }
+.rt-gtplbtn { display: inline-flex; align-items: center; gap: 4px; }

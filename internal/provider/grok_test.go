@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -27,6 +28,59 @@ func TestParseGrokModels(t *testing.T) {
 	if len(ms) != 2 || ms[0].ID != "grok-4.7" || ms[0].Name != "Grok 4.7" || ms[0].Context != 500000 ||
 		strings.Join(ms[0].Efforts, ",") != "low,medium,high,xhigh" || ms[1].Name != "grok-4.7-build-fast" || ms[1].Efforts != nil {
 		t.Fatalf("models = %+v", ms)
+	}
+}
+
+// A model Grok lists at more than one context window is offered at each,
+// as the CLI's /context-window offers it (#1608): the default keeps the
+// plain id, 500K is grok-4.7@500k. The literal list is Grok 1.0.50's
+// models_cache.json from the report.
+func TestParseGrokModelsWindows(t *testing.T) {
+	b := []byte(`{"object":"list","data":[
+		{"id":"grok-4.7","name":"Grok 4.7","context_window":256000,"context_windows":[256000,500000],"api_backend":"responses","reasoning_efforts":[{"value":"high"},{"value":"low"}]},
+		{"id":"grok-4.5","context_window":256000,"context_windows":[256000],"api_backend":"responses"},
+		{"id":"grok-odd","context_window":100000,"context_windows":[200000,400000,400000],"api_backend":"responses"}]}`)
+	var got []string
+	for _, m := range parseGrokModels(b) {
+		got = append(got, fmt.Sprintf("%s|%s|%d|%s", m.ID, m.Name, m.Context, strings.Join(m.Efforts, ",")))
+	}
+	want := []string{
+		"grok-4.7|Grok 4.7|256000|low,high", "grok-4.7@500k|Grok 4.7 @ 500k|500000|low,high",
+		"grok-4.5|grok-4.5|256000|",
+		// a default the list doesn't hold goes to the list's first
+		"grok-odd|grok-odd|200000|", "grok-odd@400k|grok-odd @ 400k|400000|"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("models =\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// A model at a window of its own goes to Grok as the model it lists, with
+// the window in x-grok-context-window, as the CLI sends it (#1608); the
+// plain id goes as it is, with no window.
+func TestGrokSignsWindow(t *testing.T) {
+	home := t.TempDir()
+	grokSignedIn(t, home, "me@x.ai")
+	acct := &Account{Agent: "grok"}
+	grokSigned(acct, home)
+	for _, c := range []struct{ model, sent, window string }{
+		{"grok-4.7@500k", "grok-4.7", "500000"},
+		{"grok-4.7", "grok-4.7", ""},
+		{"grok-4.7@big", "grok-4.7@big", ""},
+	} {
+		body := []byte(`{"model":"` + c.model + `","input":"hi","prompt_cache_key":"c1"}`)
+		req, _ := http.NewRequest("POST", "http://grok.invalid/responses", strings.NewReader(string(body)))
+		if err := acct.sign(context.Background(), req, body); err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(req.Body)
+		var v map[string]any
+		if err := json.Unmarshal(b, &v); err != nil || v["model"] != c.sent || v["input"] != "hi" || req.ContentLength != int64(len(b)) {
+			t.Errorf("%s: body = %s (%d)", c.model, b, req.ContentLength)
+		}
+		if req.Header.Get("x-grok-model-override") != c.sent || req.Header.Get("x-grok-context-window") != c.window ||
+			req.Header.Get("x-grok-conv-id") != "c1" {
+			t.Errorf("%s: headers = %v", c.model, req.Header)
+		}
 	}
 }
 

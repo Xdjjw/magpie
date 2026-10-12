@@ -237,7 +237,7 @@ func TestClaudeUsageUnavailableAfterAccountSwitch(t *testing.T) {
 func TestLoginUsageClaudeAskedMeanwhile(t *testing.T) {
 	claudeUsageCards(t, "Current session: 40% used", nil)
 	running, release := make(chan struct{}, 1), make(chan struct{})
-	UsageClaudeVia(func(context.Context) (string, error) {
+	UsageClaudeVia(func(context.Context, string) (string, error) {
 		select {
 		case running <- struct{}{}:
 		default:

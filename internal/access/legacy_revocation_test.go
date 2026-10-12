@@ -131,3 +131,59 @@ func TestReadOnlyDefaultKeyMutationExplainsLegacyMirror(t *testing.T) {
 		})
 	}
 }
+
+// A default key the user removed isn't made again when sharing is turned
+// off and on, or a new "Magpie" key keeps appearing beside their own
+// (#1655); a disabled one stays disabled; a new key asked for is made.
+func TestRemovedDefaultKeyStaysRemovedOnReshare(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	if err := ConfigureLAN(true, false); err != nil {
+		t.Fatal(err)
+	}
+	own, err := Update("add-key", Change{Name: "Mine", Secret: "a-much-longer-key-of-my-own"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := settings.Load().LANKeyID
+	if _, err := Update("off-key", Change{Key: def}); err != nil {
+		t.Fatal(err)
+	}
+	for _, on := range []bool{false, true} {
+		if err := ConfigureLAN(on, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if keys, _ := List(); len(keys) != 2 || !keys[0].Off || LANSecret() != "" {
+		t.Fatal("re-sharing turned the disabled default key back on", keys)
+	}
+	if _, err := Update("remove-key", Change{Key: def}); err != nil {
+		t.Fatal(err)
+	}
+	for _, older := range []bool{false, true} {
+		if older { // an older magpie saved settings without the id
+			s := settings.Load()
+			s.LANKeyID = ""
+			if err := settings.Save(s); err != nil {
+				t.Fatal(err)
+			}
+		}
+		for _, on := range []bool{false, true} {
+			if err := ConfigureLAN(on, false); err != nil {
+				t.Fatal(err)
+			}
+		}
+		keys, _ := List()
+		if len(keys) != 1 || keys[0].Name != "Mine" || !settings.Load().LAN {
+			t.Fatal("re-sharing made the removed default key again", older, keys)
+		}
+		if _, ok := Authenticate(own); !ok {
+			t.Fatal("the user's own key stopped working")
+		}
+	}
+	if err := ConfigureLAN(true, true); err != nil {
+		t.Fatal(err)
+	}
+	if keys, _ := List(); len(keys) != 2 || LANSecret() == "" {
+		t.Fatal("a new key asked for wasn't made", keys)
+	}
+}

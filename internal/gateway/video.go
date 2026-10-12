@@ -648,10 +648,21 @@ func (s *Server) videosCreate(w http.ResponseWriter, r *http.Request) {
 		fail(403, keyModelError(keyWho, f.Model))
 		return
 	}
-	// held to some accounts (#905): sent on a key the calling key may use,
-	// of those in use — not the provider's first alone, which a key held
-	// to a later one was refused by — or none, refused
-	if keyWho, held := accountHolds(r); held {
+	if !p.IsRemoteMagpie() && filmsCustom(p, model) {
+		// at a provider's own videos API: sent on the first key a chat
+		// for the model would go to (#1657), never one whose own list of
+		// models leaves it out, nor one the calling key may not use
+		// (#905); the video's id names the key, which it is asked after on
+		cs, code, msg := s.onKeys(r, p, model, f.Model)
+		if code != 0 {
+			fail(code, msg)
+			return
+		}
+		p = cs[0].p
+	} else if keyWho, held := accountHolds(r); held {
+		// held to some accounts (#905): sent on a key the calling key may
+		// use, of those in use — not the provider's first alone, which a
+		// key held to a later one was refused by — or none, refused
 		var ok bool
 		if p, ok = allowedKey(keyWho, p, model); !ok {
 			fail(403, keyAccountsError(keyWho, f.Model))

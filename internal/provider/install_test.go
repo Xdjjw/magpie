@@ -32,14 +32,25 @@ func TestSignInInstallsMissingCLI(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { DevinExecutable = oldExe })
-	release := make(chan struct{})
+	// an early failure ends the test with the install still held: the
+	// fake then gives up without touching the test that has gone
+	release, ended := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(ended) })
 	var ran string
 	oldRun := runInstaller
 	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
 		ran = c.sh
-		<-release
+		select {
+		case <-release:
+		case <-ended:
+			return nil, errors.New("the test ended")
+		}
 		os.MkdirAll(filepath.Dir(exe), 0o755)
-		testenv.Program(t, exe, "#!/bin/sh\nprintf 'Logged in (via Devin).\\n  Email: dev@example.com\\n  Tier: Devin Pro\\n'\n")
+		// not testenv.Program: this runs on the sign-in's goroutine, which a
+		// failed test can leave behind
+		if err := testenv.WriteProgram(exe, "#!/bin/sh\nprintf 'Logged in (via Devin).\\n  Email: dev@example.com\\n  Tier: Devin Pro\\n'\n"); err != nil {
+			return nil, err
+		}
 		// as Devin's does: `devin setup` gives up on its sign-in without a terminal
 		return []byte("Installed devin\nError: Login canceled\n"), errors.New("exit status 1")
 	}
@@ -178,12 +189,12 @@ func TestDevinSignInUnseen(t *testing.T) {
 
 func waitPast(t *testing.T, id, state string) SignInState {
 	t.Helper()
-	for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+	for end := time.Now().Add(signInDeadline); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
 		if st, _ := SignInStatus(id); st.State != state {
 			return st
 		}
 	}
-	t.Fatalf("still %s", state)
+	t.Fatalf("still %s after %s", state, signInDeadline)
 	return SignInState{}
 }
 

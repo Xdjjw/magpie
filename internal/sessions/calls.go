@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yetone/magpie/internal/desktopdir"
@@ -94,9 +95,17 @@ type cxRun struct {
 	Contexts                          map[string]cxContext
 	Turns                             map[string]cxOpen
 	LastIn, LastCall                  time.Time // the last thing the model was given, and the last call's end
-	LastEnd                           int64     // where the last call's line ended
-	Timings                           []cxCallTiming
-	LastIndex                         int
+	// Answering is set from a call's first output item until its usage line:
+	// AskedAt is what the model had last been given when the call began to
+	// answer, Answered its last output item. An older rollout writes a call's
+	// usage after its own tool's output, so LastIn alone would start the call
+	// at that output, and the usage line's time would end it after the tool ran.
+	Answering         bool
+	AskedAt, Answered time.Time
+	AskedTurn         string
+	LastEnd           int64 // where the last call's line ended
+	Timings           []cxCallTiming
+	LastIndex         int
 }
 
 // cxOpen is a turn still open: how many calls it has made, and where the first is.
@@ -108,6 +117,7 @@ type cxOpen struct {
 type cxCallTiming struct {
 	Input    time.Time
 	Previous int
+	End      time.Time // the call's last output item when its tool's output came before its usage line; else zero, and the line's time ends it
 }
 
 type cxContext struct {
@@ -211,12 +221,15 @@ func callFiles() []file {
 // rows of their database or their JSON files; DeepSeek Harness's, whose
 // session file is packed in frames and so cannot be read on from the middle
 // of one; and WorkBuddy's, whose usage lines repeat a reply's id as it goes
-// on. Every agent here needs an entry in wholeCallReaders.
+// on; and MiniMax Code's, whose messages file a later generation of its
+// history may replace (#1605). Every agent here needs an entry in
+// wholeCallReaders.
 func callSources() []file {
 	out := callFiles()
 	out = append(out, openCodeCallFiles()...)
 	out = append(out, zcodeCallFiles()...)
 	out = append(out, dshCallFiles()...)
+	out = append(out, minimaxCallFiles()...)
 	return append(out, workbuddyCallFiles()...)
 }
 
@@ -291,11 +304,31 @@ func (st *callFile) clone() *callFile {
 	return &c
 }
 
+// cxAnswerItem is a rollout line that is the model's own output: a call has
+// begun to answer. Its head is enough.
+func cxAnswerItem(b []byte) bool {
+	h := b[:min(len(b), 1024)]
+	if typeAfter(h, cxType) != "response_item" {
+		return false
+	}
+	switch typeAfter(h, cxPayload) {
+	case "reasoning", "function_call", "custom_tool_call", "web_search_call", "local_shell_call", "tool_search_call", "image_generation_call":
+		return true
+	case "message":
+		return typeAfter(h, cxRole) == "assistant"
+	}
+	return false
+}
+
 // Codex tool results need only their timestamp. Compaction metadata must reach
 // the usage reader even when its replacement history contains user messages.
 func callHead(st *callFile, b []byte) bool {
 	if st.Agent != "codex" {
 		return true
+	}
+	if cxAnswerItem(b) {
+		codexCallLine(st, b)
+		return false
 	}
 	compacted := typeAfter(b[:min(len(b), 1024)], cxType) == "compacted"
 	if !compacted && (bytes.Contains(b, cxUserMsg) || bytes.Contains(b, cxUserRole) || bytes.Contains(b, cxToolOut) || bytes.Contains(b, cxCustomOut)) {
@@ -318,6 +351,56 @@ func sessionOfPath(p string) string {
 	}
 	return strings.TrimSuffix(filepath.Base(p), ".jsonl")
 }
+
+// SubagentOf is the subagent a Claude Code file is the conversation of, by
+// its name: <agent> of <id>/subagents/agent-<agent>.jsonl or a workflow's
+// <id>/subagents/workflows/<run>/agent-<agent>.jsonl — the agentId its
+// lines carry, and the x-claude-code-agent-id Claude Code sends the
+// gateway for it. "" for a session's own file, and any other agent's.
+func SubagentOf(p string) string {
+	d := filepath.Dir(p)
+	if filepath.Base(d) != "subagents" && (filepath.Base(filepath.Dir(d)) != "workflows" || filepath.Base(filepath.Dir(filepath.Dir(d))) != "subagents") {
+		return ""
+	}
+	name := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+	if name == filepath.Base(p) || !strings.HasPrefix(name, "agent-") {
+		return ""
+	}
+	return strings.TrimPrefix(name, "agent-")
+}
+
+// SubagentParent is the subagent that started the one whose Claude Code
+// file p is: the parentAgentId of its agent-<agent>.meta.json beside it,
+// which Claude Code writes for a subagent a subagent started (spawnDepth
+// 2 and on), the x-claude-code-parent-agent-id it sends the gateway. ""
+// for one the conversation itself started, and for a file that is no
+// subagent's. A meta file once read is kept; one not read is read again.
+func SubagentParent(p string) string {
+	if SubagentOf(p) == "" {
+		return ""
+	}
+	meta := strings.TrimSuffix(p, ".jsonl") + ".meta.json"
+	if v, ok := subagentParents.Load(meta); ok {
+		return v.(string)
+	}
+	b, err := os.ReadFile(meta)
+	if err != nil {
+		return ""
+	}
+	var m struct {
+		ParentAgentID string `json:"parentAgentId"`
+	}
+	if json.Unmarshal(b, &m) != nil {
+		return ""
+	}
+	parent := m.ParentAgentID[:min(len(m.ParentAgentID), 128)]
+	subagentParents.Store(meta, parent)
+	return parent
+}
+
+// subagentParents: SubagentParent's meta files read, by path. Claude Code
+// writes one as it starts the subagent and never changes it.
+var subagentParents sync.Map
 
 // str is s kept once per file, as the calls of a file repeat a few.
 func (st *callFile) str(s string) string {
@@ -593,6 +676,15 @@ func codexCallLine(st *callFile, b []byte) {
 	if r.Usage == nil {
 		r.Usage = &codexUsageState{}
 	}
+	if cxAnswerItem(b) {
+		if !r.Answering {
+			r.Answering, r.AskedAt, r.AskedTurn = true, r.LastIn, r.Turn
+		}
+		if at := tsAt(b, false); !at.IsZero() {
+			r.Answered = at
+		}
+		return
+	}
 	// what the model is given: the prompt, a tool's output
 	compacted := typeAfter(b[:min(len(b), 1024)], cxType) == "compacted"
 	if compacted {
@@ -656,6 +748,7 @@ func codexCallLine(st *callFile, b []byte) {
 		if at := tsAt(b, false); !at.IsZero() {
 			r.LastIn = at
 		}
+		r.Answering = false
 		r.saveContext()
 	case l.Type == "event_msg" && p.Type == "thread_settings_applied":
 		if p.Settings.Upstream != "" {
@@ -677,6 +770,7 @@ func codexCallLine(st *callFile, b []byte) {
 			st.markCall(turn.First)
 		}
 	case l.Type == "compacted":
+		r.Answering = false
 		st.codexChanged(r.Usage.compacted(tsAt(b, false), r.Model, p.cxCompaction))
 	case l.Type == "token_usage_record":
 		if p.Usage != nil {
@@ -735,11 +829,19 @@ func (st *callFile) codexChanged(change *codexChange) {
 				}
 			}
 		}
-		input := context.LastIn
+		input, end := context.LastIn, time.Time{}
+		if r.Answering && r.AskedTurn == v.Turn && !r.AskedAt.IsZero() {
+			input = r.AskedAt
+			// its own tool's output came between its answer and this line
+			if r.LastIn.After(r.Answered) && !r.Answered.After(v.At) {
+				end = r.Answered
+			}
+		}
 		if input.After(v.At) {
 			input = time.Time{}
 		}
-		r.Timings = append(r.Timings, cxCallTiming{input, prev})
+		r.Answering = false
+		r.Timings = append(r.Timings, cxCallTiming{input, prev, end})
 		st.Calls = append(st.Calls, c)
 		if r.Turns == nil {
 			r.Turns = map[string]cxOpen{}
@@ -777,9 +879,13 @@ func (st *callFile) codexTiming(i int) {
 	if timing.Previous >= 0 && st.Calls[timing.Previous].Time.After(asked) {
 		asked = st.Calls[timing.Previous].Time
 	}
+	end := c.Time
+	if !timing.End.IsZero() {
+		end = timing.End
+	}
 	c.Millis, c.TTFT = 0, 0
-	if !asked.IsZero() && c.Time.After(asked) && c.Time.Sub(asked) < 2*time.Hour {
-		c.Millis = c.Time.Sub(asked).Milliseconds()
+	if !asked.IsZero() && end.After(asked) && end.Sub(asked) < 2*time.Hour {
+		c.Millis = end.Sub(asked).Milliseconds()
 	}
 	turn := r.Turns[r.Usage.Entries[i].Turn]
 	if turn.N == 1 && turn.Complete {

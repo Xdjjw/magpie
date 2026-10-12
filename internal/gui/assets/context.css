@@ -16,7 +16,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 
 .ctx-card { position: relative; background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 14px; min-width: 0; font-variant-numeric: tabular-nums; }
 .ctx-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.ctx-head .grow, .ctx-foot .grow, .ctx-contents-head .grow, .ctx-agent-head .grow, .ctx-agent-foot .grow, .ctx-tools .grow, .ctx-sess-head .grow { flex: 1; }
+.ctx-head .grow, .ctx-foot .grow, .ctx-contents-head .grow, .ctx-agent-head .grow, .ctx-agent-foot .grow, .ctx-sess-head .grow { flex: 1; }
 .ctx-title { font-size: 13px; font-weight: 600; color: var(--fg); white-space: nowrap; }
 .ctx-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--muted); }
 .ctx-state { display: inline-flex; align-items: center; gap: 5px; flex: none; height: 20px; padding: 0 8px; border-radius: 10px; font-size: 11px; font-weight: 500; background: var(--pill); color: var(--fg-2); }
@@ -47,7 +47,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-health.warn { background: var(--amber-soft); color: var(--amber); }
 .ctx-health.bad { background: var(--red-soft); color: var(--red); }
 .ctx-bar { position: relative; display: block; height: 6px; border-radius: 3px; background: var(--k-free); overflow: hidden; }
-.ctx-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--green); transform-origin: left; animation: ctx-grow .7s var(--ease, ease) both; }
+.ctx-bar i { position: absolute; inset: 0 auto 0 0; border-radius: 3px; background: var(--green); transform-origin: left; animation: ctx-grow .7s var(--ease, ease) backwards; }
 .ctx-cache .ctx-bar { margin: 3px 0 2px; }
 .ctx-cache .ctx-bar i { transition: width .3s var(--ease, ease); }
 /* under way: the last request's cache, dimmed till this one's comes */
@@ -64,7 +64,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-waffle { display: grid; grid-template-columns: repeat(50, minmax(0, 1fr)); gap: 2px; }
 /* a card 520px wide or less (context.js sets max520 by its width) */
 :where(.ctx-card.max520) .ctx-waffle { grid-template-columns: repeat(25, minmax(0, 1fr)); }
-.ctx-waffle > i { aspect-ratio: 1; border-radius: 2px; background: var(--k, var(--k-free)); transition: opacity .16s, transform .16s; animation: ctx-cell .32s var(--ease, ease) both; animation-delay: var(--d, 0ms); }
+.ctx-waffle > i { aspect-ratio: 1; border-radius: 2px; background: var(--k, var(--k-free)); transition: opacity .16s, transform .16s; animation: ctx-cell .32s var(--ease, ease) backwards; animation-delay: var(--d, 0ms); }
 .ctx-waffle > i.free { --k: var(--k-free); }
 @keyframes ctx-cell { from { opacity: 0; transform: scale(.4); } }
 .ctx-waffle[data-f] > i { opacity: .16; }
@@ -136,6 +136,8 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 /* the padding is the open card's, so the title stays where it is when it
    opens and the page doesn't follow it (it moved 4px with a 10px one) */
 .ctx-card.shut > :not(.ctx-head) { display: none; }
+/* its head alone, the space under it is the space over it */
+.ctx-card.shut { padding-bottom: 14px; }
 :where(.ctx-card.shut.max420) .ctx-model { display: none; }
 /* folded, the head is one line of a fixed height whatever a live request
    puts in it, so nothing under it moves; a thin bar of what fills the
@@ -161,7 +163,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-ring svg { width: 100%; height: 100%; transform: rotate(-90deg); }
 .ctx-ring circle { fill: none; stroke-width: 5; stroke-linecap: round; }
 .ctx-ring .track { stroke: var(--k-free); }
-.ctx-ring .arc { stroke: var(--tone); stroke-dashoffset: var(--to); animation: ctx-arc .9s var(--ease, ease) both; }
+.ctx-ring .arc { stroke: var(--tone); stroke-dashoffset: var(--to); animation: ctx-arc .9s var(--ease, ease) backwards; }
 .ctx-pane.still .ctx-waffle > i, .ctx-pane.still .ctx-bar i, .ctx-pane.still .ctx-ring .arc { animation: none; }
 @keyframes ctx-arc { from { stroke-dashoffset: 163.36; } }
 .ctx-ring b { position: absolute; inset: 0; display: grid; place-items: center; font-size: 16px; font-weight: 650; letter-spacing: -.02em; }
@@ -248,7 +250,7 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 /* tuned for you */
 .ctx-tune { gap: 10px; }
 .ctx-tune-total { font-size: 12px; font-weight: 600; color: var(--green); background: var(--green-soft); border-radius: 11px; padding: 3px 10px; white-space: nowrap; }
-.ctx-tune-row { display: flex; flex-direction: column; gap: 8px; padding: 12px 0 2px; border-top: 1px solid var(--line); min-width: 0; }
+.ctx-tune-row { display: flex; flex-direction: column; gap: 10px; padding: 14px 0 4px; border-top: 1px solid var(--line); min-width: 0; }
 .ctx-tune-title { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .ctx-tune-title b { font-size: 13px; font-weight: 600; flex: none; }
 .ctx-tunes { align-items: start; }
@@ -262,16 +264,72 @@ i.dot.free { background: var(--k-free); box-shadow: inset 0 0 0 1px color-mix(in
 .ctx-tune-row:not(.done) .ctx-tune-val.now b { text-decoration: line-through; text-decoration-color: var(--muted); text-decoration-thickness: 1px; color: var(--muted); }
 .ctx-tune-val.best b { color: var(--green); }
 .ctx-tune-arrow { color: var(--muted); font-size: 14px; padding-bottom: 3px; }
-.ctx-tune-curve { flex: 0 1 200px; min-width: 90px; display: flex; flex-direction: column; gap: 1px; cursor: default; }
-.ctx-tune-curve svg { width: 100%; height: 40px; display: block; overflow: visible; }
-.ctx-tune-curve .line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
-.ctx-tune-curve .now { fill: var(--card); stroke: var(--muted); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.ctx-tune-curve .best { fill: var(--green); stroke: var(--card); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
-.ctx-tune-ends { display: flex; justify-content: space-between; font-size: 9.5px; color: var(--muted); }
+.ctx-tune-chart { position: relative; height: 112px; margin: 2px 6px 0; cursor: default; }
+.ctx-tc-plot { position: absolute; inset: 0 0 18px; }
+.ctx-tc-plot svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.ctx-tune-chart .hot { stop-color: var(--red); stop-opacity: .32; }
+.ctx-tune-chart .cool { stop-color: var(--red); stop-opacity: .02; }
+.ctx-tune-chart .level { stroke: var(--green); stroke-width: 1; stroke-dasharray: 3 4; vector-effect: non-scaling-stroke; opacity: .7; }
+.ctx-tune-chart .line { fill: none; stroke: var(--red); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.ctx-tc-plot svg { animation: ctx-draw 1s var(--ease, ease) backwards; }
+@keyframes ctx-draw { from { clip-path: inset(-20px 100% -20px 0); } to { clip-path: inset(-20px 0 -20px 0); } }
+@keyframes ctx-pop { from { opacity: 0; transform: scale(.4); } }
+.ctx-tc-dot { animation: ctx-pop .35s .8s var(--ease, ease) backwards; }
+.ctx-tc-dot { position: absolute; width: 9px; height: 9px; margin: -4.5px 0 0 -4.5px; border-radius: 50%; border: 2px solid var(--card); box-sizing: border-box; }
+.ctx-tc-dot.now { background: var(--red); box-shadow: 0 0 0 4px color-mix(in srgb, var(--red) 22%, transparent); width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; }
+.ctx-tc-dot.worst { background: color-mix(in srgb, var(--red) 55%, var(--card)); }
+.ctx-tc-dot.best { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 22%, transparent), 0 0 14px color-mix(in srgb, var(--green) 60%, transparent); width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px; }
+.ctx-tc-tag { position: absolute; bottom: calc(100% + 5px); left: 50%; transform: translateX(-50%); font-size: 11px; font-weight: 700; white-space: nowrap; color: var(--red); letter-spacing: -.01em; }
+.ctx-tc-dot.best .ctx-tc-tag { color: var(--green); }
+.ctx-tc-dot.worst .ctx-tc-tag { font-weight: 600; opacity: .8; }
+.ctx-tc-tag.start { left: -4px; transform: none; }
+.ctx-tc-tag.end { left: auto; right: -4px; transform: none; }
+.ctx-tc-x { position: absolute; left: 0; right: 0; bottom: 0; height: 14px; font-size: 10px; color: var(--muted); }
+.ctx-tc-x span { position: absolute; transform: translateX(-50%); white-space: nowrap; }
+.ctx-tc-x span.start { transform: none; margin-left: -6px; }
+.ctx-tc-x span.end { transform: translateX(-100%); margin-left: 6px; }
+.ctx-tc-x span.best { color: var(--green); font-weight: 600; }
+.ctx-tc-x span.now { color: var(--red); font-weight: 600; }
+.ctx-pane.tune-still .ctx-tune-chart :is(svg, .ctx-tc-dot) { animation: none; }
+@media (prefers-reduced-motion: reduce) { .ctx-tune-chart :is(svg, .ctx-tc-dot) { animation: none; } }
+.ctx-tune-note { padding: 0 4px 12px; }
 .ctx-tune-why { margin: 0; font-size: 12px; line-height: 1.5; color: var(--fg-2); }
 .ctx-tune-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-.ctx-tune-src { font-size: 11px; color: var(--muted); margin-top: -5px; overflow-wrap: anywhere; }
+.ctx-tune-src { font-size: 11px; color: var(--muted); margin-top: -7px; overflow-wrap: anywhere; }
 .ctx-tune-foot .grow { flex: 1; }
-@media (max-width: 520px) {
-  .ctx-tune-curve { display: none; }
-}
+
+/* a part, a cell or an item clicked opens its text (masaka on Discord) */
+.ctx-click { cursor: pointer; }
+.ctx-leg.ctx-click { border-radius: 5px; }
+.ctx-click:focus-visible { outline: 2px solid var(--accent, var(--fg)); outline-offset: 1px; }
+.ctx-waffle > i:not(.free) { cursor: pointer; }
+.modal .dialog.wide { width: min(880px, 100%); }
+.modal .editor.ctx-view { height: min(760px, calc(100vh - 80px)); }
+.modal .editor.ctx-view > .ehead { gap: 8px; }
+.modal .editor.ctx-view > .ehead b { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-view-total { flex: none; font-size: 11.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.modal .editor.ctx-view > .ebody { display: block; }
+.ctx-view-body { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.ctx-view-note { margin: 0; font-size: 11.5px; color: var(--muted); }
+.ctx-view-wait, .ctx-view-gone { margin: 0; padding: 12px 0; font-size: 12px; color: var(--muted); }
+.ctx-vi-list { display: flex; flex-direction: column; gap: 2px; }
+.ctx-vi { min-width: 0; border-radius: 8px; }
+.ctx-vi.open { background: color-mix(in srgb, var(--fg) 3%, transparent); }
+.ctx-vi-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 30px; padding: 0 8px; border: 0; border-radius: 8px; background: none; color: var(--fg); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
+.ctx-vi-head:hover { background: var(--pill); }
+.ctx-vi-head .grow { flex: 1; }
+.ctx-vi-head .ctx-name { min-width: 0; }
+.ctx-vi-head .tw { display: inline-flex; width: 10px; flex: none; color: var(--faint); }
+.ctx-vi-head .tw svg { transform: rotate(-90deg); transition: transform .2s var(--ease, ease); }
+.ctx-vi.open > .ctx-vi-head .tw svg { transform: none; }
+.ctx-vi-text { display: flex; flex-direction: column; gap: 10px; padding: 4px 8px 10px 26px; min-width: 0; }
+.ctx-piece { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.ctx-piece-head { display: flex; align-items: center; gap: 6px; min-height: 22px; }
+.ctx-piece-head .grow { flex: 1; }
+.ctx-role { font-size: 10.5px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
+.ctx-piece-name { font-family: var(--code-font, var(--code)); font-size: 11px; color: var(--fg-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ctx-piece-note { font-size: 11.5px; color: var(--muted); }
+.ctx-text-box { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.ctx-text { margin: 0; width: 100%; box-sizing: border-box; padding: 8px 10px; border-radius: 6px; background: var(--pill); font-family: var(--code-font, var(--code)); font-size: 11.5px; line-height: 1.5; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; -webkit-user-select: text; }
+.ctx-text-more[hidden] { display: none; }
+.ctx-view-all { margin-right: auto; }

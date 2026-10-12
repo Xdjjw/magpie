@@ -18,7 +18,7 @@ func TestSetFastPick(t *testing.T) {
 	if !IsFastPick("codex", "oa/gpt-6.1-sol") || IsFastPick("opencode", "oa/gpt-6.1-sol") {
 		t.Fatalf("picks %v", settings.Load().FastPicks)
 	}
-	for _, id := range []string{"rl/gpt-6.1-sol", "oa/nope", GroupPrefix + "f"} {
+	for _, id := range []string{"rl/claude-opus-5-5", "oa/nope", GroupPrefix + "f"} {
 		if err := SetFastPick("codex", id, true); err == nil {
 			t.Errorf("%s switched fast", id)
 		}
@@ -28,6 +28,13 @@ func TestSetFastPick(t *testing.T) {
 	}
 	if got := FastPicks("codex"); !slices.Equal(got, []string{"oa/gpt-6.1-sol"}) {
 		t.Fatalf("picks %v", got)
+	}
+	// a GPT model on a provider the user added by its address (#1615)
+	if err := SetFastPick("codex", "rl/gpt-6.1-sol", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetFastPick("codex", "rl/gpt-6.1-sol", false); err != nil {
+		t.Fatal(err)
 	}
 
 	st := settings.Load()

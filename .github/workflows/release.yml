@@ -2,7 +2,10 @@ name: Release
 
 # Pushing a v* tag hands off to yetone/magpie-releases, which builds, signs,
 # notarises and publishes magpie there; that repo is where people download
-# from, and the signing secrets live only there.
+# from, and the signing secrets live only there. Once its release has every
+# asset, the same release is copied here, so this repo's Releases page has
+# the installers too (PapainTea on X). Self-update, install.sh and the site
+# still read magpie-releases only.
 
 on:
   push:
@@ -18,6 +21,9 @@ on:
 jobs:
   trigger-release:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      ref: ${{ steps.version.outputs.ref }}
 
     steps:
       - name: Get version
@@ -49,3 +55,42 @@ jobs:
 
       - name: Output status
         run: echo "Watch the build at https://github.com/yetone/magpie-releases/actions"
+
+  mirror-release:
+    needs: trigger-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REF: ${{ needs.trigger-release.outputs.ref }}
+      ASSETS: 16 # what every release carries; a smaller count is still uploading
+    steps:
+      - name: Wait for magpie-releases to publish every asset
+        run: |
+          for i in $(seq 1 120); do
+            n=$(gh release view "$REF" -R yetone/magpie-releases --json assets -q '.assets | length' 2>/dev/null || echo 0)
+            echo "attempt $i: $n of $ASSETS assets"
+            [ "$n" -ge "$ASSETS" ] && exit 0
+            sleep 30
+          done
+          echo "magpie-releases never published $REF with $ASSETS assets" >&2
+          exit 1
+
+      - name: Copy the release here
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh release download "$REF" -R yetone/magpie-releases -D dist
+          gh release view "$REF" -R yetone/magpie-releases --json body -q .body > notes.md
+          printf '\n\n---\nThe same release, and the feed magpie updates from: https://github.com/yetone/magpie-releases/releases/tag/%s\n' "$REF" >> notes.md
+          if gh release view "$REF" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$REF" -R "$GITHUB_REPOSITORY" --notes-file notes.md
+            gh release upload "$REF" dist/* -R "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$REF" dist/* -R "$GITHUB_REPOSITORY" --verify-tag --title "magpie $REF" --notes-file notes.md
+          fi
+          n=$(gh release view "$REF" -R "$GITHUB_REPOSITORY" --json assets -q '.assets | length')
+          echo "$REF has $n assets here"
+          [ "$n" -ge "$ASSETS" ]

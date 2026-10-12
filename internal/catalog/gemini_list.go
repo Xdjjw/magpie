@@ -70,7 +70,7 @@ func geminiPage(ctx context.Context, u, key string, headers map[string]string) (
 		req.Header.Set("x-goog-api-key", key)
 	}
 	for k, v := range headers {
-		req.Header[k] = []string{v}
+		PutUserHeader(req.Header, k, v)
 	}
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {

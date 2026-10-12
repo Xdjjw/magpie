@@ -1,9 +1,13 @@
 package library
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -129,4 +133,97 @@ func mustLoad(t *testing.T) *Library {
 		t.Fatal(err)
 	}
 	return l
+}
+
+// A pack added a while ago is mostly older copies of its skills (White
+// Immortal on Discord: 20 of mattpocock/skills' 38 grouped, the rest
+// edited there since). Group again fetches each repository the library
+// has skills from, and the skills it has by name that are traced to
+// nowhere join the rest of it; one of the user's own it doesn't have, and
+// one traced to another repository, stay where they are.
+func TestRegroupOlderCopies(t *testing.T) {
+	h := sandbox(t)
+	repos := map[string]map[string]string{
+		"someone/pack": {
+			"skills/eng/same/SKILL.md":    "---\nname: same\ndescription: Same\n---\nBody\n",
+			"skills/eng/edited/SKILL.md":  "---\nname: edited\ndescription: Edited since\n---\nNew body\n",
+			"skills/misc/later/SKILL.md":  "---\nname: later\ndescription: Rewritten\n---\nAll new\n",
+			"skills/misc/locked/SKILL.md": "---\nname: locked\ndescription: Theirs\n---\n",
+		},
+		"other/locked": {"skills/locked/SKILL.md": "---\nname: locked\ndescription: Locked\n---\n"},
+	}
+	var asked []string
+	var amu sync.Mutex
+	tar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		repo := strings.TrimPrefix(r.URL.Path, "/tar/")
+		amu.Lock()
+		asked = append(asked, repo)
+		amu.Unlock()
+		files, ok := repos[repo]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		w.Write(tarball(t, files))
+	}))
+	t.Cleanup(tar.Close)
+	oldT := tarballURL
+	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/" + repo }
+	t.Cleanup(func() { tarballURL = oldT })
+
+	// the copies as added before: same is the repository's own, edited
+	// and later older ones, mine the user's own
+	write(t, filepath.Join(h, ".claude/skills/same/SKILL.md"), repos["someone/pack"]["skills/eng/same/SKILL.md"])
+	skill(t, filepath.Join(h, ".claude/skills/edited"), "edited", "Edited")
+	skill(t, filepath.Join(h, ".claude/skills/later"), "later", "Later")
+	skill(t, filepath.Join(h, ".claude/skills/mine"), "mine", "Mine")
+	// npx skills add other/locked: traced by the lock
+	skill(t, filepath.Join(h, ".agents/skills/locked"), "locked", "Locked")
+	write(t, filepath.Join(h, ".agents/.skill-lock.json"), `{"version":3,"skills":{"locked":{"source":"other/locked","sourceType":"github"}}}`)
+	dirLink(filepath.Join(h, ".agents/skills/locked"), filepath.Join(h, ".claude/skills/locked"))
+	ok(t)(ImportSkills([]string{"same", "edited", "later", "mine", "locked"}))
+	// same grouped before, as installing from the repository again did
+	l := mustLoad(t)
+	l.skill("same").From = "someone/pack"
+	if err := l.save(); err != nil {
+		t.Fatal(err)
+	}
+	if r := repoIn(t)["edited"]; r != "" {
+		t.Fatalf("edited has a repo before: %q", r)
+	}
+
+	n, err := RegroupSkills()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := repoIn(t)
+	want := map[string]string{"same": "someone/pack", "edited": "someone/pack", "later": "someone/pack", "mine": "", "locked": "other/locked"}
+	for name, r := range want {
+		if got[name] != r {
+			t.Errorf("%s: repo %q, want %q", name, got[name], r)
+		}
+	}
+	if n != 2 {
+		t.Errorf("grouped %d, want 2", n)
+	}
+	amu.Lock()
+	slices.Sort(asked)
+	if !slices.Equal(asked, []string{"other/locked", "someone/pack"}) {
+		t.Errorf("fetched %v", asked)
+	}
+	asked = nil
+	amu.Unlock()
+
+	// nothing more to group: none grouped, nothing wrong
+	if n, err := RegroupSkills(); err != nil || n != 0 {
+		t.Errorf("again: %d %v", n, err)
+	}
+	// GitHub not answering: said, nothing changed
+	tarballURL = func(repo, ref string) string { return tar.URL + "/tar/gone/" + repo }
+	if _, err := RegroupSkills(); err == nil {
+		t.Error("no repository fetched, and no error")
+	}
+	if r := repoIn(t)["edited"]; r != "someone/pack" {
+		t.Errorf("edited after a failed regroup: %q", r)
+	}
 }

@@ -79,6 +79,12 @@ type Applied struct {
 	InstrHash    string   `json:"instrHash,omitempty"` // of the part last written
 	MCP          []string `json:"mcp,omitempty"`
 	Skills       []string `json:"skills,omitempty"`
+	// ToolsOff are, for each server, the tools magpie put in the list its
+	// entry has of those the agent leaves out; ToolRules the rules beside
+	// the servers magpie added to leave tools out (Claude Code's deny
+	// rules, OpenCode's tools keys). Neither holds one the user had.
+	ToolsOff  map[string][]string `json:"toolsOff,omitempty"`
+	ToolRules []string            `json:"toolRules,omitempty"`
 }
 
 var mu sync.Mutex // one change at a time, from the page or the CLI's process

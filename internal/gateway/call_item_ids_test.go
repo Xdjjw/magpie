@@ -172,7 +172,7 @@ func TestResponsesRelayCallIDs(t *testing.T) {
 					if err := json.Unmarshal([]byte(last), &sent); err != nil {
 						t.Fatal(err)
 					}
-					if sent["tools"] != nil || !strings.Contains(last, "CONTEXT CHECKPOINT COMPACTION") {
+					if string(sent["tools"]) != "[]" || !strings.Contains(last, "CONTEXT CHECKPOINT COMPACTION") {
 						t.Errorf("not a compaction request: %s", last)
 					}
 					if !strings.Contains(rec.Body.String(), `"type":"compaction"`) || !strings.Contains(rec.Body.String(), magpieCompaction) {

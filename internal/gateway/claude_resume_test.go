@@ -273,3 +273,60 @@ func containsStr(list []string, s string) bool {
 	}
 	return false
 }
+
+// A client Claude Code's billing line changes every turn (cch,
+// cc_prompt_id, cc_prev_req…), and a run is never told it. Its next turn
+// still goes on in the run that had the conversation, told the new message
+// alone; with the line in the run's key each turn started a new Claude Code
+// told the whole conversation, all of it written to the prompt cache again
+// (#1638, chicring).
+func TestClaudeBillingLineKeepsTheRun(t *testing.T) {
+	h := newResumeHarness(t)
+	ask := func(billing string, msgs ...string) {
+		t.Helper()
+		body := `{"model":"claude-sonnet-5","max_tokens":100,"system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.114.a1b; cc_entrypoint=cli; ` + billing + `"},{"type":"text","text":"You are Claude Code.","cache_control":{"type":"ephemeral"}}],"tools":[{"name":"read","input_schema":{"type":"object"}}],"messages":[` + strings.Join(msgs, ",") + `]}`
+		var u Usage
+		if code, msg := h.s.serveClaudeSubscription(httptest.NewRecorder(), httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)), provider.Anthropic, h.p, "claude-sonnet-5", []byte(body), &u); code != 200 {
+			t.Fatalf("%d %s", code, msg)
+		}
+	}
+	ask(`cch=1f2e3; cc_prompt_id=0b9e6c1a-1111-4a6b-9c55-1d2f3e4a5b6c;`, `{"role":"user","content":"first ask"}`)
+	ask(`cch=9a8b7; cc_prev_req=req_011CU1; cc_prompt_id=7d1c2e3f-2222-4b7c-8d66-2e3f4a5b6c7d;`,
+		`{"role":"user","content":"first ask"}`, `{"role":"assistant","content":"ok"}`, `{"role":"user","content":"second ask"}`)
+	runs := h.runs()
+	if len(runs) != 1 {
+		t.Fatalf("the next turn started a new run, %d runs:\n%v", len(runs), runs)
+	}
+	for _, log := range runs {
+		told := log[strings.LastIndex(log, "\ntold "):]
+		if !strings.Contains(told, "second ask") || strings.Contains(told, "first ask") {
+			t.Fatalf("the run was not told the turn alone:\n%s", log)
+		}
+		if strings.Contains(log, "billing") || strings.Contains(log, "cch=") {
+			t.Fatalf("the run was told the billing line:\n%s", log)
+		}
+	}
+}
+
+// Both keys a run is found again by leave the billing line out, the turn's
+// (turnKey) and a rewritten turn's (newLooseTurn), and keep the rest of
+// the system prompt in.
+func TestClaudeRunKeysLeaveOutTheBillingLine(t *testing.T) {
+	msgs := []Message{
+		{Role: "user", Parts: []Part{{Kind: Text, Text: "b1"}}},
+		{Role: "assistant", Parts: []Part{{Kind: Text, Text: "ok"}}},
+	}
+	req := func(system string) *Request { return &Request{Model: "claude-sonnet-5", System: system} }
+	a := req("x-anthropic-billing-header: cc_version=2.1.114.a1b; cc_entrypoint=cli; cch=1f2e3;You are Claude Code.")
+	b := req("x-anthropic-billing-header: cc_version=2.1.114.a1b; cc_entrypoint=cli; cch=9a8b7; cc_prev_req=req_011CU1;You are Claude Code.")
+	other := req("x-anthropic-billing-header: cc_version=2.1.114.a1b; cc_entrypoint=cli; cch=1f2e3;You are someone else.")
+	if turnKey("o", a, msgs) != turnKey("o", b, msgs) {
+		t.Fatal("turnKey changes with the billing line")
+	}
+	if newLooseTurn("o", a, msgs, false).key != newLooseTurn("o", b, msgs, false).key {
+		t.Fatal("newLooseTurn's key changes with the billing line")
+	}
+	if turnKey("o", a, msgs) == turnKey("o", other, msgs) || newLooseTurn("o", a, msgs, false).key == newLooseTurn("o", other, msgs, false).key {
+		t.Fatal("a key leaves out the system prompt itself")
+	}
+}

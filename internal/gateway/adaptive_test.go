@@ -63,7 +63,7 @@ func TestAdaptiveThinking(t *testing.T) {
 	}
 	var out map[string]any
 	json.Unmarshal(buildAnthropic(&Request{Thinking: true, Effort: "xhigh"}, "claude-opus-5-5"), &out)
-	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"type":"adaptive"}` {
+	if th, _ := json.Marshal(out["thinking"]); string(th) != `{"display":"summarized","type":"adaptive"}` {
 		t.Errorf("thinking = %s", th)
 	}
 	if oc, _ := json.Marshal(out["output_config"]); string(oc) != `{"effort":"xhigh"}` {

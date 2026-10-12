@@ -49,3 +49,41 @@ func TestUsageArrangePanelHidden(t *testing.T) {
 	post("/api/usage/arrange", `{"panelHidden":[]}`)
 	want([]string{"codex", "kimi"}, nil)
 }
+
+// The Usage page's Agents list leaves out the clients hidden there
+// (ikunbots on X: curl, Go-http-client, python-httpx beside the agents in
+// use): saved on its own, beside the panel's, and kept through a save of
+// the Settings page.
+func TestUsageArrangeAgentsHidden(t *testing.T) {
+	h := t.TempDir()
+	t.Setenv("HOME", h)
+	t.Setenv("USERPROFILE", h)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(h, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(h, ".cache"))
+	t.Setenv("APPDATA", filepath.Join(h, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(h, "AppData", "Local"))
+	post := func(path, body string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		Handler(nil, nil).ServeHTTP(rec, httptest.NewRequest("POST", path, strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: %d %s", path, rec.Code, rec.Body)
+		}
+	}
+	want := func(agents, panel []string) {
+		t.Helper()
+		s := settings.Load()
+		if !slices.Equal(s.UsageAgentsHidden, agents) || !slices.Equal(s.PanelUsageHidden, panel) {
+			t.Fatalf("agents hidden %v panel hidden %v, want %v %v", s.UsageAgentsHidden, s.PanelUsageHidden, agents, panel)
+		}
+	}
+	post("/api/usage/arrange", `{"panelHidden":["deepseek"]}`)
+	post("/api/usage/arrange", `{"agentsHidden":["curl","Go-http-client"," curl"]}`)
+	want([]string{"curl", "Go-http-client"}, []string{"deepseek"})
+	post("/api/settings", `{"theme":"dark"}`)
+	want([]string{"curl", "Go-http-client"}, []string{"deepseek"})
+	post("/api/usage/arrange", `{"agentsHidden":["Go-http-client"]}`)
+	want([]string{"Go-http-client"}, []string{"deepseek"})
+	post("/api/usage/arrange", `{"agentsHidden":[]}`)
+	want(nil, []string{"deepseek"})
+}

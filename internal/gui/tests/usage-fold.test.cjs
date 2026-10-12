@@ -122,6 +122,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // an account opens and folds on its own, where it is
       const acct = (key, user) => page.locator(`#subscriptionUsage > [data-key=${key}] .subscription-account`, { hasText: user });
       const two = acct("codex", "two@example.com");
+      // wheeled to, as a reader would (the page holds still for a script's
+      // scroll): packed into columns (#860), Codex's card is under ZCode's,
+      // past this short window's foot
+      const wheelTo = async (l) => {
+        for (let i = 0; i < 20; i++) {
+          const y = (await l.boundingBox()).y;
+          if (y > 60 && y + 40 < 300) break;
+          await page.mouse.wheel(0, y > 60 ? 60 : -60);
+          await page.waitForTimeout(150);
+        }
+        await page.waitForTimeout(300);
+      };
+      await wheelTo(two.locator(".quota-acct-fold"));
       const twoAt = await two.evaluate((e) => e.getBoundingClientRect().top);
       const scrolled = await view.evaluate((v) => v.scrollTop);
       assert.equal(await two.locator(".quota-acct-fold").getAttribute("aria-expanded"), "false");
@@ -131,6 +144,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await two.evaluate((e) => e.getBoundingClientRect().top), twoAt, "the account stays where it was");
       got = await cards(page);
       assert.deepEqual([by("Codex").full, by("Codex").brief, by("Codex").more], [["one@example.com", "two@example.com"], [], w.brief]);
+      await wheelTo(acct("workbuddy", "alpha@example.com").locator(".quota-acct-fold"));
       await acct("workbuddy", "alpha@example.com").locator(".quota-acct-fold").click();
       got = await cards(page);
       assert.deepEqual(by("WorkBuddy").brief, ["alpha@example.com"]);

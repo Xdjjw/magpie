@@ -63,7 +63,8 @@ func (s *Server) refuseShapes(p provider.Provider, errBody, body []byte) bool {
 			fresh = true
 		}
 	}
-	if d := gjson.GetBytes(body, "thinking.display"); d.Exists() {
+	// the display as forwardOnce sends it: a budget turned adaptive asks one
+	if d := gjson.GetBytes(adaptiveThinking(body), "thinking.display"); d.Exists() {
 		if displayRefused.Match(errBody) {
 			mark(shapeDisplay)
 		} else if displayValueRefused.Match(errBody) && !knownDisplay(d.String()) {

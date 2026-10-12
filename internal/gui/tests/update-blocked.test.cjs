@@ -54,7 +54,7 @@ async function open(browser, lang, ctl, errors) {
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", server(lang, ctl));
   await page.goto("http://magpie.test/?view=settings");
-  await page.locator("#setTab-about").click();
+  await page.locator(":is(#setTab-about, .nav-s[data-of=setTab-about]):visible").click();
   await page.locator("#setPage-about").waitFor({ state: "visible" });
   return page;
 }

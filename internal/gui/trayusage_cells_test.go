@@ -30,14 +30,14 @@ func TestTrayUsageCells(t *testing.T) {
 	cards := trayCards()
 
 	// the ticked ones in the order ticked; one no longer there is left out
-	picked := trayPick(cards, []string{"codex|x@y.z", "gone|who", "claude|a@b.c"})
+	picked := trayPick(cards, []string{"codex|x@y.z", "gone|who", "claude|a@b.c"}, time.Now())
 	if len(picked) != 2 || picked[0].Provider != "codex" || picked[1].Provider != "claude" {
 		t.Fatalf("picked %+v", picked)
 	}
-	if got := trayPick(cards, nil); got != nil {
+	if got := trayPick(cards, nil, time.Now()); got != nil {
 		t.Fatalf("none ticked: %+v", got)
 	}
-	if got := trayPick(cards, []string{"claude"}); got != nil {
+	if got := trayPick(cards, []string{"claude"}, time.Now()); got != nil {
 		t.Fatalf("the vendor without the account: %+v", got)
 	}
 
@@ -52,7 +52,7 @@ func TestTrayUsageCells(t *testing.T) {
 		{[]string{"claude|a@b.c", "codex|x@y.z", "copilot", "deepseek"},
 			[][]string{{"42%", "18%"}, {"8%", "100%"}, {"63%"}, {"¥12.30"}}, "42% · 18% | 8% · 100% | 63% | ¥12.30"},
 	} {
-		cells, label, tip := trayUsageView(trayPick(cards, tc.ids), now, false)
+		cells, label, tip := trayUsageView(trayPick(cards, tc.ids, now), now, false)
 		if label != tc.label {
 			t.Errorf("%v: label %q, want %q", tc.ids, label, tc.label)
 		}

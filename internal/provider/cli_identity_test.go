@@ -3,13 +3,22 @@ package provider
 import (
 	"errors"
 	"os"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 )
 
+// keepIdentities has this test keep the answers on disk, as magpie does
+// outside a test binary.
+func keepIdentities(t *testing.T) {
+	keepInSandbox = true
+	t.Cleanup(func() { keepInSandbox = false })
+}
+
 func TestCLIIdentityKeptAcrossStarts(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keepIdentities(t)
 	var asked atomic.Int32
 	answer := func() (string, string, bool, error) { asked.Add(1); return "me@example.com", "Pro", true, nil }
 	exe := func() string { return "/bin/sh" }
@@ -68,6 +77,7 @@ func TestCLIIdentityKeptAcrossStarts(t *testing.T) {
 
 func TestCLIIdentityKeptIgnoredWithoutTheCLI(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keepIdentities(t)
 	(&cliIdentity{name: "x", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { return "me@example.com", "", true, nil }}).get()
 	gone := &cliIdentity{name: "x", exe: func() string { return "" }, ask: func() (string, string, bool, error) { return "", "", false, nil }}
 	if u, _, ok := gone.get(); ok || u != "" {
@@ -79,25 +89,41 @@ func TestCLIIdentityKeptIgnoredWithoutTheCLI(t *testing.T) {
 // nobody is signed in until it answers, and then its answer is served
 func TestCLIIdentityFirstAskBounded(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keepIdentities(t)
 	old := firstAsk
 	firstAsk = 100 * time.Millisecond
 	t.Cleanup(func() { firstAsk = old })
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	let := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(let)
 	c := &cliIdentity{name: "x", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { <-release; return "me@example.com", "Pro", true, nil }}
-	start := time.Now()
-	if _, _, ok := c.get(); ok {
-		t.Fatal("an unanswered CLI served someone")
+	// The ask is held until release, so a look that comes back at all came
+	// back without its answer: that is the bound, not a clock (#1617). The
+	// deadlines only turn a look that waited for the ask into a FAIL rather
+	// than a hang; nothing is measured against them.
+	look := func() <-chan bool {
+		served := make(chan bool, 1)
+		go func() { _, _, ok := c.get(); served <- ok }()
+		return served
 	}
-	if d := time.Since(start); d > time.Second {
-		t.Fatalf("the first look waited %v", d)
+	select {
+	case ok := <-look():
+		if ok {
+			t.Fatal("an unanswered CLI served someone")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the first look waited for the held ask")
 	}
-	// a request looks again: that one doesn't wait
-	start = time.Now()
-	c.get()
-	if d := time.Since(start); d > 50*time.Millisecond {
-		t.Fatalf("a second look waited %v", d)
+	// a request looks again: that one doesn't wait at all, not even
+	// firstAsk, made longer than the deadline below
+	firstAsk = time.Hour
+	select {
+	case <-look():
+	case <-time.After(10 * time.Second):
+		t.Fatal("a second look waited")
 	}
-	close(release)
+	let()
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		if u, _, ok := c.get(); ok && u == "me@example.com" {
@@ -117,6 +143,7 @@ func TestCLIIdentityFirstAskBounded(t *testing.T) {
 // rather than waiting for it again
 func TestCLIIdentitySignedOutKept(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	keepIdentities(t)
 	(&cliIdentity{name: "x", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { return "", "", false, nil }}).get()
 	if _, found := readIdentities()["x"]; !found {
 		t.Fatal("a signed-out answer wasn't kept")
@@ -192,5 +219,23 @@ func TestCLIIdentityFailingAskedLessOften(t *testing.T) {
 				t.Fatalf("served %q %v", u, ok)
 			}
 		})
+	}
+}
+
+// In a test binary testenv isolated an answer is served but nothing is
+// written: an ask still going when a test ended wrote into the config
+// folder being removed (#1524, #1538).
+func TestCLIIdentityNotKeptInATestBinary(t *testing.T) {
+	if os.Getenv(testSandbox) == "" {
+		t.Fatal("provider's tests run without testenv's sandbox")
+	}
+	dir := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", dir)
+	c := &cliIdentity{name: "x", exe: func() string { return "/bin/sh" }, ask: func() (string, string, bool, error) { return "me@example.com", "Pro", true, nil }}
+	if u, _, ok := c.get(); !ok || u != "me@example.com" {
+		t.Fatalf("get: %q %v", u, ok)
+	}
+	if es, _ := os.ReadDir(dir); len(es) != 0 {
+		t.Fatalf("written in a test binary: %v", es)
 	}
 }

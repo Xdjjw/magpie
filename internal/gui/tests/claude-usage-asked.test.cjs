@@ -4,7 +4,8 @@
 // Code's own /usage, and only when the Usage page is opened or Refresh is
 // pressed. Opening the page and Refresh (the header's, which on the Overview
 // is the allowances' too, #486) load usage/quotas?asked=1; the
-// window coming back to the front and the timed reload load it without; an
+// window coming back to the front within 30s of that (#1588,
+// allowance-open-read.test.cjs) and the timed reload load it without; an
 // asked load isn't swallowed by an unasked one already on its way, it goes
 // after it. Chromium and WebKit; no backend, the API is faked here.
 const assert = require("node:assert/strict");
@@ -156,7 +157,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await settle(1);
     assert.equal(asked(), 1, `opening Usage asks once: ${JSON.stringify(asks)}`);
 
-    // the window coming back to the front reads what is kept, asking nothing
+    // the window coming back to the front at once reads what is kept, asking nothing
     let n = asks.length;
     await page.evaluate(() => window.dispatchEvent(new Event("focus")));
     await settle(n + 1);

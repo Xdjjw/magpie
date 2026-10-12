@@ -19,11 +19,40 @@ type fakePeer struct {
 	status    int
 	gets      int
 	refreshes []string // provider|user of each refresh asked
+	// limits are RemoteKeyLimitPath's answers by the key asking (#1547);
+	// nil is a magpie too old to answer it. limitAsks counts them.
+	limits    map[string]string
+	limitAsks int
+}
+
+// peerCards are the cards the remote has, without its keys' own.
+func peerCards(cs []SubscriptionQuota) []SubscriptionQuota {
+	var out []SubscriptionQuota
+	for _, q := range cs {
+		if q.Provider != "office/"+remoteKeyCard {
+			out = append(out, q)
+		}
+	}
+	return out
 }
 
 func (f *fakePeer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	f.Lock()
 	defer f.Unlock()
+	if r.URL.Path == RemoteKeyLimitPath && f.status == 0 {
+		f.limitAsks++
+		if f.limits == nil {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		body, ok := f.limits[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if !ok {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Write([]byte(body))
+		return
+	}
 	if r.Header.Get("Authorization") != "Bearer sk-magpie-office" {
 		w.WriteHeader(http.StatusUnauthorized)
 		return
@@ -129,7 +158,7 @@ func TestRemoteMagpieCardRefresh(t *testing.T) {
 	peer := &fakePeer{}
 	remoteQuotaHome(t, peer)
 	ctx := context.Background()
-	cs := RemoteCards(ctx)
+	cs := peerCards(RemoteCards(ctx))
 	if len(cs) != 1 || cs[0].Provider != "office" || cs[0].Error != errRemoteNothingRead || cs[0].Icon != "magpie" {
 		t.Fatalf("nothing read there: %+v", cs)
 	}
@@ -141,7 +170,7 @@ func TestRemoteMagpieCardRefresh(t *testing.T) {
 	if got := strings.Join(peer.refreshes, ","); got != "|,codex|a@x.com" {
 		t.Errorf("refreshes asked: %q", got)
 	}
-	cs = RemoteCards(ctx)
+	cs = peerCards(RemoteCards(ctx))
 	if len(cs) != 1 || cs[0].Provider != "office/codex" || cs[0].Windows[0].Used != 70 {
 		t.Errorf("after refresh: %+v", cs)
 	}
@@ -173,7 +202,7 @@ func TestRemoteMagpieUnreachable(t *testing.T) {
 	peer.Lock()
 	peer.status = http.StatusNotFound
 	peer.Unlock()
-	if cs := RemoteCards(ctx); len(cs) != 1 || cs[0].Error != errRemoteNoShare {
+	if cs := peerCards(RemoteCards(ctx)); len(cs) != 1 || cs[0].Error != errRemoteNoShare {
 		t.Errorf("an old magpie: %+v", cs)
 	}
 	// one that serves models but keeps its quotas, or refuses the key,
@@ -183,7 +212,7 @@ func TestRemoteMagpieUnreachable(t *testing.T) {
 		peer.Lock()
 		peer.status = status
 		peer.Unlock()
-		if cs := RemoteCards(ctx); len(cs) != 1 || cs[0].Error != want {
+		if cs := peerCards(RemoteCards(ctx)); len(cs) != 1 || cs[0].Error != want {
 			t.Errorf("%d: %+v", status, cs)
 		}
 	}
@@ -226,5 +255,116 @@ func TestRemoteQuotaHistories(t *testing.T) {
 	hs := RemoteQuotaHistories(context.Background(), "7")
 	if len(hs) != 1 || hs[0].Provider != "office/codex" || hs[0].User != "a@x.com" {
 		t.Errorf("%+v", hs)
+	}
+}
+
+// keyCards are the remote's keys' own cards (#1547), by the name each
+// card goes by.
+func keyCards(cs []SubscriptionQuota) map[string]SubscriptionQuota {
+	out := map[string]SubscriptionQuota{}
+	for _, q := range cs {
+		if q.Provider == "office/"+remoteKeyCard {
+			out[q.User] = q
+		}
+	}
+	return out
+}
+
+// #1547 (PennyVibe): a computer that uses another magpie with gateway
+// keys it gave saw that magpie's subscriptions, but not what each key may
+// still spend there. Each key now has a card of its own, asked with that
+// key alone: its caps, what it used and has left, when it resets; a key
+// held to no limit says so; a magpie too old to tell says that, and a
+// failed read is never shown as nothing used.
+func TestRemoteMagpieKeyLimits(t *testing.T) {
+	reset := time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+	peer := &fakePeer{limits: map[string]string{
+		"sk-magpie-office": `{"limited":true,"key":"laptop","limit":{"period":"day","start":"2026-10-11T00:00:00Z","reset":"2026-10-12T00:00:00Z","calls":3,"tokens":1050,"cost":0.4567,"tokenLimit":10000,"costLimit":2,"tokensLeft":8950,"costLeft":1.5433}}`,
+		"sk-magpie-spare":  `{"limited":false,"key":"spare"}`,
+	}}
+	remoteQuotaHome(t, peer)
+	p, err := Find("office")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.KeyName = "laptop"
+	p.Keys = []KeyAccount{{Name: "spare", Key: "sk-magpie-spare"}}
+	if err := Save(*p); err != nil {
+		t.Fatal(err)
+	}
+	ForgetRemoteCardsForTest()
+	ctx := context.Background()
+	ks := keyCards(RemoteCards(ctx))
+	if len(ks) != 2 {
+		t.Fatalf("key cards: %+v", ks)
+	}
+	l := ks["laptop"]
+	if l.Name != "Office" || l.From != "Office" || l.Kind != "plan" || l.Error != "" || l.GatewayKey == nil || !l.GatewayKey.Limited || l.GatewayKey.Period != "day" ||
+		l.GatewayKey.TokensLeft == nil || *l.GatewayKey.TokensLeft != 8950 || l.GatewayKey.CostLeft == nil || *l.GatewayKey.CostLeft != 1.5433 || l.GatewayKey.Calls != 3 {
+		t.Fatalf("laptop: %+v %+v", l, l.GatewayKey)
+	}
+	if len(l.Windows) != 2 || l.Windows[0].Name != "Tokens today" || l.Windows[0].Amount != 1050 || l.Windows[0].Limit != 10000 || l.Windows[0].Used != 10.5 ||
+		l.Windows[0].ResetsAt == nil || !l.Windows[0].ResetsAt.Equal(reset) ||
+		l.Windows[1].Name != "Spend today" || l.Windows[1].Amount != 0.46 || l.Windows[1].Limit != 2 || l.Windows[1].Unit != "USD" {
+		t.Errorf("laptop windows: %+v", l.Windows)
+	}
+	s := ks["spare"]
+	if s.Error != "" || s.GatewayKey == nil || s.GatewayKey.Limited || len(s.Windows) != 1 || !s.Windows[0].Unlimited {
+		t.Errorf("a key with no limit: %+v", s)
+	}
+	// kept like the remote's cards: asked once in remoteCardsFor
+	RemoteCards(ctx)
+	if peer.limitAsks != 2 {
+		t.Errorf("asked %d times, want 2 (once per key)", peer.limitAsks)
+	}
+	// its refresh reads again the key named
+	peer.Lock()
+	peer.limits["sk-magpie-office"] = `{"limited":true,"key":"laptop","limit":{"period":"day","reset":"2026-10-12T00:00:00Z","tokens":2000,"tokenLimit":10000,"tokensLeft":8000}}`
+	peer.Unlock()
+	RefreshUsage(ctx, "office/"+remoteKeyCard, "laptop")
+	if peer.limitAsks != 3 {
+		t.Errorf("refresh asked %d times in all, want 3", peer.limitAsks)
+	}
+	if l := keyCards(RemoteCards(ctx))["laptop"]; len(l.Windows) != 1 || l.Windows[0].Amount != 2000 || l.GatewayKey == nil || *l.GatewayKey.TokensLeft != 8000 {
+		t.Errorf("after refresh: %+v", l)
+	}
+	// a read that fails keeps the last numbers, dated
+	peer.Lock()
+	peer.status = http.StatusBadGateway
+	peer.Unlock()
+	RefreshUsage(ctx, "office/"+remoteKeyCard, "")
+	ks = keyCards(RemoteCards(ctx))
+	if l := ks["laptop"]; l.AsOf == nil || l.Error != "" || len(l.Windows) != 1 || l.Windows[0].Amount != 2000 {
+		t.Errorf("a failed read lost the numbers: %+v", l)
+	}
+	// with nothing read, the card says why: never "no limit" or zeros
+	ForgetRemoteCardsForTest()
+	ks = keyCards(RemoteCards(ctx))
+	for _, n := range []string{"laptop", "spare"} {
+		if q := ks[n]; q.Error == "" || q.GatewayKey != nil || len(q.Windows) != 0 {
+			t.Errorf("%s unread: %+v", n, q)
+		}
+	}
+	// a magpie too old to tell a key its limit
+	ForgetRemoteCardsForTest()
+	peer.Lock()
+	peer.status, peer.limits = 0, nil
+	peer.Unlock()
+	ks = keyCards(RemoteCards(ctx))
+	if len(ks) != 2 {
+		t.Errorf("old magpie: %+v", ks)
+	}
+	for n, q := range ks {
+		if q.Error != errRemoteNoKeyLimit || q.GatewayKey != nil {
+			t.Errorf("%s on an old magpie: %+v", n, q)
+		}
+	}
+}
+
+// Two keys under one name each show their own, told apart by the key.
+func TestRemoteKeyNames(t *testing.T) {
+	names, _ := remoteKeys(Provider{KeyName: "a", Key: "sk-magpie-1111111111", Keys: []KeyAccount{{Name: "a", Key: "sk-magpie-2222222222"}, {Key: "sk-magpie-3333333333"}, {Name: "off", Key: "x", Off: true}}})
+	if len(names) != 3 || names[0] == names[1] || !strings.HasPrefix(names[0], "a · ") || names[2] != Mask("sk-magpie-3333333333") {
+		t.Errorf("%q", names)
 	}
 }

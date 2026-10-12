@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/catalog"
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/settings"
 )
@@ -65,6 +66,10 @@ type CallFor struct {
 	// model that described is the one magpie picks in its place
 	// (VisionMissing), and the Routing view names both.
 	Missing string `json:"missing,omitempty"`
+	// MCP, on a web search or an image's description, is that the agent
+	// called magpie's MCP server (SearchMCPPath, VisionMCPPath) itself, for
+	// no model of magpie's.
+	MCP bool `json:"mcp,omitempty"`
 }
 
 func searchFor(ctx context.Context) *CallFor {
@@ -124,7 +129,46 @@ func searchesFor(p provider.Provider, proto provider.Protocol, model string, req
 // searchesModel is searchesItself for one model: a Remote magpie searches
 // for the models its list says it does, on any API (search_remote.go).
 func searchesModel(p provider.Provider, proto provider.Protocol, model string) bool {
-	return searchesItself(p, proto) || proto != provider.Gemini && remoteSearch(p, model) != ""
+	return searchesItself(p, proto) || proto != provider.Gemini && remoteSearch(p, model) != "" || modelSearches(p, proto, model)
+}
+
+// searchModels are the models a provider runs web_search for only for some
+// of its models, by API: Command Code's Provider API passes the tool on to
+// the model's vendor, and 12 of its 87 models search (M3chD09's run of all
+// of them, #1590); the rest take the tool and don't search, or have it
+// stripped, so they keep magpie's searcher. Its Claude models search on
+// Messages only, the others on Responses only.
+var searchModels = map[string]map[provider.Protocol][]string{
+	"commandcode": {
+		provider.Anthropic: {"claude-sonnet-5-5", "claude-haiku-5-5"},
+		provider.Responses: {"gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna",
+			"meta/muse-spark-1.2", "meta/muse-spark-1.2-contributor", "meta/muse-spark-1.3", "meta/muse-spark-1.3-contributor",
+			"xai/grok-4.5", "xai/grok-4.6", "xai/grok-4.7"},
+	},
+}
+
+// searchModelsHosts are searchModels' providers by host, for one added by
+// hand rather than from the preset.
+var searchModelsHosts = map[string]string{"api.commandcode.ai": "commandcode"}
+
+// modelSearches is whether a provider of searchModels searches by itself
+// for model on proto. Command Code refuses every built-in tool under its
+// zero-data-retention header (x-cmd-zdr: cmd_zdr_unsupported_tool), so a
+// provider sent that header searches for none.
+func modelSearches(p provider.Provider, proto provider.Protocol, model string) bool {
+	if p.Account != nil || p.Base(proto) == "" {
+		return false
+	}
+	id := p.Preset
+	if _, ok := searchModels[id]; !ok {
+		id = searchModelsHosts[provider.HostOf(p.Base(proto))]
+	}
+	for k, v := range p.Headers {
+		if strings.EqualFold(k, "x-cmd-zdr") && strings.TrimSpace(v) != "" && v != "0" {
+			return false
+		}
+	}
+	return slices.Contains(searchModels[id][proto], model)
 }
 
 // searchHosts are the APIs that search by themselves: OpenAI's, xAI's,
@@ -153,7 +197,11 @@ func searchAsked(proto provider.Protocol, body []byte) bool {
 // searcher is the model magpie searches with: the one Settings names, while
 // it can (chosenSearcher), else the first of the providers that search by
 // themselves, with a small model of theirs, as searching needs no more.
+// An explicit "off" leaves only the search APIs.
 func searcher() (provider.Provider, string, bool) {
+	if settings.Load().Searcher == "off" {
+		return provider.Provider{}, "", false
+	}
 	if p, m, why := chosenSearcher(); why == "" && p != nil {
 		return *p, m, true
 	}
@@ -237,10 +285,11 @@ const (
 // chosenSearcher is the provider and model Settings' Searcher names
 // ("<provider>" for its small model, or "<provider>/<model>"), and why it
 // can't be used, "" when it can. A model it no longer lists gives way to
-// its small model, as when none is named. Nil when none is named.
+// its small model, as when none is named. Nil when none is named or
+// provider search is explicitly off.
 func chosenSearcher() (*provider.Provider, string, string) {
 	v := strings.TrimSpace(settings.Load().Searcher)
-	if v == "" {
+	if v == "" || v == "off" {
 		return nil, "", ""
 	}
 	id, model, _ := strings.Cut(v, "/")
@@ -265,7 +314,7 @@ func chosenSearcher() (*provider.Provider, string, string) {
 	if m := searcherModel(p); m != "" {
 		return &p, m, ""
 	}
-	if ms := p.Available(); len(ms) > 0 {
+	if ms := p.Exposed(); len(ms) > 0 {
 		return &p, ms[0].ID, ""
 	}
 	return &p, "", SearcherNoneOf
@@ -330,10 +379,13 @@ func RelaysSaidToSearch() []provider.Provider {
 
 // smallModel is the provider's cheapest small model of a vendor that
 // searches well, or its cheapest, or its first; only among those keep
-// holds, when it is given.
+// holds, when it is given. Only a model the user enabled is picked (what
+// agents are offered, Exposed), never one of the rest of the vendor's
+// list: OpenRouter turned away an unpicked anthropic/claude-haiku-5.5 for
+// the user's region (JonahFu on X).
 func smallModel(p provider.Provider, keep func(catalog.Model) bool) string {
 	var ms []catalog.Model
-	for _, m := range p.Available() {
+	for _, m := range p.Exposed() {
 		if keep != nil && !keep(m) {
 			continue
 		}
@@ -404,7 +456,20 @@ const searchSystem = "You are a web search tool. Search the web for what is aske
 // then with the searcher's model, or, without one or when it fails, with
 // the search APIs the user set up (#419). Settings can put the search APIs
 // first (#928): the providers then search only when none of them answers.
+// With provider search off, only the search APIs are asked.
 func (s *Server) webSearch(ctx context.Context, query string) (string, []Hit, error) {
+	// a search is magpie's own request, not the turn's provider's: the
+	// search APIs go through the global proxy and each searcher through
+	// its own (Provider.Via), never through the proxy the turn's provider
+	// is set to (#1522: Codex asked while a "direct" provider served the
+	// turn dialed chatgpt.com directly)
+	ctx = netproxy.With(ctx, "")
+	if settings.Load().Searcher == "off" {
+		if len(provider.SearchAPIs()) == 0 {
+			return "", nil, errNoSearcher
+		}
+		return s.apiSearch(ctx, query)
+	}
 	var errs []error
 	apiFirst := settings.Load().SearchFirst == settings.SearchFirstAPI && len(provider.SearchAPIs()) > 0
 	if apiFirst {

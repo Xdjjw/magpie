@@ -61,8 +61,10 @@ func keepCRLF(out, orig []byte) []byte {
 	return bytes.ReplaceAll(out, []byte("\n"), []byte("\r\n"))
 }
 
-// PatchJSON computes a config change without writing a file.
+// PatchJSON computes a config change without writing a file. A byte order
+// mark raw starts with is read through and kept.
 func PatchJSON(raw []byte, set []KV, del []string) ([]byte, error) {
+	raw, marked := bytes.CutPrefix(raw, bom)
 	if len(bytes.TrimSpace(raw)) == 0 {
 		raw = []byte("{}\n")
 	}
@@ -79,6 +81,9 @@ func PatchJSON(raw []byte, set []KV, del []string) ([]byte, error) {
 		if err != nil {
 			return nil, err
 		}
+	}
+	if marked {
+		return append(append([]byte(nil), bom...), keepCRLF(raw, orig)...), nil
 	}
 	return keepCRLF(raw, orig), nil
 }
@@ -267,6 +272,19 @@ func DelJSON(path string, keyPaths ...string) error {
 	return WriteAtomic(path, raw)
 }
 
+// pastLineEnd is i past the line end raw has at i, \n or \r\n, else i: a
+// member deleted with its line takes the whole line end along, so a CRLF
+// file isn't left a blank line.
+func pastLineEnd(raw []byte, i int) int {
+	switch {
+	case bytes.HasPrefix(raw[i:], []byte("\r\n")):
+		return i + 2
+	case bytes.HasPrefix(raw[i:], []byte("\n")):
+		return i + 1
+	}
+	return i
+}
+
 func delJSONBytes(raw []byte, keyPath string) ([]byte, bool, error) {
 	stripped := jsonc.ToJSONInPlace(append([]byte(nil), raw...))
 	if !json.Valid(stripped) {
@@ -306,18 +324,14 @@ func delJSONBytes(raw []byte, keyPath string) ([]byte, bool, error) {
 		to = j + 1
 		if alone {
 			from = ls
-			if to < len(raw) && raw[to] == '\n' {
-				to++
-			}
+			to = pastLineEnd(raw, to)
 		}
 		out, _ = splice(raw, from, to-from, nil)
 	} else {
 		// last member: drop the line, then the comma that preceded it
 		if alone {
 			from = ls
-			if to < len(raw) && raw[to] == '\n' {
-				to++
-			}
+			to = pastLineEnd(raw, to)
 		}
 		out, _ = splice(raw, from, to-from, nil)
 		k := a

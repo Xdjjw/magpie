@@ -9,6 +9,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const words = {
@@ -53,7 +54,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       page.on("pageerror", (e) => errors.push(e.message));
       const saved = [];
       await page.route("**/*", serve(lang, saved));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=models");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const row = page.locator("#replyList #memberModelRow");
       await row.waitFor();
       await row.scrollIntoViewIfNeeded();

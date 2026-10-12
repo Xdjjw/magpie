@@ -15,10 +15,11 @@ package agent
 // sign-in of theirs (snowcfg.oauth) left out — with the gateway's /v1 as
 // its base URL, a key naming Snow CLI, Chat Completions as its protocol and
 // the model picked as its main (advancedModel) and light (basicModel) model,
-// the gateway resolving "<provider>/<model>" itself. It makes that profile
-// the active one and copies it to config.json, as Snow's own profile switch
-// does; the profile the user was on is stashed and made active again when
-// magpie steps out, and magpie.json goes. Snow App
+// the gateway resolving "<provider>/<model>" itself, and the model's
+// window, output and image support from the catalog (snowSynced). It makes
+// that profile the active one and copies it to config.json, as Snow's own
+// profile switch does; the profile the user was on is stashed and made
+// active again when magpie steps out, and magpie.json goes. Snow App
 // (MayDay-wpf/snow-app) keeps API setups of its own: its "Sync Snow CLI API
 // config" button copies these profiles, magpie's among them, into it.
 //
@@ -28,6 +29,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -74,6 +76,8 @@ func snowIn(at place) *Agent {
 	// active-profile.json to put back, keyHad the bytes of a magpie.json of
 	// the user's own that magpie's took the place of
 	keyActive, keyNone, keyHad := stashKey+":active", stashKey+":active.none", stashKey+":had"
+	// keyWrote is what magpie last wrote of snowSynced (snowProfileFor)
+	keyWrote := stashKey + ":wrote"
 
 	// active is the profile Snow starts on, as it reads it
 	active := func() string {
@@ -139,8 +143,13 @@ func snowIn(at place) *Agent {
 	// is on (base) where there is one, and points it at the gateway
 	write := func(ref, base string) error {
 		var raw []byte
+		var wrote map[string]any
+		mine := false
 		if b, err := edit.Read(ours); err == nil && b != nil && snowIsOurs(b) {
-			raw = b
+			raw, mine = b, true
+			if w := stashLoad()[keyWrote]; w != "" {
+				json.Unmarshal([]byte(w), &wrote)
+			}
 		} else if base != "" {
 			if b, err := edit.Read(profileOf(base)); err == nil && b != nil {
 				raw = b
@@ -148,11 +157,16 @@ func snowIn(at place) *Agent {
 				raw = b
 			}
 		}
-		out, err := snowProfileFor(raw, at.v1(), key(), ref)
+		out, now, err := snowProfileFor(raw, mine, at.v1(), key(), ref, wrote)
 		if err != nil {
 			return err
 		}
-		return edit.WriteAtomic(ours, out)
+		if err := edit.WriteAtomic(ours, out); err != nil {
+			return err
+		}
+		b, _ := json.Marshal(now)
+		stash(map[string]string{keyWrote: string(b)})
+		return nil
 	}
 
 	// leave puts Snow back on the profile the user had (to, or the stashed
@@ -160,7 +174,7 @@ func snowIn(at place) *Agent {
 	// name), and copies the profile it is on to config.json
 	leave := func(to string) error {
 		was, none := unstash(keyActive), stashLoad()[keyNone] != ""
-		forget(keyNone)
+		forget(keyNone, keyWrote)
 		// a profile asked for by name is made the active one; else the one
 		// the user was on, or none at all when Snow had no active file
 		if to == "" && !none {
@@ -222,7 +236,7 @@ func snowIn(at place) *Agent {
 		},
 		Notice: func() string {
 			if Running(`(^|/)snow( |$)`) {
-				return "Snow CLI reads its profile at start-up — restart open snow sessions to use this."
+				return noticeSnow.String()
 			}
 			return ""
 		},
@@ -250,7 +264,11 @@ func snowIn(at place) *Agent {
 			Key: "model", Label: "model",
 			Get: get,
 			Set: func(v string) error {
-				if ref, ok := strings.CutPrefix(v, magpieID+"/"); ok && isMagpie(ref) {
+				ref, through := strings.CutPrefix(v, magpieID+"/")
+				if through && !isMagpie(ref) {
+					return fmt.Errorf("%s isn't a model in magpie's catalog (magpie models snow lists them)", ref)
+				}
+				if through {
 					base := active()
 					if !onOurs() {
 						if b, err := edit.Read(ours); err == nil && b != nil && !snowIsOurs(b) {
@@ -306,27 +324,119 @@ func snowIn(at place) *Agent {
 					return mirror(name)
 				}
 				// leaving magpie's profile: for the user's profile with
-				// that model, or the one they were on
+				// that model. A model no profile of theirs is on is
+				// refused rather than written into one on the way out:
+				// `magpie snow --help` took magpie out of Snow and left
+				// "--help" as the model of the profile it went back to
+				// (#1457). An empty value goes back to the one they were on.
 				to := ""
 				if v != "" {
-					was := stashLoad()[keyActive]
-					to = snowFindProfile(profiles, v, was)
+					to = snowFindProfile(profiles, v, stashLoad()[keyActive])
 					if to == "" {
-						to = was
-						if to == "" {
-							to = "default"
-						}
-						if _, err := os.Stat(profileOf(to)); err == nil {
-							if err := edit.SetJSON(profileOf(to), edit.KV{Path: "snowcfg.advancedModel", Value: v}); err != nil {
-								return err
-							}
-						}
+						return fmt.Errorf("%q is neither a model through magpie nor the model of one of Snow CLI's profiles: nothing was changed (magpie models snow lists them; magpie snow default goes back to your own profile)", v)
 					}
 				}
 				return leave(to)
 			},
 			Options: func(cur map[string]string) []Option {
 				return append(snowOwnOptions(profiles, cur["model"]), viaMagpie("snow", magpieID+"/")...)
+			},
+		}, {
+			// basicModel, the light model Snow's summaries, compaction and
+			// file search ask (utils/config/apiConfig.ts): on magpie's
+			// profile only, where both models go to the gateway; a
+			// profile of the user's is theirs to set in Snow. Empty while
+			// it follows the main model.
+			Key: "small", Label: "small",
+			Get: func() string {
+				if !onOurs() {
+					return ""
+				}
+				b, _ := edit.GetJSON(ours, "snowcfg.basicModel")
+				if b == "" || b == model(snowProfile) {
+					return ""
+				}
+				return magpieID + "/" + b
+			},
+			Set: func(v string) error {
+				if !onOurs() {
+					if v == "" {
+						return nil
+					}
+					return errors.New("Snow CLI's light model can be set here on magpie's profile: pick a model through magpie as its model first")
+				}
+				ref := model(snowProfile)
+				if v != "" {
+					r, ok := strings.CutPrefix(v, magpieID+"/")
+					if !ok || !isMagpie(r) {
+						return errors.New("Snow CLI's light model goes to the gateway with its main model: pick one through magpie")
+					}
+					ref = r
+				}
+				if err := edit.SetJSON(ours, edit.KV{Path: "snowcfg.basicModel", Value: ref}); err != nil {
+					return err
+				}
+				return mirror(snowProfile)
+			},
+			Options: func(cur map[string]string) []Option {
+				if !strings.HasPrefix(cur["model"], magpieID+"/") {
+					return nil
+				}
+				return viaMagpie("snow", magpieID+"/")
+			},
+		}, {
+			// chatThinking, the thinking magpie's profile asks for on Chat
+			// Completions (api/chat.ts): enabled sends reasoning_effort,
+			// unset sends thinking {type: disabled}, Snow's default. On
+			// magpie's profile only; Snow's thinking.effort (Anthropic)
+			// and responsesReasoning (Responses) are for protocols that
+			// profile doesn't use.
+			Key: "effort", Label: "thinking",
+			Get: func() string {
+				if !onOurs() {
+					return ""
+				}
+				b, _ := edit.Read(ours)
+				ct := gjson.GetBytes(jsonc.ToJSONInPlace(b), "snowcfg.chatThinking")
+				if !ct.Get("enabled").Bool() {
+					return ""
+				}
+				if v := ct.Get("reasoning_effort").String(); v != "" {
+					return v
+				}
+				// on, with no level: the model's own
+				return "on"
+			},
+			Set: func(v string) error {
+				if !onOurs() {
+					if v == "" {
+						return nil
+					}
+					return errors.New("Snow CLI's thinking can be set here on magpie's profile: pick a model through magpie as its model first")
+				}
+				var err error
+				if v == "" {
+					err = edit.DelJSON(ours, "snowcfg.chatThinking")
+				} else {
+					err = edit.SetJSON(ours, edit.KV{Path: "snowcfg.chatThinking", Value: map[string]any{"enabled": true, "reasoning_effort": v}})
+				}
+				if err != nil {
+					return err
+				}
+				return mirror(snowProfile)
+			},
+			Options: func(cur map[string]string) []Option {
+				ref, ok := strings.CutPrefix(cur["model"], magpieID+"/")
+				if !ok {
+					return nil
+				}
+				for _, m := range magpieModels("snow") {
+					if m.ID == ref && len(m.Efforts) > 0 {
+						return append([]Option{{Value: "", Takes: "off"}}, static(m.Efforts...)...)
+					}
+				}
+				// a model that lists no levels has none to pick
+				return nil
 			},
 		}},
 	}, ours, activeFile, config, defaultProfile)
@@ -343,14 +453,34 @@ func snowIsOurs(b []byte) bool {
 	return snowOurKey(gjson.GetBytes(jsonc.ToJSONInPlace(append([]byte(nil), b...)), "snowcfg.apiKey").String())
 }
 
+// snowSynced are the settings of magpie's profile that follow its main
+// model: its window and output, from the catalog, and whether it takes
+// images. What magpie last wrote of each is kept (the stash's
+// "snow:<dir>:wrote"), so one the user changed since, in Snow's own
+// settings, is theirs and stays as they set it.
+var snowSynced = []string{"maxContextTokens", "maxTokens", "supportsVision"}
+
+// snowVision are the settings of Snow's own vision model, which describes
+// images to a main model that takes none (supportsVision false).
+var snowVision = []string{"visionModel", "visionBaseUrl", "visionBaseUrlMode", "visionApiKey", "visionRequestMethod"}
+
 // snowProfileFor is the profile magpie writes for ref: from (a profile of
-// the user's, or magpie's own already) with the gateway set in, the user's
-// sign-in left out; Snow's own defaults where from is empty.
-func snowProfileFor(from []byte, v1, key, ref string) ([]byte, error) {
+// the user's, or magpie's own already when ours) with the gateway set in,
+// the user's sign-in left out; Snow's own defaults where from is empty.
+// wrote is what magpie last wrote of snowSynced into its own profile (nil
+// for none known), and the second result what it writes now.
+//
+// A vision model of the user's own comes along only with an endpoint and
+// key of its own: one that took the profile's would go to the gateway, which doesn't know it, or send
+// magpie's key to the user's endpoint. Images reach a model that can't
+// see through magpie's own Vision, which describes them at the gateway
+// (provider.Described): the catalog then says the model takes them, and
+// Snow is told so.
+func snowProfileFor(from []byte, ours bool, v1, key, ref string, wrote map[string]any) ([]byte, map[string]any, error) {
 	cfg := map[string]any{}
 	if len(from) > 0 {
 		if err := json.Unmarshal(jsonc.ToJSON(from), &cfg); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 	sc, _ := cfg["snowcfg"].(map[string]any)
@@ -358,7 +488,11 @@ func snowProfileFor(from []byte, v1, key, ref string) ([]byte, error) {
 		sc = map[string]any{}
 	}
 	delete(sc, "oauth")
+	if !ours {
+		snowOwnVision(sc)
+	}
 	ctx, out := snowContext, snowOutput
+	sees := false
 	for _, m := range magpieModels("snow") {
 		if m.ID == ref {
 			if m.Context > 0 {
@@ -367,26 +501,79 @@ func snowProfileFor(from []byte, v1, key, ref string) ([]byte, error) {
 			if n := maxTokens(m); n > 0 {
 				out = n
 			}
+			// as every agent is told (fx, Copilot): a model the catalog
+			// doesn't say sees is text-only to the gateway (blindTo)
+			sees = m.Images && (m.ImageInput == nil || *m.ImageInput)
 			break
 		}
 	}
 	// an output above the window Snow is told is cut to it, as for a
 	// model whose window isn't known
 	out = min(out, ctx)
+	want := map[string]any{"maxContextTokens": ctx, "maxTokens": out, "supportsVision": sees}
+	now := map[string]any{}
+	for _, k := range snowSynced {
+		if ours && wrote != nil {
+			if w, known := wrote[k]; known && !snowSame(sc[k], w) {
+				// the user's own since magpie wrote it
+				now[k] = w
+				continue
+			}
+		}
+		now[k], sc[k] = want[k], want[k]
+	}
 	sc["baseUrl"] = v1
 	sc["baseUrlMode"] = "base"
 	sc["apiKey"] = key
 	sc["requestMethod"] = "chat"
+	// the light model follows the main one, unless picked apart from it
+	// (the small field): a magpie model of its own stays through a new
+	// main model and a sync
+	small := ref
+	if ours {
+		was, _ := sc["advancedModel"].(string)
+		if b, _ := sc["basicModel"].(string); b != "" && b != was && isMagpie(b) {
+			small = b
+		}
+	}
 	sc["advancedModel"] = ref
-	sc["basicModel"] = ref
-	sc["maxContextTokens"] = ctx
-	sc["maxTokens"] = out
+	sc["basicModel"] = small
 	cfg["snowcfg"] = sc
 	b, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return b, nil
+	return b, now, nil
+}
+
+// snowOwnVision keeps, of the user's profile's settings, a vision model
+// with an endpoint and key of its own, on the protocol and URL mode it
+// was asked with there; any other goes.
+func snowOwnVision(sc map[string]any) {
+	model, _ := sc["visionModel"].(string)
+	url, _ := sc["visionBaseUrl"].(string)
+	key, _ := sc["visionApiKey"].(string)
+	if strings.TrimSpace(model) == "" || strings.TrimSpace(url) == "" || strings.TrimSpace(key) == "" {
+		for _, k := range snowVision {
+			delete(sc, k)
+		}
+		return
+	}
+	for own, profile := range map[string]string{"visionRequestMethod": "requestMethod", "visionBaseUrlMode": "baseUrlMode"} {
+		if v, _ := sc[own].(string); v == "" {
+			if v, _ := sc[profile].(string); v != "" {
+				sc[own] = v
+			}
+		}
+	}
+}
+
+// snowSame says two JSON values are the same: a number read back from a
+// file is a float64, the one magpie wrote an int.
+func snowSame(a, b any) bool {
+	x, _ := json.Marshal(a)
+	y, _ := json.Marshal(b)
+	return string(x) == string(y)
 }
 
 // snowProfiles are the profiles of the user's own: their names, and the
@@ -449,3 +636,8 @@ func snowOwnOptions(dir, cur string) []Option {
 }
 
 func jsonString(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// what snow says after a change (notice.go)
+var (
+	noticeSnow = newNotice("Snow CLI reads its profile at start-up — restart open snow sessions to use this.")
+)

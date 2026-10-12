@@ -40,6 +40,9 @@ type RuleHit struct {
 	Tokens int    `json:"tokens"`           // how long the request was taken to be
 	Images bool   `json:"images,omitempty"` // it carries an image
 	Effort string `json:"effort,omitempty"` // the reasoning asked for: a level, or "on"
+	// Folder: the working folder the agent said, looked at when a rule
+	// is by folder; "" when it said none
+	Folder string `json:"folder,omitempty"`
 	// Unready: the member the rule names has nobody to take it now, and
 	// the group routes the request as it would without the rule.
 	Unready bool `json:"unready,omitempty"`
@@ -164,7 +167,10 @@ func ruleFor(key string, g provider.Group, ms []provider.Member, req *Request, a
 	if had && tr.input > q.Tokens {
 		q.Tokens = tr.input // what the vendor counted last, a floor: the conversation only grew since
 	}
-	hit := &RuleHit{Turn: turn, Tokens: q.Tokens, Images: q.Images, Effort: q.Effort, Bare: len(g.Rules) == 0}
+	if slices.ContainsFunc(g.Rules, provider.Rule.ByFolder) {
+		q.Folder = workDir(req)
+	}
+	hit := &RuleHit{Turn: turn, Tokens: q.Tokens, Images: q.Images, Effort: q.Effort, Folder: q.Folder, Bare: len(g.Rules) == 0}
 	defer func() {
 		// whatever put a member first, the rules after it that match too
 		// say who comes next

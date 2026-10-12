@@ -1,13 +1,21 @@
 package gui
 
 import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/sessions"
 )
 
@@ -144,5 +152,61 @@ func TestContextSessionTitles(t *testing.T) {
 	}
 	if titles[id] != "Port the parser" || titles["not-a-session"] != "" {
 		t.Fatalf("titles %v", titles)
+	}
+}
+
+// masaka on Discord: a part of the context window card opens to its text.
+// /api/context/text lists the part's items, and gives one item's text when
+// asked for it; a request whose body is no longer kept is 404.
+func TestContextTextAPI(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"m1","content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn","usage":{"input_tokens":90,"output_tokens":1}}`)
+	}))
+	defer up.Close()
+	if err := provider.Save(provider.Provider{ID: "ct", Name: "CT", Anthropic: up.URL, Models: []string{"m1"}, Key: "k"}); err != nil {
+		t.Fatal(err)
+	}
+	gw := gateway.New()
+	prev := served.Swap(gw)
+	t.Cleanup(func() { served.Store(prev) })
+	body := `{"model":"ct/m1","max_tokens":10,"system":"You are the reviewer agent.",
+		"tools":[{"name":"Read","description":"Reads a file.","input_schema":{"type":"object"}},{"name":"Grep","description":"Searches files for a long pattern, across the whole tree.","input_schema":{"type":"object"}}],
+		"messages":[{"role":"user","content":"review it"}]}`
+	rec := httptest.NewRecorder()
+	gw.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body)))
+	rs := gw.Trace(context.Background(), 0, 0).Routes
+	if rec.Code != 200 || len(rs) != 1 {
+		t.Fatalf("%d %s", rec.Code, rec.Body)
+	}
+	mux := http.NewServeMux()
+	contextRoutesAPI(mux)
+	get := func(q string) (int, gateway.PromptText) {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("GET", "/api/context/text?"+q, nil))
+		var pt gateway.PromptText
+		json.Unmarshal(rec.Body.Bytes(), &pt)
+		return rec.Code, pt
+	}
+	id := strconv.FormatInt(rs[0].ID, 10)
+	code, list := get("id=" + id + "&kind=tools")
+	if code != 200 || len(list.Items) != 2 || list.Items[0].Name != "Grep" || list.Items[0].Pieces != nil || list.Items[1].Pieces != nil {
+		t.Fatalf("%d %+v", code, list)
+	}
+	code, one := get("id=" + id + "&kind=tools&item=1")
+	if code != 200 || one.Items[0].Pieces != nil || len(one.Items[1].Pieces) != 1 || !strings.Contains(one.Items[1].Pieces[0].Text, "Reads a file.") {
+		t.Fatalf("%d %+v", code, one)
+	}
+	if code, sys := get("id=" + id + "&kind=system&item=0"); code != 200 || sys.Items[0].Pieces[0].Text != "You are the reviewer agent." {
+		t.Fatalf("%d %+v", code, sys)
+	}
+	if code, _ := get("id=1&kind=tools"); code != 404 {
+		t.Fatalf("not kept: %d", code)
+	}
+	if code, _ := get("id=" + id + "&kind=tools&item=9"); code != 400 {
+		t.Fatalf("no such item: %d", code)
 	}
 }

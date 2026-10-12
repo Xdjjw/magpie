@@ -99,14 +99,23 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const card = (kind, id) => view.locator(`.mk[data-market="${kind}"] .mk-card[data-id="${id}"]`);
       await card("mcp", "playwright").locator(".mk-have").waitFor();
       await card("mcp", "fetch").locator(".mk-add").waitFor();
+      // A mark follows the change's answer and the market's answer after it,
+      // two reads one after the other: each step waits for the market's
+      // answer, given the page's timeout for each of the two reads, then for
+      // the mark. A 2s bound on the whole was a busy machine's to miss
+      // (#1631); what this checks is that the mark comes with no focus, not
+      // how fast.
+      const answered = (kind) => page.waitForResponse((r) => new URL(r.url()).pathname === "/api/library/market/" + kind, { timeout: 10000 });
 
       await t.test("a server removed is no longer marked added", async () => {
         const top = await view.evaluate((e) => e.scrollTop);
         const before = calls.filter((c) => c === "market/servers").length;
         await view.locator(".lib-row", { hasText: "playwright" }).click();
         await page.getByRole("button", { name: words[lang].remove, exact: true }).click();
+        const market = answered("servers");
         await page.locator("dialog.action-confirm[open] button").last().click();
-        await card("mcp", "playwright").locator(".mk-add").waitFor({ timeout: 2000 });
+        await market;
+        await card("mcp", "playwright").locator(".mk-add").waitFor();
         assert.equal(await card("mcp", "playwright").locator(".mk-have").count(), 0);
         assert.equal(await card("mcp", "playwright").evaluate((e) => e.classList.contains("have")), false);
         assert(calls.filter((c) => c === "market/servers").length > before, "the market was not asked again");
@@ -119,16 +128,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const ed = page.locator(".lib-editor");
         await ed.locator('input[placeholder="e.g. github"], input[placeholder="例如 github"]').fill("fetch");
         await ed.locator('input[placeholder="npx -y @modelcontextprotocol/server-github"]').fill("uvx mcp-server-fetch");
+        const market = answered("servers");
         await ed.getByRole("button", { name: words[lang].add, exact: true }).click();
-        await card("mcp", "fetch").locator(".mk-have").waitFor({ timeout: 2000 });
+        await market;
+        await card("mcp", "fetch").locator(".mk-have").waitFor();
       });
 
       await t.test("a skill removed is no longer marked added", async () => {
-        await view.locator(".lib-tabs .opt").nth(2).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible").nth(2).click();
         await card("skills", "acme/skills/pdf").locator(".mk-have").waitFor();
         await view.locator(".lib-row", { hasText: "pdf" }).locator(".lib-icon.danger").click();
+        const market = answered("skills");
         await page.locator(".lib-editor").getByRole("button", { name: words[lang].removeSkill, exact: true }).click();
-        await card("skills", "acme/skills/pdf").locator(".mk-add").waitFor({ timeout: 2000 });
+        await market;
+        await card("skills", "acme/skills/pdf").locator(".mk-add").waitFor();
       });
 
       assert.equal(await page.evaluate(() => window.__focus), 0, "the window was focused again");

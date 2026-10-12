@@ -167,7 +167,7 @@ func askedTier(body []byte) string {
 	var q struct {
 		Tier string `json:"service_tier"`
 	}
-	json.Unmarshal(body, &q)
+	decodeJSON(body, &q)
 	return q.Tier
 }
 

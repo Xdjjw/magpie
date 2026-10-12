@@ -31,6 +31,17 @@ const pluginBase = "plugin://"
 // plugin's chat.headers hook as its session; it goes no further.
 const ConversationHeader = "X-Magpie-Conversation"
 
+// WorkDirHeader and WorkGitHeader tell a plugin's fetch where the agent
+// that asked works, as the agent says it in its request: the folder,
+// percent-encoded (decodeURIComponent reads it), and "yes" or "no" for
+// whether it is in a git repository. Each is left off when it isn't
+// known. The plugin host takes them off whatever the plugin sends on
+// (host.js), so they reach no vendor as headers.
+const (
+	WorkDirHeader = "X-Magpie-Work-Dir"
+	WorkGitHeader = "X-Magpie-Work-Git"
+)
+
 // PluginID is the id magpie gives the provider OpenCode calls id: the same,
 // unless a preset or a built-in subscription has it (google, openai,
 // anthropic), or a provider of the user's own made before the plugin was
@@ -172,6 +183,9 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 			APIs: []string{string(pluginProtocol(pp.ID, m))}, Images: m.Image,
 			Context: m.Input, Output: m.Output, Free: m.Free,
 			Rate: m.Rate, RateWas: m.RateWas,
+			// a decision model the plugin marked counts only where it
+			// serves a decision API (pp.Decide)
+			Decides: pp.Decide && m.Decides,
 		}
 		if c.Context == 0 {
 			c.Context = m.Context
@@ -210,7 +224,12 @@ func pluginCatalog(pp plugin.Provider) []catalog.Model {
 		}
 		if m.ImageSaid {
 			c.ImageInput = &m.Image
+			// what else it takes (audio, video, pdf), only where the
+			// plugin said what it takes: the host's default for a model
+			// it said nothing of is text alone (#1595)
+			c.InputModalities = m.Inputs
 		}
+		c.OutputModalities = m.Outputs
 		out = append(out, c)
 	}
 	return out
@@ -342,6 +361,13 @@ func pluginProvider(pp plugin.Provider, l pluginLogin) Provider {
 		case CodeAssist:
 			a.codeAssist = pluginBase + pp.ID
 		}
+	}
+	if pp.Decide {
+		// its decision API is the provider's own base, asked at
+		// /systemone through the plugin's fetch: pluginFetch sends nowhere
+		// but the loader's host, so an address of the plugin's own
+		// couldn't be reached (#1514)
+		p.Decide = pluginBase + pp.ID + "/v1"
 	}
 	return p
 }

@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -100,4 +101,135 @@ func TestCursorAllowanceUsesModelPool(t *testing.T) {
 			}
 		})
 	}
+}
+
+// #1476 (and fottencity on Discord): a team or enterprise that pays for
+// on-demand usage once the included usage is gone. Cursor goes on serving
+// it, so the spent pools must not read as the account used up; its
+// on-demand spend is what runs out. The replies are GetCurrentPeriodUsage's
+// and GetHardLimit's as cursor-agent 2026.10.01 decodes them (Connect JSON
+// of GetCurrentPeriodUsageResponse.SpendLimitUsage: cents, pooledLimit an
+// int64 string; GetHardLimitResponse: dollars), the plugin's fixtures.
+func TestCursorOnDemandKeepsTheAccount(t *testing.T) {
+	now := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
+	resets := time.UnixMilli(1792833042000)
+	run := func(t *testing.T, spend map[string]any, hard any) []QuotaWindow {
+		t.Helper()
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != "Bearer tok" {
+				http.Error(w, "no", http.StatusUnauthorized)
+				return
+			}
+			switch r.URL.Path {
+			case "/aiserver.v1.DashboardService/GetHardLimit":
+				if code, ok := hard.(int); ok {
+					http.Error(w, "no", code)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(hard)
+			case "/aiserver.v1.DashboardService/GetCurrentPeriodUsage":
+				p := map[string]any{"billingCycleEnd": "1792833042000", "planUsage": map[string]any{"autoPercentUsed": 100, "apiPercentUsed": 100, "totalPercentUsed": 100}}
+				if spend != nil {
+					p["spendLimitUsage"] = spend
+				}
+				_ = json.NewEncoder(w).Encode(p)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		old := cursorBase
+		cursorBase = srv.URL
+		t.Cleanup(func() { cursorBase = old })
+		ws, err := cursorWindows(t.Context(), "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ws
+	}
+	type win struct {
+		Name    string
+		Used    float64
+		Display string
+		Aside   bool
+	}
+	shape := func(ws []QuotaWindow) []win {
+		var out []win
+		for _, w := range ws {
+			out = append(out, win{w.Name, w.Used, w.Display, w.Aside})
+		}
+		return out
+	}
+	usedUp := func(ws []QuotaWindow) bool {
+		a := allowanceOf(ws, now)
+		return !a.Full("claude-opus-5-5", 98, now).IsZero() || !a.Full("composer-2.5", 98, now).IsZero()
+	}
+
+	t.Run("a team member's own limit is the allowance", func(t *testing.T) {
+		ws := run(t, map[string]any{"totalSpend": 52000, "individualLimit": 50000, "individualUsed": 12345, "individualRemaining": 37655, "limitType": "team", "pooledLimit": "0"}, map[string]any{})
+		want := []win{{"Cursor Models", 100, "", true}, {"Other Models", 100, "", true}, {"On-demand", 24.69, "$123.45 / $500.00", false}, {"Total", 100, "", true}}
+		if got := shape(ws); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Fatalf("windows = %+v\nwant %+v", got, want)
+		}
+		if usedUp(ws) {
+			t.Fatal("a team member with on-demand left is counted used up")
+		}
+		if ws[2].ResetsAt == nil || !ws[2].ResetsAt.Equal(resets) {
+			t.Fatalf("on-demand resets %v", ws[2].ResetsAt)
+		}
+	})
+	t.Run("a team with a hard limit and none of the member's never runs out", func(t *testing.T) {
+		for i, c := range []struct {
+			spend map[string]any
+			hard  any
+		}{
+			{map[string]any{"individualUsed": 900, "limitType": "team"}, map[string]any{"hardLimit": 2000, "perUserMonthlyLimitDollars": 0}},
+			{map[string]any{"individualUsed": 900, "limitType": "team", "pooledLimit": "100000"}, map[string]any{"hardLimit": 2000}},
+			// GetHardLimit unread: the team's pooled limit says it is allowed
+			{map[string]any{"individualUsed": 900, "limitType": "team", "pooledLimit": "100000"}, 500},
+		} {
+			ws := run(t, c.spend, c.hard)
+			for _, w := range ws {
+				if !w.Aside {
+					t.Errorf("%d: %s not aside: %+v", i, w.Name, shape(ws))
+				}
+			}
+			if len(ws) != 4 || ws[2].Name != "On-demand" || ws[2].Display != "$9.00" || usedUp(ws) {
+				t.Errorf("%d: windows = %+v", i, shape(ws))
+			}
+		}
+	})
+	t.Run("a personal hard limit is the on-demand limit; the top int32 is none", func(t *testing.T) {
+		ws := run(t, map[string]any{"individualUsed": 500, "limitType": "user"}, map[string]any{"hardLimit": 20})
+		if got := shape(ws)[2]; got != (win{"On-demand", 25, "$5.00 / $20.00", false}) || usedUp(ws) {
+			t.Fatalf("windows = %+v", shape(ws))
+		}
+		if ws := run(t, map[string]any{"individualUsed": 500, "limitType": "user"}, map[string]any{"hardLimit": 2147483647}); usedUp(ws) || !ws[2].Aside {
+			t.Fatalf("unlimited: %+v", shape(ws))
+		}
+		// spent to its limit: the account is used up again
+		ws = run(t, map[string]any{"individualUsed": 2500, "limitType": "user"}, map[string]any{"hardLimit": 20})
+		if got := shape(ws)[2]; got != (win{"On-demand", 100, "$25.00 / $20.00", false}) || !usedUp(ws) {
+			t.Fatalf("spent: %+v", shape(ws))
+		}
+	})
+	t.Run("no on-demand allowed, none set or not known: the pools are the allowance", func(t *testing.T) {
+		want := []win{{"Cursor Models", 100, "", false}, {"Other Models", 100, "", false}, {"Total", 100, "", true}}
+		for i, c := range []struct {
+			spend map[string]any
+			hard  any
+		}{
+			{map[string]any{"individualUsed": 0, "limitType": "user"}, map[string]any{}},
+			{map[string]any{"individualUsed": 0, "limitType": "user"}, map[string]any{"hardLimit": 50, "noUsageBasedAllowed": true}},
+			{map[string]any{"individualLimit": 0, "individualUsed": 0, "limitType": "team"}, map[string]any{"hardLimit": 2000}},
+			{map[string]any{"individualUsed": 0, "limitType": "team"}, map[string]any{"hardLimit": 2000, "noUsageBasedAllowed": true}},
+			{map[string]any{"individualUsed": 0, "limitType": "team"}, 403},
+			{nil, 500},
+		} {
+			ws := run(t, c.spend, c.hard)
+			if got := shape(ws); fmt.Sprint(got) != fmt.Sprint(want) || !usedUp(ws) {
+				t.Errorf("%d: windows = %+v, used up %v", i, got, usedUp(ws))
+			}
+		}
+	})
 }

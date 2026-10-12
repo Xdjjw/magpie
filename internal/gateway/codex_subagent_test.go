@@ -165,12 +165,11 @@ func TestCodexSubagentModelLeavesOtherRequests(t *testing.T) {
 // The model set no longer served by a ChatGPT account in magpie (its
 // account signed out, or the model gone from its plan): a subagent goes on
 // the model its lead asked for, and the trace says why it wasn't put on
-// the one set. Another provider's model can't be set at all.
+// the one set. One of Codex's own bare names can't be set at all.
 func TestCodexSubagentModelNotServedKeepsTheAsked(t *testing.T) {
 	up := codexSubagentSetup(t)
-	relayOn(t, "third")
-	if err := provider.SetCodexSubagentModel("third/gpt-6-astra"); err == nil || !strings.Contains(err.Error(), "sealed for ChatGPT accounts") {
-		t.Fatalf("set another provider's model: %v", err)
+	if err := provider.SetCodexSubagentModel("gpt-6-astra"); err == nil || !strings.Contains(err.Error(), "provider/model") {
+		t.Fatalf("set a bare name: %v", err)
 	}
 	// kept as set, as a backup put back on a computer whose accounts
 	// differ sets it

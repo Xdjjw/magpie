@@ -51,7 +51,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			return []Result{{Protocol: proto, Model: model, Error: "no key is on for this endpoint"}}
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		return []Result{probe(ctx, q, proto, url, q.Prepare([]byte(asClient(client, proto, body))), model, testWait)}
+		return []Result{probe(ctx, q, proto, url, q.tested(asClient(client, proto, body)), model, testWait)}
 	}
 	if p.isClaudeAccount() {
 		return []Result{p.testClaude(ctx, p.testModel(p, Anthropic))}
@@ -68,7 +68,7 @@ func (p Provider) Test(ctx context.Context) []Result {
 			continue
 		}
 		url, body := tiny(q, proto, UpstreamName(p, model))
-		out = append(out, probe(ctx, q, proto, url, q.Prepare([]byte(body)), model, testWait))
+		out = append(out, probe(ctx, q, proto, url, q.tested(body), model, testWait))
 	}
 	if p.IsRemoteMagpie() {
 		// The model list already checked its key and named its decisions.
@@ -128,7 +128,8 @@ func clineProbe(body string) string {
 // through its agent's own API (Cursor, Devin, Kiro, Zed, Qoder, a Google
 // sign-in), which the gateway translates every request for, so a probe
 // has no endpoint to go to. A Google sign-in's are asked through the
-// gateway's translator (testsTranslated).
+// gateway's translator (testsTranslated). Vertex AI's generateContent is
+// asked as it is.
 func (p Provider) ModelTest() string {
 	if p.DecideOnly() {
 		if p.AsksDecideModels() {
@@ -136,7 +137,7 @@ func (p Provider) ModelTest() string {
 		}
 		return "decide"
 	}
-	if p.isClaudeAccount() || p.testsTranslated() {
+	if p.isClaudeAccount() || p.testsTranslated() || p.IsVertex() {
 		return ""
 	}
 	for _, pr := range p.Speaks() {
@@ -171,6 +172,9 @@ func tinyBody(q Provider, proto Protocol, model string) (url, body string) {
 	case Anthropic:
 		return q.Anthropic + "/v1/messages", fmt.Sprintf(`{"model":%q,"max_tokens":16,"messages":[{"role":"user","content":"hi"}]}`, model)
 	case Gemini:
+		if q.IsVertex() {
+			return vertexTest(q, model)
+		}
 		if q.FactoryGemini() {
 			// Factory's generate route. droid sends no stream field.
 			return q.Base(Gemini) + "/generate", fmt.Sprintf(`{"model":%q,"contents":[{"role":"user","parts":[{"text":"hi"}]}]}`, model)
@@ -308,7 +312,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 		r := probe(ctx, q, proto, url, []byte(body), model, drawWait)
 		if !r.OK && (r.Status == 404 || r.Status == 405) {
 			url, body := tiny(q, proto, model)
-			if c := probe(ctx, q, proto, url, q.Prepare([]byte(body)), model, testWait); c.OK {
+			if c := probe(ctx, q, proto, url, q.tested(body), model, testWait); c.OK {
 				return c
 			}
 		}
@@ -318,7 +322,7 @@ func (p Provider) testOne(ctx context.Context, model string) Result {
 	if client != "" {
 		body = asClient(client, proto, body)
 	}
-	return probe(ctx, q, proto, url, q.Prepare([]byte(body)), model, testWait)
+	return probe(ctx, q, proto, url, q.tested(body), model, testWait)
 }
 
 // keyFor is p using the first key on that works with proto: one made for
@@ -386,7 +390,8 @@ func isClaude(id string) bool {
 // Azure OpenAI takes a key in api-key alone: a Bearer there is an Entra ID
 // token, and the key sent as one is turned away.
 func AuthHeaders(p Provider, proto Protocol) map[string]string {
-	if p.Key == "" {
+	// Vertex AI's is the Google token Sign sets, which a key would replace
+	if p.Key == "" || p.IsVertex() {
 		return map[string]string{}
 	}
 	if p.IsAzure() {
@@ -404,6 +409,13 @@ func AuthHeaders(p Provider, proto Protocol) map[string]string {
 	if proto == Anthropic {
 		if strings.HasSuffix(p.Host(), "anthropic.com") || p.IsBedrock() {
 			return map[string]string{"x-api-key": p.Key}
+		}
+		// a vendor that takes one alone (AuthHeader, RetryOneAuth)
+		switch p.AuthHeader {
+		case AuthXAPIKey:
+			return map[string]string{"x-api-key": p.Key}
+		case AuthBearer:
+			return map[string]string{"Authorization": "Bearer " + p.Key}
 		}
 		return map[string]string{"x-api-key": p.Key, "Authorization": "Bearer " + p.Key}
 	}
@@ -445,6 +457,10 @@ func probe(ctx context.Context, p Provider, proto Protocol, url string, body []b
 	}
 	start := time.Now()
 	res, err := p.Do(http.DefaultClient, req)
+	if err == nil && proto == Anthropic {
+		// a vendor that takes one of the two key headers alone
+		res, err = RetryOneAuth(p, req, res, func(r *http.Request) (*http.Response, error) { return p.Do(http.DefaultClient, r) })
+	}
 	r.Millis = time.Since(start).Milliseconds()
 	if err != nil {
 		r.Error = strings.TrimPrefix(err.Error(), "Post \""+url+"\": ")

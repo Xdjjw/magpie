@@ -14,14 +14,11 @@ var viasCache struct {
 }
 
 func cachedVias(since time.Time) map[string][]Via {
-	snapshot := logSnapshotFor(true)
+	snapshot := readLogSnapshot()
 	viasCache.Lock()
 	defer viasCache.Unlock()
 	value := viasCache.value
 	if value == nil || viasCache.version != snapshot.version || !viasCache.since.Equal(since) {
-		if snapshot.uncached && len(snapshot.blocks) == 0 {
-			snapshot = readLogSnapshot()
-		}
 		value = buildVias(snapshot, since)
 		if snapshot.info != nil && snapshot.off == snapshot.info.Size() {
 			viasCache.version, viasCache.since, viasCache.value = snapshot.version, since, value

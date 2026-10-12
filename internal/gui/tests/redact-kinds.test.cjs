@@ -10,6 +10,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const ids = ["ssn", "passport", "iban", "birthday", "mac", "serial", "home", "userhost", "ip", "bucket"];
@@ -64,8 +65,10 @@ async function open(engine, lang, width, personal, saved) {
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
   await page.route("**/*", serve(lang, personal, saved));
+  await watchSettingsReads(page);
   await page.goto("http://magpie.test/?view=settings&tab=privacy");
   await page.locator("#redactList .row").first().waitFor();
+  await settingsDrawn(page); // the rows found are the ones that stay (#1653)
   return { browser, page, errors };
 }
 

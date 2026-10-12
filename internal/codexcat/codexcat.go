@@ -5,10 +5,12 @@ package codexcat
 
 import (
 	"bytes"
+	"cmp"
 	"crypto/sha256"
 	_ "embed"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -181,9 +183,13 @@ func Entries(ms []catalog.Model, after int) []any {
 		// or a group one is in, gets the tier Codex's own catalog gives its
 		// GPT models
 		if slug, ok := strings.CutPrefix(m.ID, "codex/"); m.Fast || ok && strings.HasPrefix(slug, "gpt-") {
-			e.Tiers = append(e.Tiers, tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"})
+			e.Tiers = append(e.Tiers, fastTier)
 		} else if m.OwnTier {
 			e.Tiers = ownTiers(own, m)
+		} else if len(m.Tiers) > 0 {
+			// another magpie's model: the tiers it offers its own Codex
+			// (#1234)
+			e.Tiers = namedTiers(own, m.Tiers)
 		}
 		// an OpenAI model: a ChatGPT account's (codex/), or a group one is
 		// in (Fast, see provider.codexListed)
@@ -365,6 +371,70 @@ func ownTiers(own map[string]map[string]any, m catalog.Model) []tier {
 		return []tier{{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"}}
 	}
 	return []tier{}
+}
+
+// fastTier is Fast as Codex's own catalog writes it on its GPT models.
+var fastTier = tier{ID: "priority", Name: "Fast", Description: "1.5x speed, increased usage"}
+
+// namedTiers are the tiers ids name, each as Codex's own catalog writes it
+// on any of its models, else by its id: Fast's "priority" as Codex names it.
+func namedTiers(own map[string]map[string]any, ids []string) []tier {
+	ts := []tier{}
+	for _, id := range ids {
+		t := tier{ID: id, Name: id}
+		if id == fastTier.ID {
+			t = fastTier
+		}
+	found:
+		for _, slug := range slices.Sorted(maps.Keys(own)) {
+			raw, _ := own[slug]["service_tiers"].([]any)
+			for _, r := range raw {
+				o, _ := r.(map[string]any)
+				if o["id"] == id {
+					t.Name, _ = o["name"].(string)
+					t.Description, _ = o["description"].(string)
+					t.Name = cmp.Or(t.Name, id)
+					break found
+				}
+			}
+		}
+		ts = append(ts, t)
+	}
+	return ts
+}
+
+// ServiceTiers are the service tiers Entries offers Codex on each of ms,
+// by id, where it offers any: what this magpie's list tells another magpie
+// that has it as its provider, so that one's Codex is offered them too
+// (#1234).
+func ServiceTiers(ms []catalog.Model) map[string][]tier {
+	out := map[string][]tier{}
+	for _, e := range Entries(ms, 0) {
+		switch e := e.(type) {
+		case *model:
+			if len(e.Tiers) > 0 {
+				out[e.Slug] = e.Tiers
+			}
+		case map[string]any:
+			slug, _ := e["slug"].(string)
+			raw, _ := e["service_tiers"].([]any)
+			var ts []tier
+			for _, r := range raw {
+				o, _ := r.(map[string]any)
+				id, _ := o["id"].(string)
+				if id == "" {
+					continue
+				}
+				name, _ := o["name"].(string)
+				desc, _ := o["description"].(string)
+				ts = append(ts, tier{ID: id, Name: name, Description: desc})
+			}
+			if slug != "" && len(ts) > 0 {
+				out[slug] = ts
+			}
+		}
+	}
+	return out
 }
 
 // Order ranks entries — Codex's own, as the backend gives them, and

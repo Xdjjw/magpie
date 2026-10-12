@@ -28,6 +28,7 @@ import (
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/fonts"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/redact"
 	"github.com/yetone/magpie/internal/steady"
 )
@@ -184,6 +185,13 @@ type Settings struct {
 	// is stuck in a loop of the same few lines (#1359). Off, as by
 	// default, the gateway ends such a reply with an error.
 	NoLoopGuard bool `json:"noLoopGuard,omitempty"`
+	// NoAccountDiscovery leaves every agent's sign-in unread (#1535,
+	// MaxHaiCom): no credential file, Keychain item or agent CLI is asked
+	// who is signed in, and no subscription is offered; API-key providers
+	// work as before (see AccountDiscoveryOff, provider/discovery.go). Off,
+	// as by default, subscriptions are found as ever. This computer's own
+	// (KeepOwn), set only by its own switch or `magpie accounts discovery`.
+	NoAccountDiscovery bool `json:"noAccountDiscovery,omitempty"`
 	// NoStats stops the one event a day that counts magpie's users (see
 	// internal/stats).
 	NoStats bool `json:"noStats,omitempty"`
@@ -222,8 +230,8 @@ type Settings struct {
 	// Searcher is the provider that searches the web for a model that
 	// can't: "<provider>" with the small model magpie picks of it,
 	// "<provider>/<model>", or empty for the one magpie picks
-	// (gateway.searcher). One that is gone, off or can't search gives way
-	// to magpie's pick.
+	// (gateway.searcher). "off" allows only configured search APIs.
+	// One that is gone, off or can't search gives way to magpie's pick.
 	Searcher string `json:"searcher,omitempty"`
 	// SearchFirst is what a model that can't search the web is searched
 	// for with first, when both a provider and a search API can (#928):
@@ -274,6 +282,16 @@ type Settings struct {
 	// QuotaLeft shows a subscription's windows by how much of each is left,
 	// not used: the Usage page, the tray panel and the menu bar alike.
 	QuotaLeft bool `json:"quotaLeft,omitempty"`
+	// QuotaReads is when magpie reads subscriptions' allowances and keys'
+	// balances from their vendors (#1518, RooobinYe): "" whenever it needs
+	// them (the Usage page and tray, routing, alerts, the switch to an
+	// account with room), "asked" only when the user asks — the Usage page
+	// opened or refreshed, a card's refresh, `magpie quota`/`accounts`.
+	// Otherwise the readings kept from the last time stand, marked as of
+	// then; an account the vendor turned away for its quota is still read.
+	// This computer's own (KeepOwn): magpie at login comes up before the
+	// proxy app, and its reads went out direct.
+	QuotaReads string `json:"quotaReads,omitempty"`
 	// UsageAlert is how much of a subscription's or plan's window, in
 	// percent, is used when magpie says so with a notification (#368):
 	// once for each time the window runs, for every window routing counts
@@ -288,6 +306,11 @@ type Settings struct {
 	// it left before it renews, a reset credit unspent before it runs out;
 	// once each. 0 is off.
 	ResetReminder int `json:"resetReminder,omitempty"`
+	// TurnDoneAlert is how many seconds an agent's turn runs, from the
+	// user's prompt to its last reply, before magpie says it is done with a
+	// notification (itieniu on X): a long task set going while the user
+	// works elsewhere. Only turns the app's own gateway serves; 0 is off.
+	TurnDoneAlert int `json:"turnDoneAlert,omitempty"`
 	// PlainNames has the model lists magpie gives agents name each model
 	// by its name alone, without its provider's or "routing group" after it
 	// (#335) — but for two in one list that would read the same, which keep
@@ -341,6 +364,10 @@ type Settings struct {
 	// "[1m]", and adds none to one whose id has it. Off, as before, it shows
 	// both, the plain one compacting at Claude Code's 200K.
 	DesktopLongest bool `json:"desktopLongest,omitempty"`
+	// GuideHidden: the user put away the Agents page's Get started card
+	// (wangye1644294 on X) before finishing it. Kept here, not in the
+	// page's storage, so the panel, the window and a reload agree.
+	GuideHidden bool `json:"guideHidden,omitempty"`
 	// CompactAt is the window told for a longer one when FullContext is
 	// off, in tokens: 0 is WorkingWindow (#876: 272K was the only one).
 	// A provider's or a model's own (ModelCompacts) comes before it.
@@ -376,6 +403,11 @@ type Settings struct {
 	// panel shows, nothing more: routing, caps, the Usage page and the menu
 	// bar's cells still have them. The panel's order is UsageOrder.
 	PanelUsageHidden []string `json:"panelUsageHidden,omitempty"`
+	// UsageAgentsHidden are the clients, by the id the ledger records them
+	// under ("curl", "Go-http-client", an agent's id), that the Usage page's
+	// Agents list leaves out (ikunbots on X). It is that list's only: the
+	// ledger keeps their calls, and the totals and the chart count them.
+	UsageAgentsHidden []string `json:"usageAgentsHidden,omitempty"`
 	// Visible narrows the models an agent is shown, by agent id: the
 	// families (the tag a provider or group is given), provider ids and
 	// group ids its lists hold. An agent it doesn't name is shown them all.
@@ -390,6 +422,11 @@ type Settings struct {
 	// or an old one, is not shown until it is ticked. HiddenModels is not
 	// read for such an agent. An agent named with no entries is shown none.
 	PickedModels map[string][]string `json:"pickedModels,omitempty"`
+	// OwnModelsHidden are the agents, by id, whose pickers leave out the
+	// models the agent reaches on its own, not through magpie (DeepSeek
+	// Harness's own DeepSeek models, #1642): only magpie's are offered, and
+	// one the agent is set to stays.
+	OwnModelsHidden []string `json:"ownModelsHidden,omitempty"`
 	// AgentEfforts are the reasoning efforts the gateway asks for on an
 	// agent's requests, by agent id, for an agent whose own config can't
 	// carry one (Cursor Private Inference, #1003): one of the levels in
@@ -751,7 +788,7 @@ func (s Settings) Compact() int {
 
 // KeepOwn puts back cur's settings that are this computer's own, which a
 // sync or a restored backup never brings from another: the window's size
-// and whether it was maximised, the proxy, the gateway's port, the Dock, gateway mode, whether WSL is looked in, and what the menu bar or tray shows beside magpie's
+// and whether it was maximised, the proxy, the gateway's port, the Dock, gateway mode, whether WSL is looked in, whether agents' sign-ins are read, when allowances are read, and what the menu bar or tray shows beside magpie's
 // icon (yoooo on Discord: usage turned off on a Mac came back from a
 // Windows box that shows it).
 func (s *Settings) KeepOwn(cur Settings) {
@@ -762,6 +799,8 @@ func (s *Settings) KeepOwn(cur Settings) {
 	s.TrayUsages, s.TrayUsage, s.TrayUsageEvery, s.TrayNoLogos, s.TrayNoBird = cur.TrayUsages, cur.TrayUsage, cur.TrayUsageEvery, cur.TrayNoLogos, cur.TrayNoBird
 	s.GatewayMode = cur.GatewayMode
 	s.NoWSLAgents = cur.NoWSLAgents
+	s.QuotaReads = cur.QuotaReads
+	s.NoAccountDiscovery = cur.NoAccountDiscovery
 }
 
 // RenamePerModel moves what the user said of a provider's models to the id
@@ -830,9 +869,22 @@ func load() Settings {
 	// the settings for every model of every agent (hundreds of reads, a
 	// fifth of the Agents page's wait)
 	if b, err := filememo.Read("settings", Path(), func(b []byte) ([]byte, error) { return b, nil }); err == nil {
-		_ = json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s)
+		// parsed once: this runs for every model of every agent
+		if err := json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s); err != nil {
+			// one left all zero by a crash (#1505) is its last good generation
+			if bak, err := lastgood.Fallback(Path(), b, validSettings); err == nil {
+				s = Settings{}
+				_ = json.Unmarshal(bytes.TrimPrefix(bak, []byte("\xef\xbb\xbf")), &s)
+			}
+		}
 	}
 	return s.normal()
+}
+
+// validSettings is settings.json's contents read as Settings.
+func validSettings(b []byte) bool {
+	var s Settings
+	return json.Unmarshal(bytes.TrimPrefix(b, []byte("\xef\xbb\xbf")), &s) == nil
 }
 
 // CheckProxy says whether p is a proxy setting magpie takes: "" (follow),
@@ -964,8 +1016,14 @@ func save(s Settings, recording bool) error {
 	if s.ResetReminder < 0 || s.ResetReminder > 168 {
 		return fmt.Errorf("a reset reminder is from 1 to 168 hours before, or 0 for off, not %d", s.ResetReminder)
 	}
+	if s.TurnDoneAlert < 0 || s.TurnDoneAlert > 86400 {
+		return fmt.Errorf("a turn is said done after 1 to 86400 seconds, or 0 for off, not %d", s.TurnDoneAlert)
+	}
 	if math.IsNaN(s.BalanceAlert) || math.IsInf(s.BalanceAlert, 0) || s.BalanceAlert < 0 {
 		return fmt.Errorf("a balance alert is at an amount of 0 or more (0 for off), not %v", s.BalanceAlert)
+	}
+	if s.QuotaReads != "" && s.QuotaReads != "asked" {
+		return fmt.Errorf(`allowances are read "" (whenever magpie needs them) or "asked" (only when asked), not %q`, s.QuotaReads)
 	}
 	if err := CheckPort(s.Port); err != nil {
 		return err
@@ -1016,6 +1074,7 @@ func save(s Settings, recording bool) error {
 	s.AgentOrder, s.AgentsHidden, s.AgentsShown = ids(s.AgentOrder), ids(s.AgentsHidden), ids(s.AgentsShown)
 	s.UsageOrder = ids(s.UsageOrder)
 	s.PanelUsageHidden = ids(s.PanelUsageHidden)
+	s.UsageAgentsHidden = ids(s.UsageAgentsHidden)
 	s.TrayUsages = ids(s.TrayUsages)
 	for i, u := range s.CodexAutoReset {
 		s.CodexAutoReset[i] = strings.ToLower(u)
@@ -1037,7 +1096,14 @@ func save(s Settings, recording bool) error {
 		if len(bytes.TrimSpace(b)) != 0 {
 			var stored Settings
 			if err := json.Unmarshal(b, &stored); err != nil {
-				return fmt.Errorf("could not read settings at %s; repair or move that file aside before saving: %w", Path(), err)
+				// a file a crash left all zero (#1505) is saved over once it
+				// is kept aside, when Load had its last good generation
+				bak, ferr := lastgood.Fallback(Path(), b, validSettings)
+				if ferr != nil {
+					return fmt.Errorf("could not read settings at %s; repair or move that file aside before saving: %w", Path(), err)
+				}
+				stored = Settings{}
+				_ = json.Unmarshal(bytes.TrimPrefix(bak, []byte("\xef\xbb\xbf")), &stored)
 			}
 			consent = stored.GatewayConversations
 		}
@@ -1046,6 +1112,11 @@ func save(s Settings, recording bool) error {
 	}
 	if !recording {
 		s.GatewayConversations = consent
+	}
+	// the file there now is kept first, before anything below can make
+	// one: as the last good generation, or aside when it doesn't read
+	if err := lastgood.Keep(Path(), validSettings, 0o600); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(Dir(), 0o755); err != nil {
 		return err

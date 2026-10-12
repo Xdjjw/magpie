@@ -6,7 +6,8 @@
 // leanest says so and has no button; one a variable comes before is told
 // of and has none either; one magpie put in has Undo. Drawn before the
 // gateway has read anything, in Chromium and WebKit, at a phone's width and
-// a desk's, in every language, none of it wider than the page.
+// a desk's, in every language, none of it wider than the page. Each row
+// draws what every setting would have spent past the advice.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
 const path = require("node:path");
@@ -107,7 +108,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.match(await rows.nth(0).locator(".ctx-tune-val.best b").innerText(), /160K/);
         assert.match(await rows.nth(2).locator(".ctx-tune-src").innerText(), /CLAUDE_CODE_PROMPT_CACHE_TTL/);
         assert.equal(await rows.nth(1).locator(".ctx-tune-val.best").count(), 0, "a window already the leanest shows no other");
-        assert.equal(await page.locator(".ctx-tune-curve svg").first().isVisible(), width > 520);
+        // the curve is what each setting spends past the advice: the window
+        // set now says how much more, the advice sits on the level
+        assert.equal(await rows.nth(0).locator(".ctx-tc-dot.now .ctx-tc-tag").innerText(), "+42%");
+        assert.equal(await rows.nth(0).locator(".ctx-tc-dot.best").evaluate((e) => e.style.top), "84%");
+        assert.equal(await rows.nth(2).locator(".ctx-tc-x span").count(), 2, "a cache lifetime's two choices");
+        assert.ok(await rows.nth(0).locator(".ctx-tune-chart svg").isVisible());
 
         // nothing wider than the page, nor than its card
         const over = await page.evaluate(() => {
@@ -135,6 +141,49 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await ctx.close();
       });
     }
+    assert.deepEqual(errors, []);
+  });
+}
+
+// each curve draws itself once: the routing history answering after the
+// advice, and a setting put in, redraw the pane, and what was on it already
+// holds still
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  test(`${engine}: the advice's curves play their entrance once`, async (t) => {
+    const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+    t.after(() => browser.close());
+    const ctx = await browser.newContext({ viewport: { width: 1100, height: 900 } });
+    await ctx.addInitScript(() => {
+      try { localStorage.setItem("magpie.usageTab", "context"); } catch {}
+      window.drawn = 0;
+      document.addEventListener("animationstart", (e) => { if (e.animationName === "ctx-draw") window.drawn++; }, true);
+    });
+    const page = await ctx.newPage();
+    page.setDefaultTimeout(5000);
+    const errors = [];
+    page.on("pageerror", (e) => errors.push(e.message));
+    const posts = [];
+    const base = serve("en", posts);
+    let tuned;
+    const answered = new Promise((res) => { tuned = res; });
+    await page.route("**/*", async (r) => {
+      const p = new URL(r.request().url()).pathname;
+      // the history comes after the advice is drawn
+      if (p === "/api/context") await answered.then(() => new Promise((res) => setTimeout(res, 300)));
+      await base(r);
+      if (p === "/api/tune") tuned();
+    });
+    await page.goto("http://magpie.test/?view=usage");
+    await page.locator(".ctx-tune-chart svg").first().waitFor();
+    const charts = await page.locator(".ctx-tune-chart svg").count();
+    assert.ok(charts > 0);
+    await page.locator(".ctx-none").waitFor(); // the history has answered and the pane is redrawn
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.drawn), charts, "after the history answered");
+    await page.locator(".ctx-tune-row button.primary").first().evaluate((b) => b.click());
+    await page.locator(".ctx-tune-row.done").first().waitFor();
+    await page.waitForTimeout(300);
+    assert.equal(await page.evaluate(() => window.drawn), charts, "after a setting was put in");
     assert.deepEqual(errors, []);
   });
 }

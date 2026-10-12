@@ -50,7 +50,7 @@ for (const engine of ["chromium", "webkit"]) {
         });
         await page.goto("http://magpie.test/");
         await page.locator('[data-view="usage"]').first().click();
-        await page.locator("#usageTab .opt").nth(1).click();
+        await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         await page.locator(".led-row").first().waitFor();
         const cells = page.locator(".led-row .where");
         const localName = lang === "zh" ? "本地会话" : "Local session";
@@ -110,6 +110,13 @@ for (const engine of ["chromium", "webkit"]) {
           await page.locator(".led-wrap").screenshot({path:process.env.MAGPIE_STYLE_SHOTS+"/badges-"+theme+".png"});
           await page.setViewportSize({width:1200,height:900});
         }
+        // beside the sidebar the cards above wrap and the row sits under the
+        // footer, where WebKit's click leaves it: the reader's wheel brings
+        // it up first
+        const rowTop = (await page.locator(".led-row").nth(2).boundingBox()).y;
+        await page.mouse.move(700, 400);
+        await page.mouse.wheel(0, rowTop - 400);
+        await page.waitForFunction((y) => document.querySelectorAll(".led-row")[2].getBoundingClientRect().top < y - 100, rowTop);
         await page.locator(".led-row").nth(2).click();
         const detail = page.locator(".led-detail");
         assert((await detail.textContent()).includes("relay"),"raw provider ID remains available in details");

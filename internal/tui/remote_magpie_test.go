@@ -91,6 +91,24 @@ func TestTUIAddsARemoteMagpieWithItsAddress(t *testing.T) {
 // the app editor's Fetch models does (akic404 on Discord: added from the TUI,
 // a remote magpie had 0 models, with nothing said and no way to fetch
 // them).
+// The add list says what Remote magpie is, another computer's magpie, and
+// doesn't file it under the relays (Avalon on Discord: "供应商添加中没有
+// Remote magpie 的选项").
+func TestTUIAddListSaysRemoteMagpieIsAnotherComputers(t *testing.T) {
+	home(t)
+	m := press(t, model{w: 120, h: 40}, "2", "a")
+	for _, o := range m.pk.items {
+		if o.Value != provider.RemoteMagpiePreset {
+			continue
+		}
+		if o.Note != "Remote magpie · another computer's magpie, shared on its network" {
+			t.Fatalf("Remote magpie is listed as %q", o.Note)
+		}
+		return
+	}
+	t.Fatal("Remote magpie is not in the add list")
+}
+
 func TestTUIFetchesAProvidersModels(t *testing.T) {
 	home(t)
 	var mu sync.Mutex

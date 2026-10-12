@@ -145,7 +145,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await page.route("**/*", server(lang, theme, asked));
       await page.goto("http://magpie.test/");
       await page.locator('nav [data-view="usage"], [data-view="usage"]').first().click();
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator("#ledWrap .led tbody tr").first().waitFor();
       return { page, errors };
     };
@@ -219,7 +219,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await t.test(lang, async () => {
         const asked = [];
         const { page, errors } = await open(lang, "light", asked);
-        assert.deepEqual(await page.locator("#usageTab .opt").allTextContents(), w.tabs);
+        assert.deepEqual(await page.locator(":is(#usageTab .opt, .nav-s):visible").allTextContents(), w.tabs);
         assert.equal(asked.at(-1).get("period"), "today");
         assert.equal(asked.at(-1).get("offset"), "0");
         assert.deepEqual(await page.locator(".led thead th").allTextContents(), w.cols);
@@ -446,7 +446,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (shots) await page.screenshot({ path: path.join(shots, `${engine}-usage-ledger-${lang}-narrow-dark.png`) });
         // nor with the tab bar's other tabs, now three
         for (const i of [0, 2]) {
-          await page.locator("#usageTab .opt").nth(i).click();
+          await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(i).click();
           await page.waitForTimeout(300);
           const [wider, wide] = await sideways();
           assert(!wider && !wide.length, `tab ${i}: the page does not scroll sideways: ${wide}`);

@@ -23,12 +23,13 @@ const (
 	logStampSettle = time.Second
 )
 
-// Raw and priced chunks share the request cache budget. Oversized histories
-// remain queryable but their raw blocks are rebuilt instead of retained.
+// The blocks are always kept, however long the history: they are the index
+// every reader shares, about 80 bytes a call compressed. Dropping them over a
+// size budget (#563) made each read parse the whole file again, 6 s of CPU
+// for 750k calls, on every refresh and filter of the Requests page.
 
 type logSnapshot struct {
 	bytes        int64
-	uncached     bool
 	settled      bool
 	path         string
 	info         os.FileInfo
@@ -45,6 +46,7 @@ var logIndex struct {
 	sync.Mutex
 	snapshot *logSnapshot
 	version  uint64
+	reads    int // how many times the file was opened to be parsed, for the tests
 }
 
 var logIndexNow = time.Now
@@ -57,11 +59,7 @@ var logAppends struct {
 	base, last os.FileInfo
 }
 
-func readLogSnapshot() *logSnapshot { return logSnapshotFor(false) }
-
-// Metadata-only callers can use cached results without rebuilding a history
-// whose blocks do not fit the cache budget.
-func logSnapshotFor(metadataOnly bool) *logSnapshot {
+func readLogSnapshot() *logSnapshot {
 	logIndex.Lock()
 	defer logIndex.Unlock()
 	path := Path()
@@ -83,7 +81,7 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 			unchanged = old.settled && settled
 		}
 	}
-	if unchanged && (!old.uncached || metadataOnly) {
+	if unchanged {
 		return old
 	}
 	if !unchanged {
@@ -103,11 +101,12 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 	// The parse is the fingerprint: it hashes the lines it reads, continuing
 	// the old snapshot's hash when it continues its blocks.
 	sum := sha256.New()
-	if continued && !old.uncached && resumeLogHash(sum, old.digest) {
+	if continued && resumeLogHash(sum, old.digest) {
 		next.off, next.first = old.off, old.first
 		next.blocks = slices.Clone(old.blocks)
 		next.keyProviders = maps.Clone(old.keyProviders)
 	}
+	logIndex.reads++
 	f, err := os.Open(path)
 	if err != nil {
 		return next
@@ -117,9 +116,13 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 		return next
 	}
 	var tail *rowChunk
+	routes := routeRows{}
 	if n := len(next.blocks); n > 0 && next.blocks[n-1].Count < logBlockRows {
 		tail = next.blocks[n-1].writable()
 		next.blocks = next.blocks[:n-1]
+		for i := range tail.Rows {
+			routes.seen(tail, i)
+		}
 	}
 	rd := bufio.NewReaderSize(io.LimitReader(f, info.Size()-next.off), 64<<10)
 	for next.off < info.Size() {
@@ -136,7 +139,9 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 		if tail == nil {
 			tail = &rowChunk{}
 		}
+		routes.handedOn(tail, &r)
 		tail.add(Row{Record: r}, "", next.off, false)
+		routes.seen(tail, len(tail.Rows)-1)
 		if !r.IsRejected() && (next.first.IsZero() || r.Time.Before(next.first)) {
 			next.first = r.Time
 		}
@@ -146,6 +151,7 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 		if len(tail.Rows) == logBlockRows {
 			next.blocks = append(next.blocks, tail.freeze())
 			tail = nil
+			clear(routes)
 		}
 	}
 	if tail != nil {
@@ -168,15 +174,39 @@ func logSnapshotFor(metadataOnly bool) *logSnapshot {
 	for _, c := range next.blocks {
 		next.bytes += c.Bytes
 	}
-	if next.bytes > requestCacheBytes {
-		next.uncached = true
-		kept := *next
-		kept.blocks = nil
-		logIndex.snapshot = &kept
-	} else {
-		logIndex.snapshot = next
-	}
+	logIndex.snapshot = next
 	return next
+}
+
+// routeRows are the rows of the block being written, by their route: where
+// each route's last row is.
+type routeRows map[int64]int
+
+func (o routeRows) seen(c *rowChunk, i int) {
+	if id := c.Rows[i].RouteID; id != 0 {
+		o[id] = i
+	}
+}
+
+// handedOn tells, of a log written before Record.HandedOn was, the row of
+// a try that failed and handed its request on: a failed row of r's route
+// before r, whose outcome r is. r then ends a request with a try before
+// it. Only rows in the same block are told, which is where the gateway's
+// rows of one request land but for one in 512 at a block's edge.
+func (o routeRows) handedOn(c *rowChunk, r *Record) {
+	if r.RouteID == 0 {
+		return
+	}
+	j, ok := o[r.RouteID]
+	if !ok {
+		return
+	}
+	p := &c.Rows[j]
+	if p.Flags&rowHandedOn != 0 || p.Flags&4 != 0 || !(p.Status >= 400 || p.Text[rowError] != 0) {
+		return
+	}
+	p.Flags |= rowHandedOn
+	r.Tries = max(r.Tries, 2)
 }
 
 func (s *logSnapshot) visit(since time.Time, fn func(Record)) {
@@ -188,7 +218,8 @@ func (s *logSnapshot) visit(since time.Time, fn func(Record)) {
 		if c == nil {
 			continue
 		}
-		for i, p := range c.Rows {
+		for i := range c.Rows {
+			p := &c.Rows[i]
 			if !p.Time.Before(since) {
 				fn(c.row(i).Record)
 			}

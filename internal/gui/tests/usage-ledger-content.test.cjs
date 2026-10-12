@@ -108,7 +108,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await p.route("**/*", server(lang, asked, refreshed));
         await p.goto("http://magpie.test/");
         await p.locator('[data-view="usage"]').first().click();
-        await p.locator("#usageTab .opt").nth(1).click();
+        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         await p.locator("#ledWrap .led tbody tr").first().waitFor();
         const rows = p.locator(".led tbody tr.led-row");
 
@@ -218,7 +218,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await p.route("**/*", server("en", asked, refreshed));
       await p.goto("http://magpie.test/");
       await p.locator('[data-view="usage"]').first().click();
-      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await p.locator("#ledWrap .led tbody tr").first().waitFor();
       await reader.click(p, p.locator(".led tbody tr.led-row").nth(0));
       await p.locator(".led-cx .cx-sec").first().waitFor();

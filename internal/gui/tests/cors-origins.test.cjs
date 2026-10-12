@@ -12,6 +12,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -98,7 +99,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const errors = [];
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, posts));
+        await watchSettingsReads(page);
         await page.goto("http://127.0.0.1:4999/?view=settings&tab=network");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         const box = page.locator("#corsList");
         await box.locator(".rule-row").waitFor();
         const tr = (s) => page.evaluate((s) => t(s), s);

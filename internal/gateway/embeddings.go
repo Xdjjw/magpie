@@ -68,7 +68,7 @@ func (s *Server) retrieve(path, operation string) http.HandlerFunc {
 		if isGroup {
 			// a model a pause rule holds for now is left out, as for a chat
 			var paused []provider.Paused
-			if ms, paused = provider.PausedOut(g.Live(), ms, agentOf(r), ruleClock()); len(ms) == 0 && len(paused) > 0 {
+			if ms, paused = provider.PausedOut(g.Live(), ms, agentOf(r), "", ruleClock()); len(ms) == 0 && len(paused) > 0 {
 				msg := pausedError(asked, paused)
 				call.Status, call.Error = 503, msg
 				writeError(w, provider.Chat, 503, msg)
@@ -88,6 +88,18 @@ func (s *Server) retrieve(path, operation string) http.HandlerFunc {
 			if cs, _ := s.planGroup(g.Live(), ms, provider.Chat); len(cs) > 0 {
 				tries = cs
 			}
+		} else {
+			// a model of one provider goes over its keys or accounts as a
+			// chat does, never on one whose own list of models leaves it
+			// out (#1657)
+			cs, code, msg := s.onKeys(r, p, model, asked)
+			if code != 0 {
+				call.Status, call.Error = code, msg
+				writeError(w, provider.Chat, code, msg)
+				s.record(call)
+				return
+			}
+			tries = cs
 		}
 		// the accounts or keys the calling key may not use are left out of
 		// the tries too (#905): a group's members through it no less
@@ -101,6 +113,7 @@ func (s *Server) retrieve(path, operation string) http.HandlerFunc {
 				return
 			}
 		}
+		tries = probeOne(tries) // of those resting, only the one back soonest (#1799)
 		var skipped []string
 		// masked once, as the settings say: a document a reranker gives
 		// back has its secrets again

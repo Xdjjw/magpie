@@ -93,11 +93,13 @@ func CachedCards(now time.Time) []SubscriptionQuota {
 		}
 	}
 	plans, balances = withKeyReadings(plans, ps, "plan"), withKeyReadings(balances, ps, "balance")
+	plans, subs = seatCards(plans, subs)
+	subs = withAccountNames(subs)
 	out := []SubscriptionQuota{}
 	for _, g := range []struct {
 		kind string
 		qs   []SubscriptionQuota
-	}{{"subscription", subs}, {"plan", notShown(plans, subs)}, {"balance", balances}} {
+	}{{"subscription", subs}, {"plan", plans}, {"balance", balances}} {
 		for _, q := range g.qs {
 			if q.From == "" {
 				q.Kind = g.kind
@@ -114,7 +116,7 @@ func ReadAllCards(ctx context.Context) {
 	AskUsage()
 	ForgetBalances()
 	forgetPlanQuotas()
-	Quotas(ctx)
+	Quotas(Asked(ctx))
 }
 
 var remoteCardCache struct {
@@ -135,6 +137,10 @@ func ForgetRemoteCardsForTest() {
 	c.Lock()
 	c.m = nil
 	c.Unlock()
+	k := &remoteKeyCache
+	k.Lock()
+	k.m = nil
+	k.Unlock()
 }
 
 // ForgetKeptCardsForTest has the cards kept on disk (quotas.json) read
@@ -164,7 +170,13 @@ func RemoteCards(ctx context.Context) []SubscriptionQuota {
 	var wg sync.WaitGroup
 	for i, p := range ps {
 		wg.Add(1)
-		go func() { defer wg.Done(); got[i] = remoteCards(ctx, p, false) }()
+		go func() {
+			defer wg.Done()
+			// its keys' own limits (#1547), read beside its cards
+			keys := make(chan []SubscriptionQuota, 1)
+			go func() { keys <- remoteKeyCards(ctx, p, false, "") }()
+			got[i] = append(remoteCards(ctx, p, false), <-keys...)
+		}()
 	}
 	wg.Wait()
 	return slices.Concat(got...)
@@ -249,6 +261,11 @@ func IsRemoteCard(id string) bool {
 // refreshRemote has the remote magpie read its card again (every card,
 // for the remote's own), then keeps what it now has.
 func refreshRemote(ctx context.Context, p Provider, card, user string) {
+	// a key's limit card is read again with that key (or every key's)
+	if card == remoteKeyCard {
+		remoteKeyCards(ctx, p, true, user)
+		return
+	}
 	q := url.Values{}
 	if card != "" {
 		q.Set("provider", card)

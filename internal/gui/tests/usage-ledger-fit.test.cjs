@@ -91,7 +91,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await p.route("**/*", server(lang));
         await p.goto("http://magpie.test/");
         await p.locator('[data-view="usage"]').first().click();
-        await p.locator("#usageTab .opt").nth(1).click();
+        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         await p.locator("#ledWrap .led tbody tr").first().waitFor();
         await p.waitForTimeout(300);
         return p;
@@ -111,8 +111,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await reader.click(p, p.locator(".led tbody tr.led-row").nth(2).locator("td").nth(2));
       assert((await p.locator(".led tbody tr.led-detail").textContent()).includes("gpt-5.6-luna"), "and in the row's details");
 
-      // wide enough: the line is there
-      const q = await open(1100);
+      // wide enough: the line is there (the window wider by the sidebar
+      // beside the page)
+      const q = await open(1320);
       assert.deepEqual(await fits(q), { scroll: true, status: true });
       assert(await q.locator(".led tbody tr.led-row").nth(2).locator(".price-reference").isVisible(), "the price reference line at a wider window");
       assert.deepEqual(errors, []);

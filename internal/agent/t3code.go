@@ -43,6 +43,7 @@ import (
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
 	"github.com/yetone/magpie/internal/gateway"
+	"github.com/yetone/magpie/internal/provider"
 )
 
 // t3Instance is the key of magpie's provider instance in T3 Code's
@@ -67,6 +68,8 @@ func t3code(home string) *Agent {
 		Sync: func() error {
 			return syncJSON(path, t3Instance, func() any { return t3InstanceJSON(path, gateway.URL()) })
 		},
+		// its custom models are the models picked for it (#1508)
+		ListsModels: true,
 		Fields: []Field{{
 			Key: "provider", Label: "provider",
 			Get: func() string {
@@ -112,7 +115,8 @@ func t3InstanceJSON(path, gw string) map[string]any {
 	mark := claude1MFor("t3code")
 	models := []map[string]any{}
 	for _, m := range magpieModels("t3code") {
-		e := map[string]any{"slug": mark(m.ID), "name": m.Name}
+		// Claude Code reads a dotted Claude version as Claude Opus 4
+		e := map[string]any{"slug": provider.ClaudeSpelled(mark(m.ID)), "name": m.Name}
 		if c := t3Capabilities(m.ID, m.Efforts); c != nil {
 			e["capabilities"] = c
 		}
@@ -134,7 +138,7 @@ func t3InstanceJSON(path, gw string) map[string]any {
 		"driver": "claudeAgent", "displayName": "magpie", "enabled": true,
 		"environment": []map[string]any{
 			{"name": "ANTHROPIC_BASE_URL", "value": gw, "sensitive": false},
-			{"name": "ANTHROPIC_AUTH_TOKEN", "value": gateway.Token, "sensitive": false},
+			{"name": "ANTHROPIC_AUTH_TOKEN", "value": keyAt(gw), "sensitive": false},
 		},
 		"config": config,
 	}

@@ -21,6 +21,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
@@ -114,7 +115,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "WorkBuddy" });
       // every account in full, so each row is there to read
       await card.locator(".wb-checkin").first().waitFor();
@@ -159,7 +162,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "Trae CN" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -185,6 +190,49 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.deepEqual(errors, []);
     });
 
+    // #808: Trae CN answers a claim from magpie 9074 for good, since it
+    // pays only its own app; the card says to check in there, offers no
+    // Check in now, and the Settings tab's line says the same.
+    test(`${engine} ${lang}: a Trae CN check-in only its own app gets says to check in in Trae CN`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      t.after(() => browser.close());
+      const page = await (await browser.newContext({ viewport: { width: 440, height: 900 }, reducedMotion: "reduce" })).newPage();
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      const own = { user: "hu", by: "trae", day: today, outcome: "own-app", msg: "当前参与用户太多，请稍后再试" };
+      const says = lang === "en"
+        ? "Trae CN only gives check-in credits to its own app; check in in the Trae CN app"
+        : "Trae CN 只给自己的客户端发签到积分，请在 Trae CN App 里签到";
+      await page.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname === "/api/usage/quotas") {
+          return route.fulfill({ json: quotas().map((q) => q.provider === "trae-cn" ? { ...q, checkin: own } : q) });
+        }
+        const settings = { theme: "light", lang, trae: true, traeCheckin: true, traeCheckins: [own] };
+        if (url.pathname === "/api/state") return route.fulfill({ json: { agents: [], profiles: [], settings } });
+        if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
+        return serve(lang, [])(route);
+      });
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
+      const card = page.locator(".subscription-card", { hasText: "Trae CN" });
+      await card.locator(".wb-checkin").first().waitFor();
+      assert.equal((await card.locator(".ci-say").innerText()).trim(), says);
+      assert.equal(await card.locator(".wb-checkin").getAttribute("data-state"), "none");
+      assert.match(await card.locator(".ci-say").getAttribute("title"), /当前参与用户太多/);
+      assert.equal(await card.locator(".ci-now").count(), 0, "a press would only claim again");
+
+      await watchSettingsReads(page);
+      await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
+      await page.locator("#traeCheckinSub").waitFor({ state: "attached" });
+      const sub = await page.locator("#traeCheckinSub").textContent();
+      assert.ok(sub.includes("hu" + (lang === "en" ? ": " : "：") + says), sub);
+      assert.deepEqual(errors, []);
+    });
+
     test(`${engine} ${lang}: the MiniMax Code card has its own check-in`, async (t) => {
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       t.after(() => browser.close());
@@ -193,7 +241,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "MiniMax Code" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -235,7 +285,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
         return serve(lang, [])(route);
       });
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const tab = page.locator("#warmTab-minimax");
       await tab.waitFor();
       assert.equal(await tab.isHidden(), false);
@@ -256,7 +308,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const errors = [], asked = [];
       page.on("pageerror", (e) => errors.push(e.message));
       await page.route("**/*", serve(lang, asked));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const card = page.locator(".subscription-card", { hasText: "arno" });
       await card.locator(".wb-checkin").first().waitFor();
       assert.equal(await card.locator(".wb-checkin").count(), 1);
@@ -297,7 +351,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         if (url.pathname === "/api/settings") return route.fulfill({ json: settings });
         return serve(lang, [])(route);
       });
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=usage");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const tab = page.locator("#warmTab-qoder");
       await tab.waitFor();
       assert.equal(await tab.isHidden(), false);

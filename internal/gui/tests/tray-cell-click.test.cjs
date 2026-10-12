@@ -82,7 +82,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const panel = await open("http://magpie.test/?mode=panel", { width: 440, height: 640 });
       await panel.waitForFunction(() => document.querySelectorAll("#panelQuota .pq-card").length >= 4);
       await panel.waitForFunction(() => window.__runtimeReady === true); // native ExecJS can now drain
-      assert.equal(await panel.locator("header.top").evaluate((e) => getComputedStyle(e).getPropertyValue("--wails-draggable").trim()), "no-drag", "the runtime must not make the panel draggable");
+      // dragged by its header on Linux alone (panel-drag-linux.test.cjs, #1430)
+      const linux = await panel.evaluate(() => /^Linux/.test(navigator.platform));
+      assert.equal(await panel.locator("header.top").evaluate((e) => getComputedStyle(e).getPropertyValue("--wails-draggable").trim()), linux ? "drag" : "no-drag", "the runtime must not make the panel draggable off Linux");
       assert.equal(await panel.evaluate(() => typeof panelQuotaFocus), "function", "panelQuotaFocus is Go's to call by name");
       assert.equal(await panel.evaluate(() => document.body.dataset.ptab), "agents", "the panel starts on its agents");
       await panel.evaluate(() => panelQuotaFocus("codex|x@y.z"));

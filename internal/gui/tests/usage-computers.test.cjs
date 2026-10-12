@@ -98,7 +98,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       };
       const requests = async (p) => {
         await p.locator('[data-view="usage"]').first().click();
-        await p.locator("#usageTab .opt").nth(1).click();
+        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         await p.locator(".led tbody tr.led-row").first().waitFor();
       };
 
@@ -177,7 +177,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const posts = [];
         const { p, errors } = await open("http://magpie.test/", { width: 900, height: 420 }, false, [], [], posts);
         await p.locator("#prefs").click();
-        await p.locator("#setTab-sync").click();
+        await p.locator(":is(#setTab-sync, .nav-s[data-of=setTab-sync]):visible").click();
         const first = p.locator("#syncList .row.pref").first();
         await first.waitFor({ state: "visible" });
         const toEnd = async () => {

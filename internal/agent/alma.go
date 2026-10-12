@@ -436,14 +436,16 @@ func almaWire() (string, error) {
 // almaKey is the key magpie's provider in Alma is given. Alma's requests
 // carry the AI SDK's User-Agent and nothing of Alma's, so the key is how
 // the gateway knows them for Alma's.
-func almaKey() string { return gateway.TokenFor("alma") }
+func almaKey() string { return agentKey("alma") }
 
-// almaKeyed gives magpie's provider the key almaKey in place of the one it
-// was given before there was one, gateway.Token; a key Alma gives back
-// some other way (encrypted) is left be. The key alone is sent: a baseURL,
-// even the same one, would have Alma drop its models.
+// almaKeyed gives magpie's provider the key almaKey in place of one magpie
+// gave it before: gateway.Token, from before there was one, or the key
+// named for Alma while the gateway's address beyond loopback wants the LAN
+// key, or the other way round (#1647); a key Alma gives back some other way
+// (encrypted) is left be. The key alone is sent: a baseURL, even the same
+// one, would have Alma drop its models.
 func almaKeyed(p *almaProvider) error {
-	if p.APIKey != gateway.Token {
+	if p.APIKey == almaKey() || !ourKey(p.APIKey) && p.APIKey != gateway.TokenFor("alma") {
 		return nil
 	}
 	return almaDo("PUT", "/api/providers/"+p.ID, map[string]any{"apiKey": almaKey()}, nil)

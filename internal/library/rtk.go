@@ -20,6 +20,7 @@ import (
 	"github.com/yetone/magpie/internal/agent"
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/proc"
 	"gopkg.in/yaml.v3"
 )
@@ -507,6 +508,10 @@ type RTKView struct {
 	// doesn't know how this rtk was installed
 	Latest  string `json:"latest,omitempty"`
 	Upgrade string `json:"upgrade,omitempty"`
+	// Admin is the folder rtk is in when only an administrator can change
+	// it (winget's for every user, under Program Files): Upgrade asks
+	// Windows for one first
+	Admin string `json:"admin,omitempty"`
 	// Waiting is the package manager this rtk was installed with (winget,
 	// Homebrew) when Latest is out but it has nothing newer than this rtk
 	// yet, WaitingHas what it has: an upgrade through it would change
@@ -636,7 +641,7 @@ func ReadRTK() *RTKView {
 		v.Version = strings.TrimSpace(strings.TrimPrefix(out, "rtk"))
 	}
 	if c := upgraderOf(v.Path); c != nil {
-		v.Upgrade = shown(c)
+		v.Upgrade, v.Admin = shown(c), rtkAdminFolder(c, v.Path)
 	}
 	v.Gain, v.Days, v.GainErr = rtkGain(v.Path)
 	if runtime.GOOS == "windows" {
@@ -716,11 +721,17 @@ func parseGain(out string) (*RTKGain, []RTKDay, string) {
 // of them keeps its history in that account's AppData, not the user's;
 // "unelevated" runs them with a token that can't write the user's. Either
 // way rtk gain here doesn't count them. "" when Codex doesn't sandbox them.
+// It is parsed again only when config.toml changes: one with a table for
+// each of thousands of projects is ~0.2s of CPU to parse (#1665).
 func codexSandbox() string {
-	raw, err := os.ReadFile(filepath.Join(codexDir(), "config.toml"))
-	if err != nil {
-		return ""
-	}
+	s, _ := filememo.Read("rtk codex sandbox", filepath.Join(codexDir(), "config.toml"), func(raw []byte) (string, error) {
+		return codexSandboxIn(raw), nil
+	})
+	return s
+}
+
+// codexSandboxIn is codexSandbox of config.toml's bytes.
+func codexSandboxIn(raw []byte) string {
 	var c struct {
 		SandboxMode string `toml:"sandbox_mode"`
 		Windows     struct {
@@ -870,7 +881,7 @@ func InstallRTK() (*RTKView, error) {
 	if c == nil {
 		return nil, fmt.Errorf("no way to install rtk here — get it from %s", RTKURL)
 	}
-	out, err := runInstaller(c, 5*time.Minute, "HOMEBREW_NO_AUTO_UPDATE=1")
+	out, err := runRTKInstaller(c, 5*time.Minute, "", "HOMEBREW_NO_AUTO_UPDATE=1")
 	if err != nil {
 		return nil, err
 	}

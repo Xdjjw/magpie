@@ -16,6 +16,17 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
+// remoteOnly leaves out the remote's keys' own cards (#1547).
+func remoteOnly(cs []provider.SubscriptionQuota) []provider.SubscriptionQuota {
+	var out []provider.SubscriptionQuota
+	for _, q := range cs {
+		if q.GatewayKey == nil && !strings.HasSuffix(q.Provider, "/~keys") {
+			out = append(out, q)
+		}
+	}
+	return out
+}
+
 // A remote magpie's quotas (莫 on Discord), between a gateway and a
 // magpie that has it as its provider: the cards it is shown are the
 // gateway's as last read, and asking for them asks no vendor, however
@@ -45,7 +56,7 @@ func TestRemoteMagpieQuotas(t *testing.T) {
 	ctx := context.Background()
 
 	// nothing read on the gateway yet: nothing is read for the remote
-	cs := provider.RemoteCards(ctx)
+	cs := remoteOnly(provider.RemoteCards(ctx))
 	if len(cs) != 1 || cs[0].Provider != "office" || !strings.HasPrefix(cs[0].Error, "nothing read") {
 		t.Fatalf("before any read: %+v", cs)
 	}

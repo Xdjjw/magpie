@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // A plugin's provider is signed in to as many times as the user likes, as
@@ -120,6 +121,9 @@ var pluginOwnUser = func(id string) string {
 // own account is named as the agent is signed in now; removed in magpie,
 // it is only hidden, and shows again once the agent signs in anew.
 func pluginLogins(pp plugin.Provider) []pluginLogin {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	agent := pluginAgent(pp)
 	labels := pluginLabels(pp)
 	byKey := map[string]plugin.Account{}

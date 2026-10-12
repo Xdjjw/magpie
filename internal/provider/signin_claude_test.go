@@ -55,6 +55,8 @@ if [ "$1 $2" = "auth status" ]; then
   %s
 fi
 [ "$1 $2" = "auth login" ] || exit 2
+# the proxy it was run with, beside it (#1663)
+printf '%%s' "$HTTPS_PROXY" > "${0%%/*}/login-proxy"
 echo "Opening browser to sign in…"
 "$BROWSER" '%s'
 echo "If the browser didn't open, visit: %s"
@@ -96,7 +98,44 @@ echo "Login successful."
 		claudeExecutable, claudeURLOpener = oldExe, oldOpener
 		forgetClaudeStatus()
 	})
+	endClaudeSignIns(t)
 	return exe
+}
+
+// endClaudeSignIns makes a Claude sign-in the test started end with it,
+// however the test ends: a test that fails between StartSignIn and the
+// sign-in's end (#1802), or a sign-in that gave up, leaves its `claude auth
+// login` run letting go after the test, and what that run does — add the
+// account, read claudeKeychain, forget the account caches — would land in
+// a later test, whose home and fakes are the ones set by then. It cancels
+// every Claude sign-in still listed, which kills the CLI's process group,
+// and waits for every run to finish. Registered after the test's home and
+// fakes are set, it runs while they are still the test's.
+func endClaudeSignIns(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		signIns.Lock()
+		var ids []string
+		for id, s := range signIns.m {
+			if s.status().Agent == "claude" {
+				ids = append(ids, id)
+			}
+		}
+		signIns.Unlock()
+		for _, id := range ids {
+			CancelSignIn(id)
+		}
+		ended := make(chan struct{})
+		go func() {
+			claudeLogins.Wait()
+			close(ended)
+		}()
+		select {
+		case <-ended:
+		case <-time.After(signInDeadline):
+			t.Errorf("a Claude sign-in still ran %s after the test", signInDeadline)
+		}
+	})
 }
 
 // noAnthropic fails the test if anything is asked of claudeBase.

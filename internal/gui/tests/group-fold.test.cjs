@@ -65,7 +65,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
       // tall enough for the whole editor, its Cancel clicked where it is
       // (under the names setting over the groups)
-      const page = await (await browser.newContext({ viewport: { width: 1100, height: 1600 }, reducedMotion: "reduce" })).newPage();
+      // the window wider by the sidebar beside the page: the editor's foot in sight
+      const page = await (await browser.newContext({ viewport: { width: 1360, height: 1600 }, reducedMotion: "reduce" })).newPage();
       t.after(() => browser.close());
       page.setDefaultTimeout(5000);
       const errors = [], posts = [];

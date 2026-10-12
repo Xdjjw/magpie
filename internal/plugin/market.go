@@ -40,7 +40,7 @@ type Listing struct {
 	Providers []string          `json:"providers,omitempty"` // OpenCode's ids of those it signs in to
 	Community bool              `json:"community,omitempty"` // written by magpie's community
 	Replaces  string            `json:"replaces,omitempty"`  // the built-in subscription it does the work of
-	Kind      string            `json:"kind,omitempty"`      // "middleware" for gateway middleware; none for a provider
+	Kind      string            `json:"kind,omitempty"`      // "middleware" for gateway middleware, "agent" for an agent; none for a provider
 	Summary   map[string]string `json:"summary,omitempty"`   // by language: en, zh
 }
 
@@ -57,6 +57,24 @@ type NPM struct {
 	Homepage    string `json:"homepage,omitempty"`
 	Repository  string `json:"repository,omitempty"`
 	Weekly      int    `json:"weekly"` // downloads last week
+	// Icon is the picture the package gives in package.json's
+	// magpie.icon, as npm has it: magpie checks and keeps it before the
+	// page shows it, as a GitHub-tagged plugin's (the GUI's listings)
+	Icon string `json:"icon,omitempty"`
+}
+
+// ownIcon is a picture a package.json's magpie.icon gives, as host.js's
+// iconOf takes one: an https URL or a data:image URI, not too big; ""
+// for anything else.
+func ownIcon(said string) string {
+	ic := strings.TrimSpace(said)
+	if len(ic) > 3<<19 {
+		return ""
+	}
+	if l := strings.ToLower(ic); strings.HasPrefix(l, "https://") || strings.HasPrefix(l, "data:image/") {
+		return ic
+	}
+	return ""
 }
 
 var (
@@ -328,6 +346,9 @@ type npmLatest struct {
 	NPMUser struct {
 		Name string `json:"name"`
 	} `json:"_npmUser"`
+	Magpie struct {
+		Icon string `json:"icon"`
+	} `json:"magpie"`
 }
 
 func person(v any) string {
@@ -396,6 +417,7 @@ func npmAsk(ctx context.Context, name string) (NPM, error) {
 		info.License, _ = l.License.(string)
 		info.Repository = repoURL(l.Repository)
 		info.Publisher = person(l.Author)
+		info.Icon = ownIcon(l.Magpie.Icon)
 		if info.Publisher == "" {
 			info.Publisher = l.NPMUser.Name
 		}
@@ -612,6 +634,26 @@ func Installed(spec string) string {
 	var p struct{ Version string }
 	_ = json.Unmarshal(b, &p)
 	return p.Version
+}
+
+// InstalledIcon is the picture the installed plugin spec's package.json
+// gives in magpie.icon, as ownIcon takes one: the plugin's own, for its
+// row, apart from those its providers give themselves in the auth hook
+// (#1775). "" for none, or a plugin that is one file.
+func InstalledIcon(spec string) string {
+	b, err := os.ReadFile(filepath.Join(Target(spec), "package.json"))
+	if err != nil {
+		return ""
+	}
+	var p struct {
+		Magpie struct {
+			Icon string `json:"icon"`
+		} `json:"magpie"`
+	}
+	if json.Unmarshal(b, &p) != nil {
+		return ""
+	}
+	return ownIcon(p.Magpie.Icon)
 }
 
 // Upgrade installs the newest version of one plugin: npm's, or its git

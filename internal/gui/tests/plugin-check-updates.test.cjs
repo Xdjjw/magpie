@@ -96,7 +96,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         await page.goto("http://magpie.test/?view=plugins");
         const view = page.locator("#view-plugins");
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = (spec) => view.locator(".pm-row").filter({ has: page.locator(".name span", { hasText: new RegExp("^" + spec.replace(/[/@-]/g, "\\$&") + "$") }) });
         await row(COPILOT).waitFor();
         // nothing newer known yet: no Update offered

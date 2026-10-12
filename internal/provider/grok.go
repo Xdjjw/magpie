@@ -33,6 +33,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -192,8 +193,17 @@ func grokSigned(acct *Account, home string) {
 			return err
 		}
 		grokHeaders(req, c.Key)
-		if m := bodyModel(body); m != "" {
+		if m, window := grokWindowed(bodyModel(body)); m != "" {
 			req.Header.Set("x-grok-model-override", m)
+			if window > 0 {
+				// grok-4.7@500k goes as grok-4.7 at that window, as the
+				// CLI's /context-window 500k sends it
+				req.Header.Set("x-grok-context-window", strconv.Itoa(window))
+				nb := withModel(body, m)
+				req.Body = io.NopCloser(bytes.NewReader(nb))
+				req.ContentLength = int64(len(nb))
+				req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(nb)), nil }
+			}
 		}
 		var v struct {
 			Key string `json:"prompt_cache_key"`
@@ -675,6 +685,7 @@ func parseGrokModels(b []byte) []catalog.Model {
 			ID      string `json:"id"`
 			Name    string `json:"name"`
 			Context int    `json:"context_window"`
+			Windows []int  `json:"context_windows"`
 			Backend string `json:"api_backend"`
 			Efforts []struct {
 				Value string `json:"value"`
@@ -699,9 +710,67 @@ func parseGrokModels(b []byte) []catalog.Model {
 				m.Efforts = append(m.Efforts, e)
 			}
 		}
-		ms = append(ms, m)
+		ms = append(ms, grokContextModels(m, d.Windows)...)
 	}
 	return ms
+}
+
+// grokContextModels is one model for each context window Grok lists it at
+// (#1608). context_window is the default and keeps the plain id
+// (grok-4.7), so a saved agent stays where it was; each other size in
+// context_windows is offered beside it (grok-4.7@500k), the way the CLI's
+// /context-window offers it, and asked for with x-grok-context-window
+// (grokWindowed). The same as the grok plugin's windowsOf (plugins#83).
+func grokContextModels(m catalog.Model, listed []int) []catalog.Model {
+	var windows []int
+	for _, w := range listed {
+		if w > 0 && !slices.Contains(windows, w) {
+			windows = append(windows, w)
+		}
+	}
+	if len(windows) == 0 {
+		return []catalog.Model{m}
+	}
+	if !slices.Contains(windows, m.Context) {
+		m.Context = windows[0]
+	}
+	out := []catalog.Model{m}
+	for _, w := range windows {
+		if w == m.Context {
+			continue
+		}
+		at := grokWindowLabel(w)
+		o := m
+		o.ID, o.Name, o.Context = m.ID+"@"+at, m.Name+" @ "+at, w
+		o.Efforts = slices.Clone(m.Efforts)
+		o.APIs = slices.Clone(m.APIs)
+		out = append(out, o)
+	}
+	return out
+}
+
+// grokWindowLabel is a window as an id names it: 500000 is "500k".
+func grokWindowLabel(n int) string {
+	if n%1000 == 0 {
+		return strconv.Itoa(n/1000) + "k"
+	}
+	return strconv.Itoa(n)
+}
+
+// grokWindowed splits a requested id into the model Grok lists and the
+// window the id names: grok-4.7 is grok-4.7 at its default window (0, no
+// header), grok-4.7@500k is grok-4.7 at 500000 tokens.
+func grokWindowed(id string) (string, int) {
+	model, size, ok := strings.Cut(id, "@")
+	if !ok {
+		return id, 0
+	}
+	k, ok := strings.CutSuffix(size, "k")
+	n, err := strconv.Atoi(k)
+	if !ok || err != nil || n <= 0 || model == "" {
+		return id, 0
+	}
+	return model, n * 1000
 }
 
 // grokRefreshMargin is how close to its expiry a borrowed token has the CLI
@@ -810,7 +879,7 @@ func runCLISignIn(s *signInFlow, what string, env []string, using bool, failed f
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := proc.CommandContext(ctx, path, args...)
 	cmd.Dir, _ = os.UserHomeDir()
-	cmd.Env = netproxy.Env(env)
+	cmd.Env = netproxy.EnvWith(s.proxy, env)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		cancel()

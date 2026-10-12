@@ -12,6 +12,60 @@ import (
 	"github.com/yetone/magpie/internal/codexcat"
 )
 
+// The conversation goes in the session headers Codex CLI 0.162 sends,
+// session-id and thread-id, by which the ChatGPT backend finds its cached
+// prompt; the body's prompt_cache_key alone left a request with tools
+// uncached (#1473). Older Codex's underscored names don't go on, relayed
+// or not, and a request without a key keeps the session its client named.
+func TestCodexSignSessionHeaders(t *testing.T) {
+	signIn(t)
+	p, _ := find(All(), "codex")
+	req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+	req.Header.Set("session_id", "relayed")
+	req.Header.Set("conversation_id", "relayed")
+	if err := p.Sign(context.Background(), req, Responses, []byte(`{"prompt_cache_key":"thread-1"}`)); err != nil {
+		t.Fatal(err)
+	}
+	h := req.Header
+	if h.Get("session-id") != "thread-1" || h.Get("thread-id") != "thread-1" {
+		t.Fatalf("session-id %q thread-id %q, want thread-1: %v", h.Get("session-id"), h.Get("thread-id"), h)
+	}
+	for k := range h {
+		if strings.Contains(k, "_") {
+			t.Errorf("header %s: %v", k, h)
+		}
+	}
+
+	// a body without a key (no user message yet): the client's own session
+	req, _ = http.NewRequest("POST", p.Responses+"/responses", nil)
+	req.Header.Set("session-id", "codex-thread")
+	req.Header.Set("thread-id", "codex-thread")
+	if err := p.Sign(context.Background(), req, Responses, []byte(`{}`)); err != nil {
+		t.Fatal(err)
+	}
+	if req.Header.Get("session-id") != "codex-thread" || req.Header.Get("thread-id") != "codex-thread" {
+		t.Fatalf("keyless request lost its session: %v", req.Header)
+	}
+
+	// a client that names none: each turn of a conversation gets the
+	// same session, from how it starts
+	turn := func(input string) string {
+		req, _ := http.NewRequest("POST", p.Responses+"/responses", nil)
+		body := p.Prepare([]byte(`{"model":"gpt-5.5","instructions":"You are omp.","tools":[{"type":"function","name":"read","parameters":{"type":"object"}}],"input":[` + input + `]}`))
+		if err := p.Sign(context.Background(), req, Responses, body); err != nil {
+			t.Fatal(err)
+		}
+		return req.Header.Get("session-id")
+	}
+	user := `{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the bug"}]}`
+	first := turn(user)
+	next := turn(user + `,{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]},` +
+		`{"type":"message","role":"user","content":[{"type":"input_text","text":"and the test?"}]}`)
+	if first == "" || first != next {
+		t.Fatalf("sessions %q and %q", first, next)
+	}
+}
+
 func TestCodexSignAndBody(t *testing.T) {
 	signIn(t)
 	p, _ := find(All(), "codex")
@@ -22,7 +76,7 @@ func TestCodexSignAndBody(t *testing.T) {
 	h := req.Header
 	if !strings.HasPrefix(h.Get("Authorization"), "Bearer h.") || h.Get("chatgpt-account-id") != "acct-1" ||
 		h.Get("originator") != "codex_cli_rs" || !strings.HasPrefix(h.Get("User-Agent"), "codex_cli_rs/0.") ||
-		h.Get("OpenAI-Beta") != "responses=experimental" || h.Get("session_id") != "thread-1" || h.Get("conversation_id") != "thread-1" {
+		h.Get("OpenAI-Beta") != "responses=experimental" || h.Get("session-id") != "thread-1" || h.Get("thread-id") != "thread-1" {
 		t.Fatalf("headers: %v", h)
 	}
 	out := p.Prepare([]byte(`{"model":"gpt-5.5","input":"hi","max_output_tokens":5,"temperature":0.1,"stream":false,"store":true,"reasoning":{"effort":"low"}}`))

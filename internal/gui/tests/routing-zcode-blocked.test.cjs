@@ -83,7 +83,19 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       const steps = async () => page.locator(".rt-steps li").evaluateAll((ls) => ls.map((l) => [l.className, l.textContent]));
       const row = page.locator(".rt-req").nth(0);
-      const was = await row.evaluate((e) => e.getBoundingClientRect().top);
+      // measure once the page holds still: the day's rows arriving grow the
+      // page above the list, and the day button's click is kept in place by
+      // scrolling the view, which can land after the last row is in
+      const was = await row.evaluate(async (e) => {
+        let last = NaN;
+        for (let i = 0; i < 60; i++) {
+          await new Promise((r) => requestAnimationFrame(r));
+          const top = e.getBoundingClientRect().top;
+          if (top === last) return top;
+          last = top;
+        }
+        return last;
+      });
       await row.click();
       await page.waitForTimeout(400);
       assert(Math.abs((await row.evaluate((e) => e.getBoundingClientRect().top)) - was) <= 1, "picking the request moved the page");

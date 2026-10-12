@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -271,5 +272,145 @@ func TestSignedID(t *testing.T) {
 	}
 	if id, sig := unsignedID("toolu_01__ts__"); id != "toolu_01__ts__" || sig != "" {
 		t.Errorf("a plain id read as %q, %q", id, sig)
+	}
+}
+
+// sigFixtures are ids as magpie gives them for Gemini 3's calls: Gemini's
+// own call id or magpie's call_<newID>, with a signature the size of
+// vertexCallSig and of the 421-character one #1536 measured (315 bytes),
+// and one that isn't canonical base64 (__tsr).
+func sigFixtures() []struct{ id, sig string } {
+	long := make([]byte, 315)
+	for i := range long {
+		long[i] = byte(i*131 + 7)
+	}
+	return []struct{ id, sig string }{
+		{"function-call-7", vertexCallSig},
+		{"call_18f2c3a4b5d6e7f800000001", base64.StdEncoding.EncodeToString(long)},
+		{"call_0a1b2c", base64.StdEncoding.EncodeToString(long)},
+		{"function-call-7", strings.TrimRight(gSigCall, "=")},
+	}
+}
+
+// A client that shortens a call's id (#1536, jueda12: one caps ids at 40
+// characters) sends back part of the signature. At three of four lengths
+// what is left still decoded as base64, and Gemini answered the partial
+// signature with 400 "Corrupted thought signature". An id cut anywhere
+// now carries no signature, and stays as the client sent it.
+func TestShortenedIDHasNoSignature(t *testing.T) {
+	for _, c := range sigFixtures() {
+		full := signedID(c.id, c.sig)
+		if id, sig := unsignedID(full); id != c.id || sig != c.sig {
+			t.Fatalf("signedID(%q, …) = %q came back as %q, %q", c.id, full, id, sig)
+		}
+		for n := range len(full) {
+			cut := full[:n]
+			if id, sig := unsignedID(cut); sig != "" || id != cut {
+				t.Errorf("%q cut to %d: read as %q with a signature of %d characters", c.id, n, id, len(sig))
+			}
+		}
+	}
+}
+
+// Ids magpie gave before #1536, with no length in their mark, still give
+// their signatures back: a conversation started on an older magpie goes on.
+func TestOldSignedIDsStillRead(t *testing.T) {
+	for _, c := range sigFixtures() {
+		var old string
+		if b, err := base64.StdEncoding.DecodeString(c.sig); err == nil && base64.StdEncoding.EncodeToString(b) == c.sig {
+			old = c.id + "__ts__" + base64.RawURLEncoding.EncodeToString(b)
+		} else {
+			old = c.id + "__tsr__" + base64.RawURLEncoding.EncodeToString([]byte(c.sig))
+		}
+		if id, sig := unsignedID(old); id != c.id || sig != c.sig {
+			t.Errorf("old id %q read as %q, %q", old, id, sig)
+		}
+	}
+	// literal ids of the old form (from ump45nose's patch on #1536)
+	if id, sig := unsignedID("call_a__ts__c2ln"); id != "call_a" || sig != "c2ln" {
+		t.Errorf("an old signed id read as %q, %q", id, sig)
+	}
+	if id, sig := unsignedID("call_a__tsr__bm90IGJhc2U2NCE"); id != "call_a" || sig != "not base64!" {
+		t.Errorf("an old raw-signed id read as %q, %q", id, sig)
+	}
+	for _, id := range []string{"toolu_01__ts__", "call__tsx__ts", "a__ts12", "a__ts12__", "a__ts3__YWJj", "a__ts5__YWJj", "a__ts04__YWJj"} {
+		if got, sig := unsignedID(id); got != id || sig != "" {
+			t.Errorf("%q read as %q, %q", id, got, sig)
+		}
+	}
+	if id, sig := unsignedID("a__tsx_b__ts4__YWJj"); id != "a__tsx_b" || sig != "YWJj" {
+		t.Errorf("a mark after a look-alike read as %q, %q", id, sig)
+	}
+}
+
+// Every path that takes a signature off an id sends Gemini the skip value,
+// never part of a signature, for an id cut at any length: Chat relayed as
+// it is, magpie's own Chat, Gemini and Code Assist (Antigravity) requests.
+func TestShortenedIDGoesUnsigned(t *testing.T) {
+	for _, c := range sigFixtures() {
+		full := signedID(c.id, c.sig)
+		for n := len(c.id) + 1; n < len(full); n++ {
+			cut := full[:n]
+			body := []byte(`{"messages":[{"role":"user","content":"list files"},
+				{"role":"assistant","tool_calls":[{"id":"` + cut + `","type":"function","function":{"name":"bash","arguments":"{}"}}]},
+				{"role":"tool","tool_call_id":"` + cut + `","content":"a.txt"}]}`)
+			if relayed := string(chatCallSignatures(body, true)); !strings.Contains(relayed, `"thought_signature":"`+skipSignature+`"`) {
+				t.Fatalf("%q cut to %d: relayed as %s", c.id, n, relayed)
+			}
+			r := &Request{Messages: []Message{
+				{Role: "user", Parts: []Part{{Kind: Text, Text: "list files"}}},
+				{Role: "assistant", Parts: []Part{{Kind: ToolCall, ID: cut, Name: "bash"}}},
+				{Role: "user", Parts: []Part{{Kind: ToolResult, CallID: cut, Text: "a.txt"}}},
+			}}
+			unsignCalls(r)
+			if s := r.Messages[1].Parts[0].Signature; s != "" {
+				t.Fatalf("%q cut to %d: the call has a signature of %d characters", c.id, n, len(s))
+			}
+			if out := string(buildChat(r, "gemini-3.8-flash", aiStudioHost, false)); !strings.Contains(out, skipSignature) {
+				t.Fatalf("%q cut to %d: Gemini's Chat was sent %s", c.id, n, out)
+			}
+			if out := string(buildCodeAssist(r, "gemini-3.8-flash", "")); !strings.Contains(out, `"thoughtSignature":"`+skipSignature+`"`) {
+				t.Fatalf("%q cut to %d: Code Assist was sent %s", c.id, n, out)
+			}
+			for _, p := range geminiParts(r.Messages[1].Parts) {
+				if s, ok := p["thoughtSignature"]; ok {
+					t.Fatalf("%q cut to %d: Gemini was sent the signature %v", c.id, n, s)
+				}
+			}
+		}
+	}
+}
+
+// The reporter's case through the gateway: Gemini's call comes back to the
+// client with its signature in the id, the client keeps 40 characters of
+// it, and Gemini is sent skip_thought_signature_validator for the call.
+func TestFortyCharacterIDThroughGateway(t *testing.T) {
+	sig := sigFixtures()[1].sig
+	up, bodies := geminiSigUpstream(t, sig, true)
+	s := geminiSigProvider(t, up.URL)
+	first := sigPost(t, s, "/v1/chat/completions", `{"model":"google/gemini-3.8-flash","stream":true,"messages":[{"role":"user","content":"list files"}],
+		"tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]}`)
+	i := strings.Index(first, `"id":"function-call-7`)
+	if i < 0 {
+		t.Fatalf("no call in the reply:\n%s", first)
+	}
+	id := first[i+len(`"id":"`):]
+	id = id[:strings.IndexByte(id, '"')]
+	if len(id) <= 40 {
+		t.Fatalf("the id %q has no signature to cut", id)
+	}
+	id = id[:40]
+	out := sigPost(t, s, "/v1/chat/completions", `{"model":"google/gemini-3.8-flash","stream":true,"messages":[
+		{"role":"user","content":"list files"},
+		{"role":"assistant","content":null,"tool_calls":[{"id":"`+id+`","type":"function","function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]},
+		{"role":"tool","tool_call_id":"`+id+`","content":"a.txt"}],
+		"tools":[{"type":"function","function":{"name":"bash","parameters":{"type":"object"}}}]}`)
+	if !strings.Contains(out, "done") {
+		t.Fatalf("the second turn: %s", out)
+	}
+	msgs := (*bodies)[len(*bodies)-1]["messages"].([]any)
+	call := msgs[1].(map[string]any)["tool_calls"].([]any)[0].(map[string]any)
+	if got := call["extra_content"].(map[string]any)["google"].(map[string]any)["thought_signature"]; got != skipSignature {
+		t.Fatalf("Gemini was sent the call %v", call)
 	}
 }

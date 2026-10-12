@@ -27,8 +27,11 @@ import (
 
 	"github.com/yetone/magpie/internal/appdir"
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filelock"
 	"github.com/yetone/magpie/internal/filememo"
+	"github.com/yetone/magpie/internal/lastgood"
 	"github.com/yetone/magpie/internal/plugin"
+	"github.com/yetone/magpie/internal/settings"
 	"github.com/yetone/magpie/internal/steady"
 )
 
@@ -117,7 +120,15 @@ type savedLogin struct {
 }
 
 var (
-	loginsMu     sync.Mutex
+	// loginsMu is held for every read of logins.json a change is made
+	// from, and the write: in this magpie, and across magpies (#1674), so
+	// a refresh the gateway writes is never written back over with what a
+	// magpie run from a terminal read before it. Taken, it has logins.json
+	// read afresh.
+	loginsMu = filelock.Mutex{
+		Path:   func() string { return loginsPath() + ".lock" },
+		Locked: func() { filememo.Look(loginsPath()) },
+	}
 	loginsSeenAt time.Time
 )
 
@@ -153,73 +164,114 @@ func loginsPath() string { return filepath.Join(filepath.Dir(Path()), "logins.js
 // lastLogins is the accounts last read from logins.json: a read that fails
 // (a file half there, one magpie can't open for a moment) is them, not no
 // accounts, which the next change of an account would write back over
-// every account.
+// every account. loginsKnown is whether there are any such, read or
+// written by this magpie.
 var (
 	lastLoginsMu sync.Mutex
 	lastLogins   []savedLogin
+	loginsKnown  bool
 )
 
+// parseLogins is logins.json's accounts.
+func parseLogins(b []byte) ([]savedLogin, error) {
+	var out []savedLogin
+	if err := json.Unmarshal(b, &out); err != nil {
+		return nil, err
+	}
+	// DimAgent's accounts: magpie no longer signs in to it (DimAgent
+	// doesn't allow its subscription used outside its client), so one
+	// signed in before is left out, and gone from the file at its next write
+	out = slices.DeleteFunc(out, func(l savedLogin) bool { return l.Agent == "dimagent" })
+	return nameAlike(dedupeLogins(out)), nil
+}
+
+// validLogins is logins.json's contents read as accounts: valid JSON can
+// still have field types they don't take.
+func validLogins(b []byte) bool {
+	var ls []savedLogin
+	return json.Unmarshal(b, &ls) == nil
+}
+
 func readLogins() []savedLogin {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	// parsed once until the file changes: a state of the page asks for it
 	// dozens of times (every agent's drift and models), and with the
 	// accounts' credentials in it the file is large — a Save of a profile
 	// waited seconds on it
-	ls, err := filememo.Read("logins", loginsPath(), func(b []byte) ([]savedLogin, error) {
-		var out []savedLogin
-		if err := json.Unmarshal(b, &out); err != nil {
-			return nil, err
-		}
-		// DimAgent's accounts: magpie no longer signs in to it (DimAgent
-		// doesn't allow its subscription used outside its client), so one
-		// signed in before is left out, and gone from the file at its next write
-		out = slices.DeleteFunc(out, func(l savedLogin) bool { return l.Agent == "dimagent" })
-		return nameAlike(dedupeLogins(out)), nil
-	})
+	ls, err := filememo.Read("logins", loginsPath(), parseLogins)
 	lastLoginsMu.Lock()
 	defer lastLoginsMu.Unlock()
 	switch {
 	case err == nil:
-		lastLogins = ls
+		lastLogins, loginsKnown = ls, true
 	case errors.Is(err, fs.ErrNotExist):
-		lastLogins = nil
-	default:
+		lastLogins, loginsKnown = nil, true
+	case loginsKnown:
 		log.Printf("logins.json: %v; the accounts read before are kept", err)
 		ls = lastLogins
+	default:
+		// magpie just started on a file that doesn't read (all zero after
+		// a crash, #1505): the accounts are its last good generation's
+		ls = nil
+		if b, ferr := lastgood.Fallback(loginsPath(), unreadBytes(loginsPath()), validLogins); ferr == nil {
+			ls, _ = parseLogins(b)
+			lastLogins, loginsKnown = ls, true
+		} else {
+			log.Printf("logins.json: %v; %v", err, ferr)
+		}
 	}
 	return slices.Clone(ls) // callers change theirs
 }
 
-// keepUnreadLogins copies a logins.json that doesn't parse aside before it
-// is written over, so the accounts in it can still be got back. A failure
-// to read or keep an existing file stops the write.
-func keepUnreadLogins(path string) error {
-	b, err := os.ReadFile(path)
-	if errors.Is(err, fs.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	// Match readLogins: valid JSON can still have unreadable field types.
-	var ls []savedLogin
-	if json.Unmarshal(b, &ls) == nil {
-		return nil
-	}
-	bad := path + ".bad-" + time.Now().Format("20060102-150405")
-	if err := os.WriteFile(bad, b, 0o600); err != nil {
-		log.Printf("logins.json doesn't parse and couldn't be kept: %v", err)
-		return err
-	}
-	log.Printf("logins.json didn't parse; it is kept as %s", filepath.Base(bad))
-	return nil
+// unreadBytes are a file's bytes, nil when it can't be read: for the log
+// to say what was wrong with it.
+func unreadBytes(path string) []byte {
+	b, _ := os.ReadFile(path)
+	return b
 }
 
 func writeLogins(ls []savedLogin) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	// every account gets its stable id before it is written (#905): the
 	// one it has, or the stand-in made of its name, there to stay
 	for i := range ls {
 		ls[i].ID = loginID(ls[i])
 	}
+	sortLogins(ls)
+	// a Copilot account renamed on read is written under its new name
+	// once its settings have moved to it; until they can, under its old
+	disk := renameSettled(ls)
+	b, err := json.MarshalIndent(disk, "", "  ")
+	if err != nil {
+		return err
+	}
+	defer Changed() // an account added, switched or gone: All builds anew
+	beforeLoginsWrite()
+	// the file there now is kept first: as its last good generation, or
+	// copied aside when it doesn't read, never written over unkept
+	if err := lastgood.Keep(loginsPath(), validLogins, 0o600); err != nil {
+		return err
+	}
+	if err := writePrivate(loginsPath(), append(b, '\n')); err != nil {
+		return err
+	}
+	lastLoginsMu.Lock()
+	lastLogins, loginsKnown = slices.Clone(ls), true
+	lastLoginsMu.Unlock()
+	return nil
+}
+
+// beforeLoginsWrite is called as logins.json is about to be written: for a
+// test to have another magpie write it then.
+var beforeLoginsWrite = func() {}
+
+// sortLogins puts accounts in the order logins.json keeps them: by agent,
+// then the order the user gave, then by name.
+func sortLogins(ls []savedLogin) {
 	sort.SliceStable(ls, func(i, j int) bool {
 		if ls[i].Agent != ls[j].Agent {
 			return ls[i].Agent < ls[j].Agent
@@ -235,28 +287,11 @@ func writeLogins(ls []savedLogin) error {
 		}
 		return strings.ToLower(ls[i].User) < strings.ToLower(ls[j].User)
 	})
-	// a Copilot account renamed on read is written under its new name
-	// once its settings have moved to it; until they can, under its old
-	disk := renameSettled(ls)
-	b, err := json.MarshalIndent(disk, "", "  ")
-	if err != nil {
-		return err
-	}
-	defer Changed() // an account added, switched or gone: All builds anew
-	if err := keepUnreadLogins(loginsPath()); err != nil {
-		return err
-	}
-	if err := writePrivate(loginsPath(), append(b, '\n')); err != nil {
-		return err
-	}
-	lastLoginsMu.Lock()
-	lastLogins = slices.Clone(ls)
-	lastLoginsMu.Unlock()
-	return nil
 }
 
 // writePrivate replaces a file readable by the user alone, atomically, so
-// an agent reading it at that moment sees either version, never half.
+// an agent reading it at that moment sees either version, never half; the
+// new one is on the disk before it is renamed over the old (#1505).
 func writePrivate(path string, b []byte) error {
 	defer filememo.Forget()        // read again, where a request holds it
 	path, err := edit.Target(path) // a symlink stays, its target written
@@ -266,23 +301,7 @@ func writePrivate(path string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	return steady.Rename(tmp.Name(), path)
+	return steady.WriteFile(path, b, 0o600)
 }
 
 func upsertLogin(ls []savedLogin, l savedLogin) []savedLogin {
@@ -295,6 +314,12 @@ func upsertLogin(ls []savedLogin, l savedLogin) []savedLogin {
 			// a refused Claude credential stays refused while it is the
 			// one the account has
 			if l.Agent == "claude" && l.Lapsed == "" && ls[i].Refused != "" && ls[i].Refused == claudeLoginVersion(l) {
+				l.Lapsed, l.Refused = ls[i].Lapsed, ls[i].Refused
+			}
+			// so does a revoked sign-in's mark (signin_revoked.go), while
+			// the credential is the same: a sign-in anew or a refresh
+			// clears it, as does a request it serves
+			if l.Lapsed == "" && strings.HasPrefix(ls[i].Refused, revokedPrefix) && sameAuth(l.Auth, ls[i].Auth) && l.Home == ls[i].Home {
 				l.Lapsed, l.Refused = ls[i].Lapsed, ls[i].Refused
 			}
 			l.On = l.On || ls[i].On
@@ -493,17 +518,15 @@ func claudeUser(email, plan string, acct map[string]any) string {
 	return email + " · " + org
 }
 
-func codexAuthPath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".codex", "auth.json")
-}
+// codexAuthPath is Codex's sign-in, under its home (appdir.CodexHome).
+func codexAuthPath() string { return filepath.Join(appdir.CodexHome(), "auth.json") }
 
 // CodexAPIKeySignedIn says Codex itself is signed in with an OpenAI
 // API key rather than a ChatGPT account (auth.json's auth_mode): its
 // sign-in is a key's, and spends no account a gateway key's list
 // governs.
 func CodexAPIKeySignedIn() bool {
-	b, err := os.ReadFile(codexAuthPath())
+	b, err := readAccountFile(codexAuthPath())
 	if err != nil {
 		return false
 	}
@@ -522,7 +545,7 @@ func claudeProfilePath() string {
 }
 
 func readClaudeProfile() (map[string]any, error) {
-	b, err := os.ReadFile(claudeProfilePath())
+	b, err := readAccountFile(claudeProfilePath())
 	if err != nil {
 		return nil, err
 	}
@@ -539,6 +562,9 @@ func readClaudeProfile() (map[string]any, error) {
 // signed in to, read again only when the file changes: it is large, and a
 // page asks for it for every provider it lists. It must not be changed.
 func claudeProfileAccount() (map[string]any, bool) {
+	if settings.AccountDiscoveryOff() {
+		return nil, false
+	}
 	acct, err := filememo.Read("claude account", claudeProfilePath(), func(b []byte) (map[string]any, error) {
 		var m struct {
 			OAuthAccount map[string]any `json:"oauthAccount"`
@@ -602,9 +628,12 @@ func savedButSignedOut() []Exclusion {
 
 // liveLogin reads the account an agent is signed in to now.
 func liveLogin(agent string) (savedLogin, bool) {
+	if settings.AccountDiscoveryOff() {
+		return savedLogin{}, false
+	}
 	switch agent {
 	case "codex":
-		b, err := os.ReadFile(codexAuthPath())
+		b, err := readAccountFile(codexAuthPath())
 		if err != nil {
 			return savedLogin{}, false
 		}
@@ -662,13 +691,18 @@ func accountRemoved(agent string) bool {
 }
 
 func rememberLogins(force bool) {
+	if settings.AccountDiscoveryOff() {
+		return
+	}
 	loginsMu.Lock()
 	defer loginsMu.Unlock()
 	if !force && time.Since(loginsSeenAt) < 30*time.Second {
 		return
 	}
 	loginsSeenAt = time.Now()
-	ls := readLogins()
+	was := readLogins()
+	ls := slices.Clone(was)
+	now := time.Now().UTC().Truncate(time.Second)
 	changed := false
 	for _, agent := range loginAgents {
 		if accountRemoved(agent) {
@@ -681,7 +715,7 @@ func rememberLogins(force bool) {
 			}
 			continue
 		}
-		l.Seen = time.Now().UTC().Truncate(time.Second)
+		l.Seen = now
 		if agent == "claude" {
 			for i := range ls {
 				ls[i].Held = false
@@ -691,14 +725,55 @@ func rememberLogins(force bool) {
 		ls = upsertLogin(ls, l)
 		changed = true
 	}
-	if changed {
+	// every magpie run from a terminal is a new process, which the 30
+	// seconds above don't hold for: one that would only move Seen on, and
+	// that recently, writes nothing (#1674)
+	if changed && !onlySeenMoved(was, ls, now) {
 		_ = writeLogins(ls)
 	}
+}
+
+// seenEvery is how often an account still signed in has the time it was
+// last seen written, when nothing else of it changed.
+const seenEvery = 10 * time.Minute
+
+// onlySeenMoved says next is was with nothing changed but the times
+// accounts were last seen, each of them less than seenEvery before now.
+func onlySeenMoved(was, next []savedLogin, now time.Time) bool {
+	if len(was) != len(next) {
+		return false
+	}
+	norm := func(ls []savedLogin) []savedLogin {
+		out := slices.Clone(ls)
+		for i := range out {
+			out[i].ID = loginID(out[i])
+		}
+		sortLogins(out)
+		return out
+	}
+	a, b := norm(was), norm(next)
+	for i := range b {
+		if a[i].ID != b[i].ID {
+			return false
+		}
+		if !b[i].Seen.Equal(a[i].Seen) {
+			if a[i].Seen.IsZero() || now.Sub(a[i].Seen) >= seenEvery || b[i].Seen.Before(a[i].Seen) {
+				return false
+			}
+			b[i].Seen = a[i].Seen
+		}
+	}
+	ja, err1 := json.Marshal(a)
+	jb, err2 := json.Marshal(b)
+	return err1 == nil && err2 == nil && bytes.Equal(ja, jb)
 }
 
 // Logins lists the remembered accounts of an agent ("" for every one),
 // the active one flagged.
 func Logins(agent string) []Login {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	if pp, ok := pluginOfAgent(agent); ok {
 		return pluginLoginList(pp)
 	}
@@ -800,6 +875,9 @@ func Logins(agent string) []Login {
 			Paused: (using || first) && pausedOwn(ls, l.Agent, l.User), first: first}
 		if l.Agent == "claude" {
 			lg.Lapsed = claudeSignedOut(l)
+		} else {
+			// the one in use too, its sign-in revoked (#1793)
+			lg.Lapsed = revokedLapse(l)
 		}
 		if !using {
 			if l.Agent != "claude" {
@@ -905,12 +983,19 @@ func loginRoom(agent string) func(user string) (known, spent bool) {
 // they restart; so does Codex's background app-server, which new Codex
 // sessions attach to (CodexDaemonStale says when it is).
 func SwitchLogin(agent, user string) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	// the user's own choice: magpie doesn't sign the agent back in to the
 	// account it moved it off
 	if slices.Contains(loginAgents, agent) {
 		setLoginReturn(agent, loginReturn{})
 	}
-	return switchLogin(agent, user)
+	if err := switchLogin(agent, user); err != nil {
+		return err
+	}
+	servedMoved()
+	return nil
 }
 
 func switchLogin(agent, user string) error {
@@ -949,6 +1034,14 @@ func switchLogin(agent, user string) error {
 	if err == nil && agent == "codex" && from != "" {
 		noteCodexSwitch(from, user)
 	}
+	if err == nil && agent == "claude" {
+		// the account's own way out goes with it (#1807)
+		if p, perr := SyncClaudeProxyEnv(user); perr != nil {
+			log.Printf("claude: writing %s's proxy to settings.json: %v", user, perr)
+		} else if p != "" {
+			log.Printf("claude: Claude Code sessions started from now on go through %s's proxy %s", user, p)
+		}
+	}
 	return err
 }
 
@@ -956,6 +1049,13 @@ func switchLogin(agent, user string) error {
 // the agent's own store, and answers the account it replaced: "" when there
 // was none, or the agent was on that one already.
 func switchSavedLogin(agent, user string) (from string, _ error) {
+	if agent == "claude" {
+		// nor while Claude Code runs in the account's own directory for
+		// magpie (inSavedClaudeDir), which may refresh it there
+		mu := claudeDirRun(user)
+		mu.Lock()
+		defer mu.Unlock()
+	}
 	// not while a saved account is being refreshed: the agent would be
 	// given the refresh token that refresh is spending
 	savedTokenMu.Lock()
@@ -1041,11 +1141,7 @@ func putClaudeLogin(l savedLogin) error {
 	_, loc, found := readClaudeCredential()
 	if !found {
 		// signed out: put it where Claude Code keeps it on this system
-		dir := appdir.Getenv("CLAUDE_CONFIG_DIR")
-		if dir == "" {
-			home, _ := os.UserHomeDir()
-			dir = filepath.Join(home, ".claude")
-		}
+		dir := appdir.ClaudeDir()
 		loc = claudeCredentialLocation{path: filepath.Join(dir, ".credentials.json")}
 		if claudeKeychain {
 			loc = claudeCredentialLocation{keychain: true, account: claudeKeychainAccount()}
@@ -1088,6 +1184,9 @@ func putClaudeLogin(l savedLogin) error {
 // instead, as `codex logout` does (mamba on Discord: a single Codex account
 // couldn't be removed at all).
 func ForgetLogin(agent, user string) error {
+	if settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	if pp, ok := pluginOfAgent(agent); ok {
 		return forgetPluginLogin(pp, user)
 	}
@@ -1231,6 +1330,8 @@ func ForgetAccounts() {
 	clear(newFetches.m)
 	newFetches.Unlock()
 	forgetAccountCaches()
+	// the revoked sign-ins known are read from logins.json again
+	resetRevoked()
 }
 
 // forgetAccountCaches makes the next look at the accounts read them afresh.

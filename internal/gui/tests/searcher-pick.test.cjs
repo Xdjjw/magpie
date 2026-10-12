@@ -1,7 +1,7 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
 // Settings' Web search section: which provider searches for a model that
 // can't (01huadalang on Discord). The row shows magpie's own pick while none
-// is named; the picker offers Automatic, each provider that can search by
+// is named; the picker offers Automatic, Off, each provider that can search by
 // its small model, and each of its models, including a relay said to search;
 // a pick is saved as searcher ("<provider>" or "<provider>/<model>") and shown;
 // a provider's small model is offered once, not again among its models, and
@@ -21,6 +21,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const choices = [
@@ -37,11 +38,11 @@ const choices = [
     { id: "antigravity/gemini-3-flash", name: "Gemini 3 Flash", provider: "antigravity", providerName: "Antigravity" }] },
 ];
 const words = {
-  en: { name: "Searches for other models", auto: "Automatic", small: "GPT-5 Mini Named, its small model", unused: "isn't used: it is turned off",
+  en: { name: "Searches for other models", off: "Off", auto: "Automatic", small: "GPT-5 Mini Named, its small model", unused: "isn't used: it is turned off",
     own: "A Kimi Code plan (Kimi Code) searches for its own models first, with its web search; for other models only when named here", web: "its web search",
     google: "Antigravity search for their own models first, with Gemini's Google Search",
     more: "A1, A2, A3, A4, A5 and 3 more." },
-  zh: { name: "代搜供应商", auto: "自动", small: "GPT-5 Mini Named（它的小模型）", unused: "没有用 OpenAI · GPT-5 Mini Named：它已关闭",
+  zh: { name: "代搜供应商", off: "关闭", auto: "自动", small: "GPT-5 Mini Named（它的小模型）", unused: "没有用 OpenAI · GPT-5 Mini Named：它已关闭",
     own: "Kimi Code 套餐（Kimi Code）的模型优先用套餐自带的联网搜索；其他模型仅在此处选中时使用", web: "它自带的联网搜索",
     google: "Antigravity 的模型优先用 Gemini 自带的 Google 搜索",
     more: "A1, A2, A3, A4, A5 以及另外 3 个。" },
@@ -70,8 +71,8 @@ const helpWords = {
 };
 
 function serve(lang, posted, st) {
-  const settings = () => ({ lang, theme: st.theme || "light", searchVendors: [], searchAPIs: [], searchChoices: choices,
-    searchAuto: "Claude · claude-haiku-4-5", searchProvider: st.unused || !st.searcher ? "Claude · claude-haiku-4-5" : st.searcher,
+  const settings = () => ({ lang, theme: st.theme || "light", searchVendors: [], searchAPIs: st.apis || [], searchFirst: st.first || "", searchChoices: choices,
+    searchAuto: "Claude · claude-haiku-4-5", searchProvider: st.searcher === "off" ? "" : st.unused || !st.searcher ? "Claude · claude-haiku-4-5" : st.searcher,
     searchRelays: st.relays || ["MyRelay"], searchLeftOut: st.leftOut || ["MiniMax", "Kimi For Coding"], searcher: st.searcher, searchUnused: st.unused });
   return async (r) => {
     const url = new URL(r.request().url());
@@ -112,7 +113,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       const posted = [];
       const st = { searcher: "", unused: "" };
       await page.route("**/*", serve(lang, posted, st));
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=models");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const row = page.locator("#searchList .row.searcher-row");
       await row.waitFor();
       await row.scrollIntoViewIfNeeded();
@@ -221,14 +224,38 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await row.locator("button.searcher-pick").innerText(), `${w.auto} · Claude · claude-haiku-4-5`);
       st.unused = "";
 
+      assert.deepEqual(await where(), before, "the clicks moved nothing");
+      st.apis = [{ vendor: "searxng", name: "SearXNG", ready: true, url: "https://search.example.com" }];
+      st.first = "api";
+
+      // Off survives another save and a reload, suppresses provider-specific
+      // help, and still allows selecting Automatic again.
+      await click(row.locator("button.searcher-pick"));
+      await page.locator("#pop").waitFor({ state: "visible" });
+      await click(page.locator("#list li:not(.group)").filter({ hasText: new RegExp(`^${w.off}`) }));
+      await page.waitForFunction((off) => document.querySelector("#searchList button.searcher-pick")?.innerText === off, w.off);
+      assert.equal(posted.at(-1).searcher, "off");
+      await page.evaluate(() => savePrefs({ ...prefsKeep(prefs), noStats: true }));
+      assert.equal(posted.at(-1).searcher, "off");
+      await page.reload();
+      await row.waitFor();
+      await row.scrollIntoViewIfNeeded();
+      assert.equal(await row.locator("button.searcher-pick").innerText(), w.off);
+      assert.equal(await row.locator(".searcher-own, .searcher-unused, .searcher-relays, .searcher-left-out").count(), 0);
+      assert.equal(await page.locator("#searchFirstRow").count(), 0);
+      assert.equal(await row.locator(".sub").innerText(), lang === "zh"
+        ? "关闭供应商代搜后，仅使用已配置的搜索 API；未配置时，Magpie 不添加搜索工具。供应商自带的联网搜索不受影响。"
+        : "When provider search is off, only configured Search APIs are used. Without a Search API, magpie does not add a search tool. Providers' native web search is unchanged.");
+
       // back to Automatic
+      const afterReload = await where();
       await click(row.locator("button.searcher-pick"));
       await page.locator("#pop").waitFor({ state: "visible" });
       await click(page.locator("#list li:not(.group)", { hasText: w.auto }).first());
       await page.waitForFunction(() => !document.querySelector("#searchList .searcher-unused") &&
         document.querySelector("#searchList button.searcher-pick")?.innerText.includes("claude-haiku"));
       assert.equal(posted.at(-1).searcher, "");
-      assert.deepEqual(await where(), before, "the clicks moved nothing");
+      assert.deepEqual(await where(), afterReload, "the clicks moved nothing");
       assert.deepEqual(errors, []);
     });
   }
@@ -248,7 +275,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         for (const width of [560, 1000]) {
           await page.mouse.move(0, 0);
           await page.setViewportSize({ width, height: 900 });
+          await watchSettingsReads(page);
           await page.goto("http://magpie.test/?view=settings&tab=models");
+          await settingsDrawn(page); // rows found are the ones that stay (#1659)
           const row = page.locator("#searchList .searcher-row");
           await row.waitFor();
           // Hover retries if Settings' startup refresh replaces the row.
@@ -294,7 +323,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       st.relays = [];
       st.leftOut = [];
       st.searcher = "";
+      await watchSettingsReads(page);
       await page.goto("http://magpie.test/?view=settings&tab=models");
+      await settingsDrawn(page); // rows found are the ones that stay (#1659)
       const row = page.locator("#searchList .searcher-row");
       await row.waitFor();
       assert((await row.locator(".sub").innerText()).startsWith(h.help));

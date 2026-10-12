@@ -43,3 +43,48 @@ func TestSkillsOnlyFolderIsNotInstalled(t *testing.T) {
 		})
 	}
 }
+
+// An uninstalled agent leaves the folders it writes as it runs: v5tech's
+// ~/.codebuddy held only logs/ and diagnostics/, ~/.qwen a debug/ (#1495).
+// A folder holding only those is no sign the agent is here; its own
+// settings beside them are, and so is a file that only shares the name.
+func TestLeftoverFoldersAreNotInstalled(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	for _, c := range []struct {
+		mk   func(home string) *Agent
+		left []string
+	}{
+		{func(h string) *Agent { return codebuddy(h) }, []string{"logs", "diagnostics"}},
+		{func(h string) *Agent { return qwen(h) }, []string{"debug"}},
+		{func(h string) *Agent { return hermes(h) }, []string{"cache", "log", "skills"}},
+	} {
+		home := t.TempDir()
+		a := c.mk(home)
+		t.Run(a.ID, func(t *testing.T) {
+			for _, d := range c.left {
+				if err := os.MkdirAll(filepath.Join(a.Dir, d), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				os.WriteFile(filepath.Join(a.Dir, d, "x.log"), []byte("x"), 0o644)
+			}
+			if c.mk(home).Detected() {
+				t.Errorf("%s holding only %v is taken for %s", a.Dir, c.left, a.Name)
+			}
+			if err := os.WriteFile(filepath.Join(a.Dir, "settings.json"), []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if !c.mk(home).Detected() {
+				t.Errorf("%s with its own settings beside %v isn't found", a.Name, c.left)
+			}
+		})
+	}
+	home := t.TempDir()
+	a := codebuddy(home)
+	os.MkdirAll(a.Dir, 0o755)
+	if err := os.WriteFile(filepath.Join(a.Dir, "logs"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !codebuddy(home).Detected() {
+		t.Error("a file named logs, not a folder, is no longer taken for the agent's own")
+	}
+}

@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The standalone CLI's sign-in: who in a JSONC config.json, the token in
@@ -71,5 +73,77 @@ func TestCopilotCLILogin(t *testing.T) {
 	os.WriteFile(filepath.Join(cli, "config.json"), []byte(`{"lastLoggedInUser":{"host":"https://github.com","login":"hubot"},"copilotTokens":{"https://github.com:hubot":"gho_plain"}}`), 0o600)
 	if app, ok := copilotLogin(filepath.Join(home, ".config")); !ok || app.User != "hubot" || app.Token != "gho_plain" || asked != "" {
 		t.Fatalf("plaintext: %+v asked %q", app, asked)
+	}
+}
+
+// On Linux the CLI 1.0's keyring store keys its token by service and
+// username, not keytar's account (#723); a keyring that never answers
+// doesn't hold the caller.
+func TestCopilotSecretToolUsername(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("a shell script stands in for secret-tool")
+	}
+	dir := t.TempDir()
+	tool := filepath.Join(dir, "secret-tool")
+	os.WriteFile(tool, []byte(`#!/bin/sh
+[ "$*" = "lookup service copilot-cli username https://github.com:octocat" ] && { echo gho_keyring; exit 0; }
+exit 1
+`), 0o755)
+	if got := copilotSecretTool(tool, "https://github.com:octocat"); got != "gho_keyring" {
+		t.Fatalf("token %q, want the one under username", got)
+	}
+	if got := copilotSecretTool(tool, "https://github.com:hubot"); got != "" {
+		t.Fatalf("another account's token: %q", got)
+	}
+	old := copilotSecretWait
+	copilotSecretWait = 200 * time.Millisecond
+	defer func() { copilotSecretWait = old }()
+	hang := filepath.Join(dir, "secret-tool-hang")
+	os.WriteFile(hang, []byte("#!/bin/sh\nexec sleep 30\n"), 0o755)
+	start := time.Now()
+	if got := copilotSecretTool(hang, "https://github.com:octocat"); got != "" || time.Since(start) > 10*time.Second {
+		t.Fatalf("a keyring that never answers: %q after %v", got, time.Since(start))
+	}
+}
+
+// magpie on Windows, the Copilot CLI signed in inside a WSL distro that
+// runs (#723, jia2): WSL has no keyring, so the CLI kept its token in the
+// distro's ~/.copilot/config.json, which magpie reads over WSL's share.
+func TestCopilotCLIInWSL(t *testing.T) {
+	home := signIn(t)
+	os.Remove(filepath.Join(home, ".config", "github-copilot", "apps.json"))
+	t.Setenv("COPILOT_HOME", filepath.Join(home, "no-copilot-here"))
+	oldSecret := copilotCLISecret
+	copilotCLISecret = func(string) string { return "" }
+	distro := filepath.Join(t.TempDir(), "home", "jia")
+	os.MkdirAll(filepath.Join(distro, ".copilot"), 0o700)
+	os.WriteFile(filepath.Join(distro, ".copilot", "config.json"), []byte(`{
+  "lastLoggedInUser": {"host": "https://github.com", "login": "jia2"},
+  "loggedInUsers": [{"host": "https://github.com", "login": "jia2"}],
+  "copilotTokens": {"https://github.com:jia2": "gho_wsl"}
+}`), 0o600)
+	oldHomes := CopilotWSLHomes
+	homes := []string{filepath.Join(t.TempDir(), "other"), distro}
+	CopilotWSLHomes = func() []string { return homes }
+	copilotWSL.at = time.Time{}
+	defer func() {
+		copilotCLISecret, CopilotWSLHomes = oldSecret, oldHomes
+		copilotWSL.at = time.Time{}
+	}()
+
+	app, ok := copilotLogin(filepath.Join(home, ".config"))
+	if !ok || app.User != "jia2" || app.Token != "gho_wsl" || !app.cli {
+		t.Fatalf("the WSL distro's Copilot CLI isn't found: %+v %v", app, ok)
+	}
+	if p, ok := find(All(), "copilot"); !ok || p.Account.User != "jia2" {
+		t.Fatalf("copilot: %+v %v", p, ok)
+	}
+
+	// the distro stopped: it isn't listed, and isn't read once the
+	// sign-in read before is older than copilotWSLAge
+	homes = nil
+	copilotWSL.at = time.Time{}
+	if app, ok := copilotLogin(filepath.Join(home, ".config")); ok {
+		t.Fatalf("a stopped distro's sign-in is used: %+v", app)
 	}
 }

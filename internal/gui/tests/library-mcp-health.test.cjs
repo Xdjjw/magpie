@@ -4,7 +4,9 @@
 // words beside its name, the whole reason in its tooltip. The servers are
 // checked once when the MCP tab opens, not again on coming back to it; a
 // click on a row's status checks that one again (fresh), without opening
-// the editor or moving the page. In English and Chinese. No backend: the
+// the editor or moving the page. A server no agent or project has is not
+// checked on its own; its status says so, and a click checks it (#1597,
+// xiaozhu1337). In English and Chinese. No backend: the
 // API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -17,13 +19,17 @@ const HOME = "/Users/lc";
 const fixture = () => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
   agents: [{ id: "claude", name: "Claude Code", icon: "claudecode-color", skills: `${HOME}/.claude/skills`, mcp: `${HOME}/.claude.json` }],
-  instructions: { agents: [], sets: [] }, foundServers: [], projects: [], foundSkills: [], skills: [],
+  instructions: { agents: [], sets: [] }, foundServers: [], foundSkills: [], skills: [],
+  // github is on in a project only, which is still in use
+  projects: [{ dir: `${HOME}/code/app`, name: "app", copy: false, skills: {}, placed: [], servers: { github: ["claude"] }, wrote: {} }],
   servers: [
     { name: "files", transport: "stdio", command: "npx", args: ["files-mcp"], agents: ["claude"] },
-    { name: "linear", transport: "http", url: "https://mcp.linear.app/mcp", agents: [], signIn: { signedIn: false } },
-    { name: "fetch", transport: "stdio", command: "uvx", args: ["mcp-server-fetch"], agents: [] },
+    { name: "linear", transport: "http", url: "https://mcp.linear.app/mcp", agents: ["claude"], signIn: { signedIn: false } },
+    { name: "fetch", transport: "stdio", command: "uvx", args: ["mcp-server-fetch"], agents: ["claude"] },
     { name: "github", transport: "stdio", command: "github-mcp", agents: [] },
-    { name: "slow", transport: "http", url: "https://slow.example.com/mcp", agents: [], signIn: { signedIn: false } },
+    { name: "slow", transport: "http", url: "https://slow.example.com/mcp", agents: ["claude"], signIn: { signedIn: false } },
+    // on for no agent: not checked till the reader clicks (#1597)
+    { name: "idle", transport: "stdio", command: "idle-mcp", agents: [] },
   ],
 });
 const found = {
@@ -31,7 +37,9 @@ const found = {
   linear: { state: "auth", code: 401, oauth: true },
   fetch: { state: "error", why: "notfound", detail: "uvx" },
   github: { state: "error", why: "exited", code: 1, detail: "Error: GITHUB_PERSONAL_ACCESS_TOKEN is not set" },
-  slow: { state: "error", why: "timeout" },
+  // a step that went unanswered names itself and how long it was waited for (#1467)
+  slow: { state: "error", why: "timeout", step: "tools/list", waited: 60000 },
+  idle: { state: "ok", tools: 2 },
 };
 
 // checks holds each check asked for; a check's answer waits for release()
@@ -70,8 +78,9 @@ const words = {
     linear: ["needs sign-in", "The server asks for a sign-in — open it to sign in once in magpie"],
     fetch: ["can't start: uvx not found", "Can't start it: there is no uvx on the PATH magpie has"],
     github: ["exited (1)", "It exited with code 1 before listing its tools\nError: GITHUB_PERSONAL_ACCESS_TOKEN is not set"],
-    slow: ["no answer", "No answer in 15 seconds"],
+    slow: ["no answer to tools/list", "No answer to tools/list in 60 seconds"],
     again: "Click to check again", fresh: "13 tools", skills: "Skills",
+    idle: ["not checked", "No agent has it, so it isn't checked on its own\nClick to check it"], idleOk: "2 tools",
   },
   zh: {
     checking: "检查中…",
@@ -79,8 +88,9 @@ const words = {
     linear: ["需要登录", "服务器要求登录：打开它，在 magpie 中登录一次"],
     fetch: ["无法启动：找不到 uvx", "无法启动：magpie 的 PATH 里没有 uvx"],
     github: ["已退出（1）", "列出工具前就退出了，退出码 1\nError: GITHUB_PERSONAL_ACCESS_TOKEN is not set"],
-    slow: ["无响应", "15 秒内没有响应"],
+    slow: ["tools/list 无响应", "等了 60 秒，tools/list 仍没有响应"],
     again: "点击重新检查", fresh: "13 个工具", skills: "技能",
+    idle: ["未检查", "没有 agent 在用它，所以不会自动检查\n点击检查"], idleOk: "2 个工具",
   },
 };
 
@@ -113,16 +123,20 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(checks.length, 1);
         assert.deepEqual([...checks[0].names].sort(), ["fetch", "files", "github", "linear", "slow"]);
         assert.equal(checks[0].fresh, false);
-        for (const n of Object.keys(found)) {
+        for (const n of Object.keys(found).filter((n) => n !== "idle")) {
           assert.equal(await status(n).textContent(), w.checking);
           assert.equal(await status(n).evaluate((b) => b.classList.contains("checking")), true);
         }
         checks[0].release();
 
+        // the one on for no agent says so, and waits for a click (#1597)
+        assert.equal(await status("idle").textContent(), w.idle[0]);
+        assert.equal(await status("idle").getAttribute("title"), w.idle[1]);
+        assert.equal(await status("idle").isVisible(), true);
         // each status in a few words, the whole reason in its tooltip
         await page.waitForFunction(() => !document.querySelector("#view-library .lib-health.checking"));
         const cls = { files: "ok", linear: "auth", fetch: "err", github: "err", slow: "err" };
-        for (const [n, [text, tip]] of Object.entries(w).filter(([k]) => k in found)) {
+        for (const [n, [text, tip]] of Object.entries(w).filter(([k]) => k in found && k !== "idle")) {
           assert.equal(await status(n).textContent(), text, n);
           assert.equal(await status(n).getAttribute("title"), tip + "\n" + w.again, n);
           assert.equal(await status(n).evaluate((b, c) => b.classList.contains(c), cls[n]), true, n);
@@ -133,10 +147,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         // it stays on the row's name line, one line high
         const box = await status("fetch").boundingBox();
         assert.ok(box.height <= 18, "status wraps: " + box.height);
+        const slowBox = await status("slow").boundingBox();
+        assert.ok(slowBox.height <= 18 && slowBox.width <= 220, "the step's name widens or wraps the status: " + JSON.stringify(slowBox));
 
         // back from another tab: not checked again
-        await page.locator(".lib-tabs button", { hasText: w.skills }).click();
-        await page.locator(".lib-tabs button", { hasText: /MCP/ }).click();
+        await page.locator(":is(.lib-tabs button, .nav-s):visible", { hasText: w.skills }).click();
+        await page.locator(":is(.lib-tabs button, .nav-s):visible", { hasText: /MCP/ }).click();
         await status("files").waitFor();
         await page.waitForTimeout(150);
         assert.equal(checks.length, 1, "the servers were checked again on coming back");
@@ -159,6 +175,15 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForFunction((t) => document.querySelector('.lib-health[data-server="files"]').textContent === t, w.fresh);
         assert.equal(await page.evaluate(() => document.querySelector("#modal").classList.contains("lib")), false, "the click opened the editor");
         assert.equal(await page.evaluate(() => document.querySelector("#view-library").scrollTop), top);
+        // a click on the one in no use checks it, and only it
+        await status("idle").click();
+        for (let i = 0; i < 50 && checks.length < 3; i++) await page.waitForTimeout(20);
+        assert.deepEqual({ names: checks[2].names, fresh: checks[2].fresh }, { names: ["idle"], fresh: true });
+        assert.equal(await status("idle").textContent(), w.checking);
+        checks[2].release();
+        await page.waitForFunction((t) => document.querySelector('.lib-health[data-server="idle"]').textContent === t, w.idleOk);
+        assert.equal(await page.evaluate(() => document.querySelector("#modal").classList.contains("lib")), false, "the click opened the editor");
+        assert.equal(checks.length, 3);
         assert.equal(await page.locator("#view-library select").count(), 0);
         await ctx.close();
       });

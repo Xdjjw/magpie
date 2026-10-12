@@ -13,11 +13,23 @@ import (
 	"github.com/yetone/magpie/internal/provider"
 )
 
-// rootUnionUpstream answers as Grok behind a relay does (AiHubMix's
-// grok-4.7, 2026-10-08, its bytes): a request offering a function whose
-// parameters have no object root is refused, else answered, on Chat or
-// Responses as asked.
-func rootUnionUpstream(mu *sync.Mutex, got *[]map[string]any) http.HandlerFunc {
+// The refusals of a union at a tool's root, as each vendor words them.
+var rootUnionRefusals = map[string]string{
+	// Grok behind a relay (AiHubMix's grok-4.7, 2026-10-08, its bytes)
+	"xAI": `{"error":{"message":"Failed to start sampling: [invalid_client_tool_schema] mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch) (tid: 2026100808425178410684649237042)","type":"upstream_error","param":"400","code":"bad_response_status_code"}}`,
+	// an upstream validating as OpenAI's API does (#1493, jevejoze: its
+	// message, in OpenAI's error)
+	"OpenAI-compatible": `{"error":{"message":"Invalid schema for function 'mcp__codex_app__automation_update': schema must have type 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at the top level.","type":"invalid_request_error","param":"tools[1].parameters","code":"invalid_function_parameters"}}`,
+	// OpenAI's own Responses API, asked with the fixture's schema
+	// (2026-10-10, its bytes)
+	"OpenAI": "{\n  \"error\": {\n    \"message\": \"Invalid schema for function 'mcp__codex_app__automation_update': schema must be a JSON Schema of 'type: \\\"object\\\"', got 'type: \\\"None\\\"'.\",\n    \"type\": \"invalid_request_error\",\n    \"param\": \"tools[0].parameters\",\n    \"code\": \"invalid_function_parameters\"\n  }\n}",
+}
+
+// rootUnionUpstream answers as an upstream that takes no union at a tool's
+// root does, refusing as vendor words it: a request offering a function
+// whose parameters have no object root is refused, else answered, on Chat
+// or Responses as asked.
+func rootUnionUpstream(vendor string, mu *sync.Mutex, got *[]map[string]any) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		var q map[string]any
@@ -35,7 +47,7 @@ func rootUnionUpstream(mu *sync.Mutex, got *[]map[string]any) http.HandlerFunc {
 			if ps != nil && (ps["type"] != "object" || ps["anyOf"] != nil || ps["oneOf"] != nil) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(400)
-				io.WriteString(w, `{"error":{"message":"Failed to start sampling: [invalid_client_tool_schema] mcp__codex_app__automation_update: tool parameter root must be an object type (root schema is an anyOf/oneOf union with a non-object branch) (tid: 2026100808425178410684649237042)","type":"upstream_error","param":"400","code":"bad_response_status_code"}}`)
+				io.WriteString(w, rootUnionRefusals[vendor])
 				return
 			}
 		}
@@ -59,9 +71,11 @@ func answer(w http.ResponseWriter, r *http.Request) {
 // a union at the root (the fixture is what ChatGPT.app 26.930's zod
 // builds), flat as mcp__codex_app__automation_update. Grok on a relay's
 // key, on its Chat API or its Responses, refused every turn ("tool
-// parameter root must be an object type", #1271). It is asked again with
-// the parameters folded to an object root, and the next turn goes folded
-// at once; a vendor that takes the union still gets it as sent.
+// parameter root must be an object type", #1271), as does an upstream
+// validating as OpenAI does ("schema must have type 'object' and not have
+// 'oneOf'/'anyOf'…", #1493). It is asked again with the parameters folded
+// to an object root, and the next turn goes folded at once; a vendor that
+// takes the union still gets it as sent.
 func TestRootUnionFoldedWhereRefused(t *testing.T) {
 	schema, err := os.ReadFile("../provider/testdata/codex_automation_update_schema.json")
 	if err != nil {
@@ -70,77 +84,104 @@ func TestRootUnionFoldedWhereRefused(t *testing.T) {
 	body := `{"model":"%s","stream":false,"store":false,"tools":[{"type":"function","name":"exec_command","parameters":{"type":"object","properties":{"cmd":{"type":"string"}}}},` +
 		`{"type":"function","name":"mcp__codex_app__automation_update","strict":false,"parameters":` + string(schema) + `}],` +
 		`"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}`
-	for name, api := range map[string]string{"passed through": "responses", "translated": "chat"} {
-		t.Run(name, func(t *testing.T) {
-			fresh(t)
-			var mu sync.Mutex
-			var refusing, taking []map[string]any
-			strict := httptest.NewServer(rootUnionUpstream(&mu, &refusing))
-			t.Cleanup(strict.Close)
-			lax := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				b, _ := io.ReadAll(r.Body)
-				var q map[string]any
-				json.Unmarshal(b, &q)
-				mu.Lock()
-				taking = append(taking, q)
-				mu.Unlock()
-				answer(w, r)
-			}))
-			t.Cleanup(lax.Close)
-			for _, p := range []provider.Provider{
-				{ID: "relay", Name: "Relay", Key: "k", Models: []string{"grok-4.7"}},
-				{ID: "lax", Name: "Lax", Key: "k", Models: []string{"m1"}},
-			} {
-				url := strict.URL + "/v1"
-				if p.ID == "lax" {
-					url = lax.URL + "/v1"
-				}
-				if api == "chat" {
-					p.Chat = url
-				} else {
-					p.Responses = url
-				}
-				if err := provider.Save(p); err != nil {
-					t.Fatal(err)
-				}
-			}
-			s := New()
-			ask := func(model string) *httptest.ResponseRecorder {
-				rec := httptest.NewRecorder()
-				s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(strings.Replace(body, "%s", model, 1))))
-				return rec
-			}
-			params := func(q map[string]any) map[string]any {
-				for _, t := range q["tools"].([]any) {
-					tm := t.(map[string]any)
-					if fn, ok := tm["function"].(map[string]any); ok {
-						tm = fn
+	for _, vendor := range []string{"xAI", "OpenAI-compatible", "OpenAI"} {
+		for name, api := range map[string]string{"passed through": "responses", "translated": "chat"} {
+			t.Run(vendor+" "+name, func(t *testing.T) {
+				fresh(t)
+				var mu sync.Mutex
+				var refusing, taking []map[string]any
+				strict := httptest.NewServer(rootUnionUpstream(vendor, &mu, &refusing))
+				t.Cleanup(strict.Close)
+				lax := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					b, _ := io.ReadAll(r.Body)
+					var q map[string]any
+					json.Unmarshal(b, &q)
+					mu.Lock()
+					taking = append(taking, q)
+					mu.Unlock()
+					answer(w, r)
+				}))
+				t.Cleanup(lax.Close)
+				for _, p := range []provider.Provider{
+					{ID: "relay", Name: "Relay", Key: "k", Models: []string{"grok-4.7"}},
+					{ID: "lax", Name: "Lax", Key: "k", Models: []string{"m1"}},
+				} {
+					url := strict.URL + "/v1"
+					if p.ID == "lax" {
+						url = lax.URL + "/v1"
 					}
-					if tm["name"] == "mcp__codex_app__automation_update" {
-						return tm["parameters"].(map[string]any)
+					if api == "chat" {
+						p.Chat = url
+					} else {
+						p.Responses = url
+					}
+					if err := provider.Save(p); err != nil {
+						t.Fatal(err)
 					}
 				}
-				return nil
-			}
-			rec := ask("relay/grok-4.7")
-			if rec.Code != 200 || !strings.Contains(rec.Body.String(), "ok") {
-				t.Fatalf("relay: %d %s", rec.Code, rec.Body)
-			}
-			if len(refusing) != 2 {
-				t.Fatalf("relay was asked %d times", len(refusing))
-			}
-			ps := params(refusing[1])
-			props, _ := ps["properties"].(map[string]any)
-			if ps["type"] != "object" || ps["anyOf"] != nil || props["prompt"] == nil || props["mode"] == nil {
-				t.Fatalf("asked again with %v", ps)
-			}
-			if rec = ask("relay/grok-4.7"); rec.Code != 200 || len(refusing) != 3 || params(refusing[2])["anyOf"] != nil {
-				t.Fatalf("next turn: %d, asked %d times", rec.Code, len(refusing))
-			}
-			if rec = ask("lax/m1"); rec.Code != 200 || len(taking) != 1 || params(taking[0])["anyOf"] == nil {
-				t.Fatalf("lax: %d, asked %d times", rec.Code, len(taking))
-			}
-		})
+				s := New()
+				ask := func(model string) *httptest.ResponseRecorder {
+					rec := httptest.NewRecorder()
+					s.Handler().ServeHTTP(rec, httptest.NewRequest("POST", "/v1/responses", strings.NewReader(strings.Replace(body, "%s", model, 1))))
+					return rec
+				}
+				params := func(q map[string]any) map[string]any {
+					for _, t := range q["tools"].([]any) {
+						tm := t.(map[string]any)
+						if fn, ok := tm["function"].(map[string]any); ok {
+							tm = fn
+						}
+						if tm["name"] == "mcp__codex_app__automation_update" {
+							return tm["parameters"].(map[string]any)
+						}
+					}
+					return nil
+				}
+				rec := ask("relay/grok-4.7")
+				if rec.Code != 200 || !strings.Contains(rec.Body.String(), "ok") {
+					t.Fatalf("relay: %d %s", rec.Code, rec.Body)
+				}
+				if len(refusing) != 2 {
+					t.Fatalf("relay was asked %d times", len(refusing))
+				}
+				ps := params(refusing[1])
+				props, _ := ps["properties"].(map[string]any)
+				if ps["type"] != "object" || ps["anyOf"] != nil || props["prompt"] == nil || props["mode"] == nil {
+					t.Fatalf("asked again with %v", ps)
+				}
+				if rec = ask("relay/grok-4.7"); rec.Code != 200 || len(refusing) != 3 || params(refusing[2])["anyOf"] != nil {
+					t.Fatalf("next turn: %d, asked %d times", rec.Code, len(refusing))
+				}
+				if rec = ask("lax/m1"); rec.Code != 200 || len(taking) != 1 || params(taking[0])["anyOf"] == nil {
+					t.Fatalf("lax: %d, asked %d times", rec.Code, len(taking))
+				}
+			})
+		}
+	}
+}
+
+// Every vendor's wording of the refusal is known, as its error body
+// carries it; another 400 about a tool isn't taken for one.
+func TestRootUnionRefusalWordings(t *testing.T) {
+	for vendor, body := range rootUnionRefusals {
+		if !rootUnionRefusal.MatchString(body) {
+			t.Errorf("%s: %s", vendor, body)
+		}
+	}
+	for _, body := range []string{
+		`{"type":"error","error":{"type":"invalid_request_error","message":"tools.1.custom.input_schema: input_schema does not support oneOf, allOf, or anyOf at the top level"}}`,
+	} {
+		if !rootUnionRefusal.MatchString(body) {
+			t.Errorf("not a root union refusal: %s", body)
+		}
+	}
+	for _, body := range []string{
+		`{"error":{"message":"Invalid schema for function 'read': In context=('properties', 'path'), 'format' is not permitted.","type":"invalid_request_error","code":"invalid_function_parameters"}}`,
+		`{"error":{"message":"Invalid 'tools[0].name': string does not match pattern.","type":"invalid_request_error"}}`,
+	} {
+		if rootUnionRefusal.MatchString(body) {
+			t.Errorf("taken for a root union refusal: %s", body)
+		}
 	}
 }
 

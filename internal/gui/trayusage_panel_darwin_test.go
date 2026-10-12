@@ -48,17 +48,22 @@ func init() {
 		if id := <-seen; id != "codex|first@test" {
 			panic("wrong initial target: " + id)
 		}
+		// Open is windowOpen, shown whether covered or not: Wails' IsVisible
+		// is the occlusion, and under a window over the whole screen (a
+		// remote-desktop server's) the panel just opened read as closed and
+		// the second click showed it again (#1661).
+		open := func(w *application.WebviewWindow) func() bool { return func() bool { return windowOpen(w) } }
 		var first *application.WebviewWindow
 		application.InvokeSync(func() {
 			first = h.panel
-			if !first.IsVisible() {
+			if !windowOpen(first) {
 				panic("initial quota click did not open the panel")
 			}
 			h.trayCellClick("codex|first@test") // the second click closes it
 		})
 		// Native hide dispatches asynchronously, even from the main thread.
 		deadline := time.Now().Add(2 * time.Second)
-		for application.InvokeSyncWithResult(first.IsVisible) {
+		for application.InvokeSyncWithResult(open(first)) {
 			if time.Now().After(deadline) {
 				panic("second quota click did not close the panel")
 			}

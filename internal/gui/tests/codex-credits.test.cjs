@@ -151,12 +151,16 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.deepEqual(await spot(), was, "the click moved the page");
       };
       // the row fits its card: the switch whole and inside it, the words
-      // wrapping rather than cut off
-      const fits = (page, row, card) => page.locator(row).evaluate((r, card) => {
+      // wrapping rather than cut off. Found and measured in one go: a read
+      // of the accounts landing between a locator finding the row and
+      // measuring it draws the cards anew, and the row found is then out
+      // of the page, all zeros (#1622)
+      const fits = (page, row, card) => page.evaluate(([row, card]) => {
+        const r = document.querySelector(row);
         const c = r.closest(card).getBoundingClientRect(), b = r.getBoundingClientRect(), s = r.querySelector(".use-credits").getBoundingClientRect();
         const say = r.querySelector(".ar-say");
         return b.right <= c.right + 0.5 && s.right <= c.right + 0.5 && s.width >= 27 && s.height >= 15 && say.scrollWidth <= say.clientWidth + 1;
-      }, card);
+      }, [row, card]);
 
       for (const width of [900, 440]) {
         const posts = [];
@@ -193,6 +197,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const psel = '.pq-credits[data-user="Me@example.com"]';
         await panel.locator('#ptabs [data-ptab="usage"]').click();
         await panel.locator(psel).waitFor();
+        // the tab, opened, reads the accounts again and draws its cards anew
+        // when they come: what follows is about the cards drawn from that
+        await panel.waitForFunction(() => !quotasLoading);
         assert.equal(await panel.locator(".pq-credits").count(), 1, "only the Codex account in sight has it");
         assert.equal(await text(panel.locator(psel + " .ar-say")), w.on);
         assert(await fits(panel, psel, ".pq-card"), `the say fits the panel's card at ${width}px`);

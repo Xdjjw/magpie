@@ -36,6 +36,7 @@ func syncHome(t *testing.T) string {
 	t.Setenv("DSH_HOME", "")
 	t.Setenv("OMO_CODING_AGENT_DIR", "")
 	t.Setenv("SENPI_CODING_AGENT_DIR", "")
+	t.Setenv("PRIME_AGENT_CODING_AGENT_DIR", "")
 	t.Setenv("PI_CODING_AGENT_DIR", "")
 	t.Setenv("PI_CONFIG_DIR", "")
 	t.Setenv("OMP_PROFILE", "")
@@ -156,7 +157,7 @@ func TestMaxTokensWithinContextWindow(t *testing.T) {
 			t.Fatal(err)
 		}
 		atomcodeCfg, _ := os.ReadFile(atomcode)
-		snowOut, err := snowProfileFor(nil, gatewayV1(), "k", "relay/glm-4.6")
+		snowOut, _, err := snowProfileFor(nil, false, gatewayV1(), "k", "relay/glm-4.6", nil)
 		if err != nil {
 			t.Fatal(err)
 		}

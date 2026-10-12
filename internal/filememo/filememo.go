@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -71,6 +72,20 @@ func Forget() {
 	mu.Lock()
 	gen++
 	mu.Unlock()
+}
+
+// Look has the file at path looked at on its next read, even while a
+// request holds what was read (Hold): another magpie may have written it,
+// which Forget, moved on by this one's writes alone, can't know of.
+func Look(path string) {
+	mu.Lock()
+	defer mu.Unlock()
+	for k, e := range seen {
+		if strings.HasSuffix(k, "\x00"+path) && !e.checked.IsZero() {
+			e.checked = time.Time{}
+			seen[k] = e
+		}
+	}
 }
 
 // Read is parse of the file at path, from what it gave last time when the

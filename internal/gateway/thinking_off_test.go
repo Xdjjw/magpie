@@ -315,6 +315,10 @@ func TestHaikuFiveFiveSamplingOnTheWire(t *testing.T) {
 			`{"model":"relay/claude-haiku-5-5","stream":false,"temperature":0,"max_tokens":2048,"messages":[{"role":"user","content":"which kind?"}]}`, 1, ""},
 		{"Haiku 4.5 keeps its temperature", "/v1/messages", strings.ReplaceAll(classifier, "%s", "claude-haiku-4-5"), 1, "0"},
 		{"a name magpie can't read is asked again", "/v1/messages", strings.ReplaceAll(classifier, "%s", "h55"), 2, ""},
+		// the same request from a Chat client is translated, where the
+		// name can't be read to leave the sampling out up front either
+		{"a name magpie can't read is asked again from chat", "/v1/chat/completions",
+			`{"model":"relay/h55","stream":false,"temperature":0,"max_tokens":2048,"messages":[{"role":"user","content":"which kind?"}]}`, 2, ""},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			up.mu.Lock()

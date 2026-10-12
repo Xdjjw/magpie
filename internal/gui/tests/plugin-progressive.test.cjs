@@ -71,7 +71,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await view.waitFor({ state: "visible" });
 
         // Installed, while npm (and the whole market) hasn't answered
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const row = view.locator(".pm-row").first();
         await row.waitFor();
         assert.equal((await row.locator(".name span").first().innerText()).trim(), "Copilot");
@@ -80,7 +80,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal(await row.locator(".pm-chip.up").count(), 0, "no update until npm says so");
 
         // Discover: the cards, their buttons waiting on npm
-        await view.locator(".lib-tabs .opt", { hasText: w.discover }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.discover }).click();
         const card = view.locator(`.pm-card[data-pkg="${ZED}"]`);
         await card.waitFor();
         assert.equal(await card.locator(".pm-dl").count(), 0);
@@ -94,7 +94,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await card.locator(".pm-ver").innerText()).trim(), "v0.2.0");
         assert.equal((await act.innerText()).trim(), w.install);
         assert.equal(await act.isDisabled(), false);
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         await view.locator(".pm-row .pm-chip.up", { hasText: w.out }).waitFor();
 
         assert.ok(!asked.includes("/api/plugins/market"), "the whole market isn't asked for: " + asked.join(" "));

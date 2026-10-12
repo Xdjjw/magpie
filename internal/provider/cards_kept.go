@@ -145,31 +145,40 @@ func lastReading(key string) (SubscriptionQuota, bool) {
 	return c.reading(key)
 }
 
-// cardKeys are the keys p's plan and balance cards are read with, by the
-// account each card names ("" for a provider's one card): the key in use
-// first, then each other one on, named as PlanQuotas and KeyBalances name
-// them.
-func cardKeys(p Provider) map[string]string {
+// cardKey is one of p's keys as its plan and balance cards are read with
+// it: the key, and the account the cards name it by ("" for a provider's
+// one card), as PlanQuotas and KeyBalances name them.
+type cardKey struct {
+	user string
+	key  string
+}
+
+// cardKeys are the keys p's plan and balance cards are read with, in the
+// order requests try them: the key in use first, then each other one on.
+// One entry per key, even two of one name: each card is read and kept by
+// its key (keyTag), and a map by the name made the second of one name
+// drop out — one card told another magpie where the Usage page has two.
+func cardKeys(p Provider) []cardKey {
 	others := 0
 	for _, k := range p.Keys {
 		if !k.Off && k.Key != "" && k.Key != p.Key {
 			others++
 		}
 	}
-	if others == 0 {
-		return map[string]string{"": p.Key}
-	}
-	out := map[string]string{}
 	name := func(n, key string) string {
 		if n == "" {
 			return Mask(key)
 		}
 		return n
 	}
-	out[name(p.KeyName, p.Key)] = p.Key
+	first := cardKey{key: p.Key}
+	if others > 0 {
+		first.user = name(p.KeyName, p.Key)
+	}
+	out := []cardKey{first}
 	for _, k := range p.Keys {
 		if !k.Off && k.Key != "" && k.Key != p.Key {
-			out[name(k.Name, k.Key)] = k.Key
+			out = append(out, cardKey{user: name(k.Name, k.Key), key: k.Key})
 		}
 	}
 	return out
@@ -193,10 +202,10 @@ func keyCardProviders() []Provider {
 func keptKeyCards(ps []Provider) (plans, balances []SubscriptionQuota) {
 	plans, balances = []SubscriptionQuota{}, []SubscriptionQuota{}
 	for _, p := range ps {
-		for user, key := range cardKeys(p) {
+		for _, ck := range cardKeys(p) {
 			for _, kind := range []string{"plan", "balance"} {
-				q, ok := lastReading(p.ID + "/" + keyTag(kind, key))
-				if !ok || !strings.EqualFold(q.User, user) {
+				q, ok := lastReading(p.ID + "/" + keyTag(kind, ck.key))
+				if !ok || !strings.EqualFold(q.User, ck.user) {
 					continue // kept under the name it had then
 				}
 				q.Provider, q.Name, q.Icon = p.ID, p.Name, p.Icon
@@ -221,14 +230,25 @@ func withKeyReadings(cards []SubscriptionQuota, ps []Provider, kind string) []Su
 		if !strings.HasPrefix(keyCardTag(p), kind+" ") {
 			continue // the key's windows are its other card's
 		}
-		for user, key := range cardKeys(p) {
-			r := keyRead(p.ID + "#" + keyID(key))
+		// each card goes to one key: two keys of one name have a card
+		// each, in the order cardKeys gives them (PlanQuotas and
+		// KeyBalances make them in that order)
+		claimed := map[int]bool{}
+		for _, ck := range cardKeys(p) {
+			i := -1
+			for j, q := range out {
+				if !claimed[j] && q.From == "" && q.Provider == p.ID && strings.EqualFold(q.User, ck.user) {
+					i = j
+					break
+				}
+			}
+			if i >= 0 {
+				claimed[i] = true
+			}
+			r := keyRead(p.ID + "#" + keyID(ck.key))
 			if r.seq == 0 {
 				continue
 			}
-			i := slices.IndexFunc(out, func(q SubscriptionQuota) bool {
-				return q.From == "" && q.Provider == p.ID && strings.EqualFold(q.User, user)
-			})
 			var q SubscriptionQuota
 			switch {
 			case i >= 0 && r.seq <= out[i].readSeq:
@@ -238,7 +258,7 @@ func withKeyReadings(cards []SubscriptionQuota, ps []Provider, kind string) []Su
 			case len(r.ws) == 0 && r.balance == "":
 				continue // a key without a plan, nor a balance read
 			default:
-				q = SubscriptionQuota{Provider: p.ID, Name: p.Name, Icon: p.Icon, User: user}
+				q = SubscriptionQuota{Provider: p.ID, Name: p.Name, Icon: p.Icon, User: ck.user}
 			}
 			at := r.at
 			q.Windows, q.ReadAt, q.AsOf, q.Error, q.readSeq = slices.Clone(r.ws), &at, nil, "", r.seq
@@ -254,6 +274,7 @@ func withKeyReadings(cards []SubscriptionQuota, ps []Provider, kind string) []Su
 			if i >= 0 {
 				out[i] = q
 			} else {
+				claimed[len(out)] = true
 				out = append(out, q)
 			}
 		}

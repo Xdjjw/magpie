@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -66,6 +67,16 @@ func TestFakeMCPServer(t *testing.T) {
 		case "notifications/initialized":
 			os.WriteFile(os.Getenv("MAGPIE_FAKE_MCP_INIT"), []byte("yes"), 0o644)
 		case "tools/list":
+			// file: the reply a real server gave, under this request's id
+			if f := os.Getenv("MAGPIE_FAKE_MCP_TOOLS"); f != "" {
+				var r map[string]any
+				b, _ := os.ReadFile(f)
+				json.Unmarshal(b, &r)
+				r["id"] = *m.ID
+				b, _ = json.Marshal(r)
+				fmt.Println(string(b))
+				continue
+			}
 			fmt.Printf(`{"jsonrpc":"2.0","method":"notifications/message","params":{}}`+"\n"+`{"jsonrpc":"2.0","id":%d,"result":{"tools":[{"name":"a"},{"name":"b"},{"name":"c"}]}}`+"\n", *m.ID)
 		}
 	}
@@ -85,10 +96,11 @@ func fakeStdio(t *testing.T, mode string, env map[string]string) *Server {
 	return &Server{Name: "fake", Transport: "stdio", Command: self, Args: []string{"-test.run=^TestFakeMCPServer$"}, Env: e}
 }
 
+// short gives each step of a check d, a command's and a URL's alike.
 func short(t *testing.T, d time.Duration) {
-	was := checkTimeout
-	checkTimeout = d
-	t.Cleanup(func() { checkTimeout = was })
+	ws, wr := stdioStep, remoteStep
+	stdioStep, remoteStep = d, d
+	t.Cleanup(func() { stdioStep, remoteStep = ws, wr })
 }
 
 func TestCheckStdio(t *testing.T) {
@@ -234,7 +246,7 @@ func TestCheckHTTP(t *testing.T) {
 			defer srv.Close()
 			h := CheckServer(context.Background(), &Server{Name: "r", Transport: "http", URL: srv.URL})
 			h.At = 0
-			if h != c.want {
+			if !reflect.DeepEqual(h, c.want) {
 				t.Fatalf("got %+v, want %+v", h, c.want)
 			}
 		})

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -233,6 +234,65 @@ func TestListedBy(t *testing.T) {
 	}
 }
 
+// A model listed as thinking with no levels yet takes those of the newest
+// of its family released by then (gpt-6.1-sol's from gpt-6-sol, not from
+// the later gpt-7-sol), and a model the catalog doesn't list those of the
+// newest of the same name but for its version. A family that takes a
+// thinking switch alone gives none (#214), a budgeted model is left alone,
+// and one that doesn't think takes none.
+func TestFamilyLevels(t *testing.T) {
+	writeCatalog(t, `{
+	  "openai": {"models": {
+	    "gpt-6.1-sol": {"id":"gpt-6.1-sol","family":"gpt-sol","reasoning":true,"release_date":"2026-09-29"},
+	    "gpt-6-sol": {"id":"gpt-6-sol","family":"gpt-sol","reasoning":true,"release_date":"2026-09-22","reasoning_options":[{"type":"effort","values":["none","low","medium","high","xhigh","max"]}]},
+	    "gpt-5.6-sol": {"id":"gpt-5.6-sol","family":"gpt-sol","reasoning":true,"release_date":"2026-07-09","reasoning_options":[{"type":"effort","values":["none","low","medium","high"]}]},
+	    "gpt-7-sol": {"id":"gpt-7-sol","family":"gpt-sol","reasoning":true,"release_date":"2027-01-01","reasoning_options":[{"type":"effort","values":["low","max"]}]},
+	    "gpt-4.1": {"id":"gpt-4.1","family":"gpt","release_date":"2025-04-14"}}},
+	  "xiaomi": {"models": {
+	    "mimo-v2.6-flash": {"id":"mimo-v2.6-flash","family":"mimo","reasoning":true,"release_date":"2026-09-22","reasoning_options":[{"type":"toggle"}]},
+	    "mimo-v2.5": {"id":"mimo-v2.5","family":"mimo","reasoning":true,"release_date":"2026-04-22"}}},
+	  "anthropic": {"models": {
+	    "claude-sonnet-4-5": {"id":"claude-sonnet-4-5","family":"claude-sonnet","reasoning":true,"reasoning_options":[{"type":"budget_tokens"}]},
+	    "claude-sonnet-4": {"id":"claude-sonnet-4","family":"claude-sonnet","reasoning":true,"reasoning_options":[{"type":"effort","values":["low","high"]}]}}}
+	}`)
+	makers := []string{"anthropic", "openai", "xiaomi"}
+	for _, c := range []struct {
+		id, want string
+		ok       bool
+	}{
+		{"gpt-6.1-sol", "none,low,medium,high,xhigh,max", true},
+		{"openai/GPT-6.1-Sol", "none,low,medium,high,xhigh,max", true},
+		{"gpt-4.1", "", true},
+		{"mimo-v2.6-flash", "", true},
+		{"claude-sonnet-4-5", "", false},
+	} {
+		got, ok := ListedBy(makers, c.id)
+		if strings.Join(got, ",") != c.want || ok != c.ok {
+			t.Errorf("ListedBy(%q) = %v, %v; want %q, %v", c.id, got, ok, c.want, c.ok)
+		}
+	}
+	for _, m := range Provider("openai") {
+		if m.ID == "gpt-6.1-sol" && (strings.Join(m.Efforts, ",") != "none,low,medium,high,xhigh,max" || !m.Reasoning) {
+			t.Errorf("Provider(openai)'s gpt-6.1-sol: %v, reasoning %v", m.Efforts, m.Reasoning)
+		}
+	}
+	for _, c := range []struct {
+		id, want string
+		ok       bool
+	}{
+		{"gpt-7.1-sol", "low,max", true},
+		{"relay/gpt-7.1-sol", "low,max", true},
+		{"mimo-v2.7-flash", "", true},
+		{"gpt-7.1-terra", "", false},
+		{"sol", "", false},
+	} {
+		got, ok := KinEfforts(makers, c.id)
+		if strings.Join(got, ",") != c.want || ok != c.ok {
+			t.Errorf("KinEfforts(%q) = %v, %v; want %q, %v", c.id, got, ok, c.want, c.ok)
+		}
+	}
+}
+
 func TestFetchedImageCapabilityOverridesCatalog(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -257,5 +317,32 @@ func TestFetchedImageCapabilityOverridesCatalog(t *testing.T) {
 		got[1].ImageInput == nil || *got[1].ImageInput || got[1].Images ||
 		got[2].ImageInput == nil || !*got[2].ImageInput || !got[2].Images {
 		t.Fatalf("source precedence: %+v", got)
+	}
+}
+
+// A list's modalities keep every kind it names, input and output, not
+// image alone; a model the list says nothing of takes the catalog's (#1595).
+func TestFetchedModalitiesKeepEveryKind(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"data":[
+			{"id":"omni","modalities":{"input":["text","image","audio","video","pdf"],"output":["text","audio"]}},
+			{"id":"unknown"}
+		]}`))
+	}))
+	defer server.Close()
+	live, err := Fetch(context.Background(), server.URL, "", false, nil)
+	if err != nil || len(live) != 2 {
+		t.Fatalf("fetched models: %+v, %v", live, err)
+	}
+	known := []Model{{ID: "unknown", ImageInput: imageInput([]string{"text", "pdf"}), InputModalities: []string{"text", "pdf"}, OutputModalities: []string{"text"}}}
+	got := Decorate(live, known)
+	if !reflect.DeepEqual(got[0].InputModalities, []string{"text", "image", "audio", "video", "pdf"}) ||
+		!reflect.DeepEqual(got[0].OutputModalities, []string{"text", "audio"}) {
+		t.Errorf("omni: in %v out %v", got[0].InputModalities, got[0].OutputModalities)
+	}
+	if !reflect.DeepEqual(got[1].InputModalities, []string{"text", "pdf"}) ||
+		!reflect.DeepEqual(got[1].OutputModalities, []string{"text"}) {
+		t.Errorf("unknown: in %v out %v", got[1].InputModalities, got[1].OutputModalities)
 	}
 }

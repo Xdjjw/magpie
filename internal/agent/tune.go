@@ -74,7 +74,7 @@ func tuneWhere(home, agent, knob, model string) (tunePlace, error) {
 	home = tuneHome(home)
 	switch agent {
 	case "claude":
-		path := filepath.Join(home, ".claude", "settings.json")
+		path := filepath.Join(here(home).claudeDir(), "settings.json")
 		switch knob {
 		case TuneCompact:
 			n := claudeName(model)
@@ -89,7 +89,7 @@ func tuneWhere(home, agent, knob, model string) (tunePlace, error) {
 		}
 	case "codex":
 		if knob == TuneCompact {
-			return tunePlace{path: filepath.Join(home, ".codex", "config.toml"), key: "model_auto_compact_token_limit", toml: true, number: true}, nil
+			return tunePlace{path: filepath.Join(here(home).codexHome(), "config.toml"), key: "model_auto_compact_token_limit", toml: true, number: true}, nil
 		}
 	}
 	return tunePlace{}, fmt.Errorf("%s has no setting %q tune can put in", agent, knob)

@@ -225,7 +225,10 @@ func Run(args []string) error {
 	if base == "" {
 		base = gateway.URL()
 	}
-	s := &server{gateway: base, client: &http.Client{Timeout: 6 * time.Minute}, enc: json.NewEncoder(os.Stdout), agent: gateway.DrawAgent, pending: map[string]chan rpc{}}
+	// the gateway draws for up to 5 minutes and may then fetch what the
+	// vendor drew for up to 5 more (gateway.ImageLongest): a call to it
+	// is cut only past both
+	s := &server{gateway: base, client: &http.Client{Timeout: ToolTimeout()}, enc: json.NewEncoder(os.Stdout), agent: gateway.DrawAgent, pending: map[string]chan rpc{}}
 	err := s.serve(os.Stdin)
 	// what is still being made is saved, though the agent has gone
 	done := make(chan struct{})
@@ -384,7 +387,10 @@ func (s *server) generate(raw json.RawMessage) (string, error) {
 	}
 	a.N = max(1, min(a.N, 4))
 	project := s.project()
-	req := map[string]any{"prompt": a.Prompt, "n": a.N}
+	// the images themselves, not URLs to fetch: the gateway fetches one a
+	// vendor keeps through the vendor's own proxy, the way it just reached
+	// it (#1576)
+	req := map[string]any{"prompt": a.Prompt, "n": a.N, "response_format": "b64_json"}
 	for k, v := range map[string]string{"size": a.Size, "quality": a.Quality, "background": a.Background} {
 		if v != "" {
 			req[k] = v
@@ -440,17 +446,22 @@ func (s *server) generate(raw json.RawMessage) (string, error) {
 	if len(out.Data) == 0 {
 		return "", errors.New("no image came back")
 	}
-	var saved, revised []string
+	// an image that was drawn, and paid for, is never dropped unsaid: one
+	// that can't be had is answered by where the vendor keeps it, beside
+	// those saved (#1576)
+	var saved, revised, lost []string
 	for i, d := range out.Data {
 		img, mt := []byte(nil), d.Mime
 		switch {
 		case d.B64 != "":
 			if img, err = base64.StdEncoding.DecodeString(d.B64); err != nil {
-				return "", fmt.Errorf("image %d: %w", i+1, err)
+				lost = append(lost, fmt.Sprintf("image %d came back broken: %v", i+1, err))
+				continue
 			}
 		case d.URL != "":
-			if img, mt, err = s.download(d.URL); err != nil {
-				return "", fmt.Errorf("image %d: %w", i+1, err)
+			if img, mt, err = gateway.FetchImage(context.Background(), http.DefaultClient, d.URL); err != nil {
+				lost = append(lost, fmt.Sprintf("image %d was drawn but couldn't be downloaded (%v); the vendor keeps it at %s for a while: download it from there", i+1, err, d.URL))
+				continue
 			}
 		default:
 			continue
@@ -475,10 +486,16 @@ func (s *server) generate(raw json.RawMessage) (string, error) {
 			revised = append(revised, d.Revised)
 		}
 	}
+	if len(saved) == 0 && len(lost) > 0 {
+		return "", errors.New(strings.Join(lost, "\n"))
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Generated with %s, saved to:\n", out.Model)
 	for _, p := range saved {
 		fmt.Fprintf(&b, "- %s\n", shownPath(p))
+	}
+	for _, l := range lost {
+		fmt.Fprintf(&b, "Not saved: %s\n", l)
 	}
 	if len(revised) > 0 {
 		fmt.Fprintf(&b, "The model drew from this prompt: %s\n", revised[0])
@@ -594,23 +611,6 @@ func reference(project, ref string) (string, error) {
 		return "", fmt.Errorf("reference image %s isn't an image (%s)", ref, mt)
 	}
 	return "data:" + mt + ";base64," + base64.StdEncoding.EncodeToString(b), nil
-}
-
-func (s *server) download(u string) ([]byte, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-	r, _ := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
-	res, err := s.client.Do(r)
-	if err != nil {
-		return nil, "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != 200 {
-		return nil, "", fmt.Errorf("%s: %s", u, res.Status)
-	}
-	b, err := io.ReadAll(io.LimitReader(res.Body, 64<<20))
-	mt, _, _ := mime.ParseMediaType(res.Header.Get("Content-Type"))
-	return b, mt, err
 }
 
 var unslug = regexp.MustCompile(`[^a-z0-9]+`)

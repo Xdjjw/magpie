@@ -1,6 +1,7 @@
 package access
 
 import (
+	"fmt"
 	"os"
 	"slices"
 	"strings"
@@ -85,5 +86,33 @@ func TestKeyModelsKept(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(Path()); strings.Contains(string(b), `"models"`) {
 		t.Fatal("an empty list written", string(b))
+	}
+}
+
+// A pattern's expression is compiled once and kept (#1762): each pattern
+// keeps its own, asked in turn and again, and past the cap as before.
+func TestModelPatternsKeptCompiled(t *testing.T) {
+	for range 2 {
+		for _, c := range []struct {
+			p, id string
+			want  bool
+		}{
+			{"plan/a*", "plan/abc", true},
+			{"plan/b*", "plan/abc", false},
+			{"plan/b*", "PLAN/B1", true},
+			{"plan/a*", "plan/b1", false},
+			{"*/x", "a/b/x", true},
+			{"*/y", "a/b/x", false},
+		} {
+			if got := ModelAllowed([]string{c.p}, c.id); got != c.want {
+				t.Errorf("%s by %s: %v", c.id, c.p, got)
+			}
+		}
+	}
+	for i := range maxGlobs + 10 {
+		p := fmt.Sprintf("p%d/*", i)
+		if !ModelAllowed([]string{p}, fmt.Sprintf("p%d/m", i)) || ModelAllowed([]string{p}, fmt.Sprintf("q%d/m", i)) {
+			t.Fatal("past the cap", p)
+		}
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -139,13 +141,13 @@ func fakeBun(args []string) error {
 // node_modules/<its name>.
 func fakeFetch(spec string) (name, commit string, err error) {
 	s, ref, _ := strings.Cut(spec, "#")
-	var url string
+	var url, ghRepo string
 	switch {
 	case strings.HasPrefix(s, "git+file://"):
 		url = strings.TrimPrefix(s, "git+")
 	case strings.HasPrefix(s, "github:"), strings.HasPrefix(s, "https://github.com/"), IsGit(s) && !strings.Contains(s, ":"):
-		repo := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(s, "github:"), "https://github.com/"), ".git")
-		url = filepath.Join(os.Getenv("MAGPIE_FAKE_GITHUB"), filepath.FromSlash(repo)+".git")
+		ghRepo = strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(s, "github:"), "https://github.com/"), ".git")
+		url = filepath.Join(os.Getenv("MAGPIE_FAKE_GITHUB"), filepath.FromSlash(ghRepo)+".git")
 	default:
 		return "", "", fmt.Errorf("fetches only git, not %s", spec)
 	}
@@ -192,7 +194,17 @@ func fakeFetch(spec string) (name, commit string, err error) {
 		}
 		return os.WriteFile(filepath.Join(dest, rel), b, 0o644)
 	})
-	return p.Name, strings.TrimSpace(string(out)), err
+	commit = strings.TrimSpace(string(out))
+	// as bun tags what it installed: owner-repo-<7 digits> for GitHub's
+	// tarball, the whole commit for a clone
+	tag := commit
+	if ghRepo != "" {
+		tag = strings.ReplaceAll(ghRepo, "/", "-") + "-" + commit[:7]
+	}
+	if err == nil {
+		err = os.WriteFile(filepath.Join(dest, ".bun-tag"), []byte(tag), 0o644)
+	}
+	return p.Name, commit, err
 }
 
 // gitRepo is a plugin's repository: a checkout to commit to and the bare
@@ -251,34 +263,8 @@ func newGitRepo(t *testing.T, bare string) gitRepo {
 // and on, updates (fetching the repository again), shows its README and
 // is removed like any other; npm is never asked about it.
 func TestGitPlugin(t *testing.T) {
-	if _, err := exec.LookPath("git"); err != nil {
-		t.Skip("no git on PATH")
-	}
-	dir := t.TempDir()
-	t.Setenv("HOME", dir)
-	t.Setenv("USERPROFILE", dir)
-	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
-	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	github, log := gitSandbox(t)
 	realBun, _ := exec.LookPath("bun")
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv("MAGPIE_BUN", self) // never downloaded
-	github := filepath.Join(dir, "github")
-	log := filepath.Join(dir, "bun.log")
-	orig := bunCommand
-	bunCommand = func(ctx context.Context, bun, dir string, args ...string) *exec.Cmd {
-		if len(args) > 0 && args[0] == "run" && realBun != "" {
-			return orig(ctx, realBun, dir, args...)
-		}
-		cmd := exec.CommandContext(ctx, self, args...)
-		cmd.Dir = dir
-		cmd.Env = append(os.Environ(), "MAGPIE_FAKE_BUN=1", "MAGPIE_FAKE_GITHUB="+github, "MAGPIE_FAKE_BUN_LOG="+log)
-		return cmd
-	}
-	t.Cleanup(func() { bunCommand = orig })
-	t.Cleanup(Settle)
 	asked := false
 	origLatest := latestOf
 	latestOf = func(ctx context.Context, names []string) map[string]string {
@@ -295,6 +281,77 @@ func TestGitPlugin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	gitPluginRest(t, ctx, repo, spec, e, realBun, log, &asked)
+}
+
+// gitSandbox is a HOME of the test's own where bun is the fake above,
+// fetching GitHub's repositories from the folder it returns, and GitHub's
+// API (asked for a repository's newest commit) answers from the same; and
+// the fake bun's log.
+func gitSandbox(t *testing.T) (github, log string) {
+	t.Helper()
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on PATH")
+	}
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(dir, "config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(dir, "cache"))
+	realBun, _ := exec.LookPath("bun")
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("MAGPIE_BUN", self) // never downloaded
+	github = filepath.Join(dir, "github")
+	log = filepath.Join(dir, "bun.log")
+	orig := bunCommand
+	bunCommand = func(ctx context.Context, bun, dir string, args ...string) *exec.Cmd {
+		if len(args) > 0 && args[0] == "run" && realBun != "" {
+			return orig(ctx, realBun, dir, args...)
+		}
+		cmd := exec.CommandContext(ctx, self, args...)
+		cmd.Dir = dir
+		cmd.Env = append(os.Environ(), "MAGPIE_FAKE_BUN=1", "MAGPIE_FAKE_GITHUB="+github, "MAGPIE_FAKE_BUN_LOG="+log)
+		return cmd
+	}
+	t.Cleanup(func() { bunCommand = orig })
+	t.Cleanup(Settle)
+	// GitHub's API: GET /repos/{owner}/{repo}/commits?per_page=1[&sha=ref]
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(p) != 4 || p[0] != "repos" || p[3] != "commits" || r.URL.Query().Get("per_page") != "1" {
+			http.NotFound(w, r)
+			return
+		}
+		ref := r.URL.Query().Get("sha")
+		if ref == "" {
+			ref = "HEAD"
+		}
+		out, err := exec.Command("git", "-C", filepath.Join(github, p[1], p[2]+".git"), "rev-parse", ref+"^{commit}").Output()
+		if err != nil {
+			http.Error(w, `{"message":"No commit found for SHA: `+ref+`"}`, http.StatusUnprocessableEntity)
+			return
+		}
+		fmt.Fprintf(w, `[{"sha": %q, "commit": {"message": "x"}}]`, strings.TrimSpace(string(out)))
+	}))
+	t.Cleanup(srv.Close)
+	api := githubAPI
+	githubAPI = srv.URL
+	t.Cleanup(func() { githubAPI = api; forgetHeads() })
+	forgetHeads()
+	return github, log
+}
+
+func forgetHeads() {
+	headsMu.Lock()
+	heads = map[string]headAnswer{}
+	headsMu.Unlock()
+}
+
+func gitPluginRest(t *testing.T, ctx context.Context, repo gitRepo, spec string, e Entry, realBun, log string, asked *bool) {
+	t.Helper()
 	if e.Spec != spec {
 		t.Fatalf("added as %q, want the spec as given", e.Spec)
 	}
@@ -340,8 +397,8 @@ func TestGitPlugin(t *testing.T) {
 		t.Fatalf("after upgrade: %s %+v", v, Load().Plugins)
 	}
 	// npm's my-oc-plugin, whatever it is, is never offered over it
-	if u, err := CheckUpdates(ctx); err != nil || asked || len(u.Waiting) != 0 || Installed(spec) != "3.0.0" {
-		t.Fatalf("CheckUpdates = %+v, %v; npm asked: %v", u, err, asked)
+	if u, err := CheckUpdates(ctx); err != nil || *asked || len(u.Waiting) != 0 || Installed(spec) != "3.0.0" {
+		t.Fatalf("CheckUpdates = %+v, %v; npm asked: %v", u, err, *asked)
 	}
 
 	// off and on, by its package or by the spec

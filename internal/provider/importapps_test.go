@@ -354,6 +354,14 @@ func TestClaudeConfigDirImport(t *testing.T) {
 	if items["settings"].Skip != "" || items["settings"].Provider.Key != "sk-claude" {
 		t.Fatalf("Claude custom config dir: %+v", items)
 	}
+	// a settings.json a Windows tool saved with a UTF-8 BOM (#1534)
+	if err := os.WriteFile(path, []byte("\xef\xbb\xbf{\r\n  \"env\": {\r\n    \"ANTHROPIC_BASE_URL\": \"https://relay.example.com/anthropic\",\r\n    \"ANTHROPIC_AUTH_TOKEN\": \"sk-bom\"\r\n  }\r\n}\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items = itemsOf(t, "claude-code")
+	if items["settings"].Skip != "" || items["settings"].Provider.Key != "sk-bom" {
+		t.Fatalf("Claude settings.json with a BOM: %+v", items)
+	}
 }
 
 func FromPresetKey(t *testing.T, id, key string) Provider {
@@ -400,5 +408,73 @@ func TestSqlitePath(t *testing.T) {
 		if got := sqlitePath(in); got != want {
 			t.Errorf("sqlitePath(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+// The same relay is often both a CC Switch entry and what Claude Code's
+// settings.json points at. Picked together, it is added once; removed, it
+// can be imported again rather than being "Already added" as the copy left
+// behind (#1486, kk349958194).
+func TestImportSameAccountFromTwoAppsOnce(t *testing.T) {
+	isolate(t)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)                                  // Windows
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming")) // Windows: never the real Alma
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("XDG_CACHE_HOME", filepath.Join(home, ".cache"))
+	t.Setenv("CLAUDE_CONFIG_DIR", filepath.Join(home, ".claude"))
+	sqliteFixture(t, filepath.Join(home, ".cc-switch", "cc-switch.db"),
+		`CREATE TABLE providers (id TEXT, app_type TEXT, name TEXT, settings_config TEXT, website_url TEXT, category TEXT, created_at INTEGER, sort_index INTEGER, PRIMARY KEY (id, app_type))`,
+		`INSERT INTO providers VALUES ('relay','claude','Some Relay','{"env":{"ANTHROPIC_BASE_URL":"https://relay.example.com","ANTHROPIC_AUTH_TOKEN":"sk-relay","ANTHROPIC_MODEL":"claude-sonnet-5"}}','https://relay.example.com','custom',2,1)`,
+	)
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".claude", "settings.json"), []byte(`{"env":{"ANTHROPIC_BASE_URL":"https://relay.example.com","ANTHROPIC_AUTH_TOKEN":"sk-relay"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// what the picker turns on by default: every new entry of every app
+	var picks []AppPick
+	for _, s := range ImportSources() {
+		for _, it := range s.Items {
+			if it.Skip == "" && it.Status == "new" {
+				picks = append(picks, AppPick{Source: s.ID, Ref: it.Ref})
+			}
+		}
+	}
+	if len(picks) != 2 {
+		t.Fatalf("picks: %+v", picks)
+	}
+	if _, err := ImportFromApps(picks); err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range load().Providers {
+		ids = append(ids, p.ID)
+	}
+	if len(ids) != 1 {
+		t.Fatalf("the relay added %d times: %v", len(ids), ids)
+	}
+	if err := Delete(ids[0]); err != nil {
+		t.Fatal(err)
+	}
+	if it := itemsOf(t, "cc-switch")["claude/relay"]; it.Status != "new" {
+		t.Fatalf("after removing it: %+v", it)
+	}
+}
+
+// CC Switch's config.json from before its database, saved with a UTF-8 BOM
+// on Windows (#1534), is read through the mark.
+func TestImportCCSwitchConfigWithBOM(t *testing.T) {
+	isolate(t)
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := "\xef\xbb\xbf{\r\n  \"claude\": {\r\n    \"providers\": {\r\n      \"relay\": {\r\n        \"name\": \"Some Relay\",\r\n        \"settingsConfig\": {\"env\": {\"ANTHROPIC_BASE_URL\": \"https://relay.example.com\", \"ANTHROPIC_AUTH_TOKEN\": \"sk-relay\"}}\r\n      }\r\n    }\r\n  }\r\n}\r\n"
+	if err := os.WriteFile(path, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	items, err := readCCSwitch(path)
+	if err != nil || len(items) != 1 || items[0].Provider.Key != "sk-relay" {
+		t.Fatalf("config.json with a BOM: %+v %v", items, err)
 	}
 }

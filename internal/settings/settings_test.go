@@ -486,19 +486,20 @@ func TestModelPriceKeysStayTheFilesOwnWhileMessagesSayTheParts(t *testing.T) {
 	}
 }
 
-// the usage alerts' share and amount (#368): 0 is off, the rest in range
+// the usage alerts' share and amount (#368), and a turn's length before
+// its end is said: 0 is off, the rest in range
 func TestAlertsChecked(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	for _, s := range []Settings{{UsageAlert: 101}, {UsageAlert: -1}, {BalanceAlert: -0.5}} {
+	for _, s := range []Settings{{UsageAlert: 101}, {UsageAlert: -1}, {BalanceAlert: -0.5}, {TurnDoneAlert: -1}, {TurnDoneAlert: 86401}} {
 		if err := Save(s); err == nil {
 			t.Errorf("saved %+v", s)
 		}
 	}
-	if err := Save(Settings{UsageAlert: 80, BalanceAlert: 2.5}); err != nil {
+	if err := Save(Settings{UsageAlert: 80, BalanceAlert: 2.5, TurnDoneAlert: 180}); err != nil {
 		t.Fatal(err)
 	}
-	if s := Load(); s.UsageAlert != 80 || s.BalanceAlert != 2.5 {
-		t.Fatalf("read back %d %v", s.UsageAlert, s.BalanceAlert)
+	if s := Load(); s.UsageAlert != 80 || s.BalanceAlert != 2.5 || s.TurnDoneAlert != 180 {
+		t.Fatalf("read back %d %v %d", s.UsageAlert, s.BalanceAlert, s.TurnDoneAlert)
 	}
 }
 

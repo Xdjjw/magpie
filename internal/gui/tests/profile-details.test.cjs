@@ -47,7 +47,8 @@ function server(lang, calls, count) {
   const profiles = [...Array.from({ length: count }, (_, i) => filler(i)), work, filler(99)];
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
-    const state = () => ({ agents: [agent("codex", "Codex"), agent("claude", "Claude Code")], profiles, settings: { lang, theme: "light" } });
+    // Get started put away: the profiles strip is what is read, where it sits
+    const state = () => ({ agents: [agent("codex", "Codex"), agent("claude", "Claude Code")], profiles, settings: { lang, theme: "light", guideHidden: true } });
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });
     if (url.pathname === "/wails/runtime.js") return route.fulfill({ contentType: "text/javascript", body: "export const Window = {};" });
     if (url.pathname === "/api/state") return route.fulfill({ json: state() });

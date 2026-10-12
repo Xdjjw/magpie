@@ -149,7 +149,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   test(`${engine}: a desktop browser and the window keep one row`, async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
-    for (const [web, width] of [[true, 1100], [false, 560]]) {
+    // a desktop browser narrower than the sidebar's width: its tabs in the header
+    for (const [web, width] of [[true, 1000], [false, 560]]) {
       const page = await open(browser, { viewport: { width, height: 700 } }, web, "agents");
       const [top, nav] = [await box(page, ".top"), await box(page, "#nav")];
       assert.ok(nav.y + nav.height <= top.y + top.height + 1, `${web ? "web" : "window"} at ${width}: the tabs in the header's row`);

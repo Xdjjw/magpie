@@ -80,7 +80,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert.equal((await view.locator(`.pm-card[data-pkg="${ZED}"] .pm-act`).innerText()).trim(), w.signIn);
 
         // Installed: the row names the other, quietly
-        await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         const qoder = view.locator(".pm-row").filter({ hasText: "Qoder CN" });
         await qoder.waitFor();
         const b = qoder.locator(".val button", { hasText: w.other });

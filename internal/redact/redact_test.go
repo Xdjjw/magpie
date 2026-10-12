@@ -13,6 +13,12 @@ const (
 	ghToken   = "ghp_0123456789abcdefghijABCDEFGHIJ0123"
 )
 
+// unmarked is s without its placeholders. A placeholder's suffix is a keyed
+// hash, so with a random key it can spell a short value the test checks is
+// gone: "ops" in {{HOSTNAME_mlopsiy3}} turned TestMoreKinds red on macOS
+// CI at 6c099edd.
+func unmarked(s string) string { return placeholderRe.ReplaceAllString(s, "") }
+
 func TestMask(t *testing.T) {
 	cases := []struct {
 		in    string
@@ -45,7 +51,7 @@ func TestMask(t *testing.T) {
 			t.Errorf("%q: %d masked, want %d: %q", c.in, n, c.count, out)
 		}
 		for _, g := range c.gone {
-			if strings.Contains(out, g) {
+			if strings.Contains(unmarked(out), g) {
 				t.Errorf("%q: %q still in %q", c.in, g, out)
 			}
 		}

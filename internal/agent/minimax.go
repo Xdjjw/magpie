@@ -66,8 +66,10 @@ func mcodeID(key string) string {
 	return strings.Replace(key, provider.FlatSep, "/", 1)
 }
 
-// mcodeUA is the User-Agent magpie's entry sends: MiniMax Code's own is the
-// Anthropic SDK's ("L/JS 0.91.1"), or node's for its token counts.
+// mcodeUA is the User-Agent magpie's entry sends: MiniMax Code 0.5's own was
+// the Anthropic SDK's ("L/JS 0.91.1"), or node's for its token counts.
+// 0.6.8 sends "MiniMaxCode" on a custom provider that sets none, which names
+// it too (#1605: a provider pointed at magpie by hand).
 const mcodeUA = "minimax-code"
 
 // MiniMaxDir is the folder MiniMax Code keeps its config.yaml in.
@@ -110,7 +112,7 @@ func miniMaxAt(at place, dir string) *Agent {
 	}
 	return atomic(&Agent{
 		ID: "minimax-code", Name: "MiniMax Code", Icon: "minimax-color", Aliases: []string{"mcode"}, Spelled: prefixed,
-		UA:  []string{mcodeUA},
+		UA:  []string{mcodeUA, "minimaxcode"},
 		Bin: "mcode", Dir: dir, Path: path,
 		Sync: func() error {
 			if _, ok := edit.GetYAMLText(path, mcodeEntry); !ok {
@@ -120,7 +122,7 @@ func miniMaxAt(at place, dir string) *Agent {
 		},
 		Notice: func() string {
 			if Running(`(^|/)mcode( |$)`) {
-				return "MiniMax Code reads its settings at start-up — restart open mcode sessions to use this."
+				return noticeMinimax.String()
 			}
 			return ""
 		},
@@ -456,3 +458,8 @@ func miniMaxIcon(provider, model string) string {
 	}
 	return ""
 }
+
+// what minimax says after a change (notice.go)
+var (
+	noticeMinimax = newNotice("MiniMax Code reads its settings at start-up — restart open mcode sessions to use this.")
+)

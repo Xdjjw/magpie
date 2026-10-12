@@ -61,8 +61,13 @@ func TestMixedDecisionProvider(t *testing.T) {
 	if _, ms, ok := FindGroup("group/auto-deepseek-v4-1-flash"); !ok || len(ms) != 2 || ms[0].Provider.ID != p.ID {
 		t.Fatalf("automatic group: %+v %v", ms, ok)
 	}
-	if err := SaveGroup(Group{Name: "Bad", Members: []string{"mixed/typesafe/jev"}}); err == nil {
+	// alone it is a group of decision models (decide_group.go); beside a
+	// model that holds conversations it is refused
+	if err := SaveGroup(Group{Name: "Bad", Members: []string{"mixed/deepseek-v4.1-flash", "mixed/typesafe/jev"}}); err == nil {
 		t.Fatal("Jev accepted as a conversation member")
+	}
+	if err := SaveGroup(Group{Name: "Judges", Members: []string{"mixed/typesafe/jev"}}); err != nil {
+		t.Fatalf("a group of decision models: %v", err)
 	}
 	if got, m, err := RouteDecider("mixed/typesafe/jev"); err != nil || got.ID != p.ID || m != "typesafe/jev" {
 		t.Fatalf("Jev route: %+v %s %v", got, m, err)
@@ -107,8 +112,8 @@ func TestMixedDecisionProvider(t *testing.T) {
 	}
 }
 
-// A decision provider (TypeSafe's Jev) is only ever a group's classifier:
-// its models aren't in the catalog nor a group's members, and a group's
+// A decision provider (TypeSafe's Jev) is a chat group's classifier, never
+// one of its models: its models aren't in the catalog, and a group's
 // effort is picked only by it.
 func TestDecider(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
@@ -158,8 +163,10 @@ func TestDecider(t *testing.T) {
 	if g, _, _ := FindGroup("group/g"); g.Effort != EffortAuto || g.Classifier != "typesafe/jev-latest" || !g.Ruled() {
 		t.Fatalf("saved %+v", g)
 	}
-	if err := SaveGroup(Group{Name: "H", Members: []string{"typesafe/jev-latest"}}); err == nil {
-		t.Error("Jev saved as a group's member")
+	// beside a model that holds conversations it is refused; a group of
+	// decision models alone is a decision group (decide_group_test.go)
+	if err := SaveGroup(Group{Name: "H", Members: []string{"a/m", "typesafe/jev-latest"}}); err == nil {
+		t.Error("Jev saved in a group beside a chat model")
 	}
 }
 

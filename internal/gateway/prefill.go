@@ -10,7 +10,9 @@ import (
 // "This model does not support assistant message prefill. The
 // conversation must end with a user message.", as Volcengine's Agent Plan
 // does, "The last message cannot be from the assistant for a model that
-// does not support prefill". The same providers' other models take it, so
+// does not support prefill", and Gemini on Vertex AI's, "Requests ending
+// with a model turn are not supported" (yycsyu; Gemini's own requests never
+// end so: buildCodeAssistSent). The same providers' other models take it, so
 // the refusal is remembered for that model on that provider and API, in
 // unfit, and nowhere else.
 //
@@ -25,10 +27,13 @@ import (
 // assistant's message as an OpenAI upstream answers it. An Anthropic
 // client's prefill is the client's own ask, and gets the refusal as
 // Anthropic itself answers it.
+// A request built in Gemini's own shape is the exception: every upstream
+// of it turns the model's turn last away, so it never goes out so
+// (buildCodeAssistSent, modelLastAsk).
 
 // prefillRefusal is an upstream's refusal of a conversation ending with
 // the assistant's message.
-var prefillRefusal = regexp.MustCompile(`(?i)does not support (?:assistant message )?prefill`)
+var prefillRefusal = regexp.MustCompile(`(?i)does not support (?:assistant message )?prefill|requests ending with a model turn are not supported`)
 
 // prefillRefused is how unfit remembers a provider's model refusing a
 // conversation ending with the assistant's message.
@@ -42,6 +47,20 @@ func refusesPrefill(status int, body []byte) bool {
 // continueText is the user turn asked after a conversation the client
 // ended with the assistant's message, for a model that takes no prefill.
 const continueText = "Continue."
+
+// compactLastText is that user turn when the conversation is an agent
+// compacting it with the ask in the system prompt (compacting): "Continue."
+// there reads as going on with the task, and the summary isn't written.
+const compactLastText = "Write the summary of the conversation above that the system prompt asks for."
+
+// modelLastAsk is the user turn put after a conversation ending with the
+// model's turn, for an upstream that takes none (buildCodeAssistSent).
+func modelLastAsk(r *Request) string {
+	if compacting(r) {
+		return compactLastText
+	}
+	return continueText
+}
 
 // endsWithAssistant says whether r's conversation ends with the
 // assistant's message rather than a call it made: what a prefill is.

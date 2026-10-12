@@ -6,6 +6,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/yetone/magpie/internal/netproxy"
 	"github.com/yetone/magpie/internal/testenv"
 )
 
@@ -37,9 +38,14 @@ func TestMain(m *testing.M) {
 	// keep the old one, so the test would read back a file nothing had
 	// applied. The Aside tests stand in for it themselves.
 	asideSet = func(string, string) error { return errors.New("aside: no Aside in a test") }
-	asideRead = func() (map[string]json.RawMessage, error) { return nil, errors.New("aside: no Aside in a test") }
+	asideRead = func(string) (map[string]json.RawMessage, error) { return nil, errors.New("aside: no Aside in a test") }
 	// an address an agent is pointed at is tried over the network (Drift,
 	// #1013); never from a test, whose reach tests stand in for it
 	reachProbe = func(string) bool { return true }
+	// nor is the way Codex goes there read from this machine's proxy
+	// settings, or a proxy tried; the proxy tests say both
+	codexProxyEnv = func(string) string { return "" }
+	codexSystemProxy = func() netproxy.Proxy { return netproxy.Proxy{} }
+	proxyProbe = func(string, string) bool { return true }
 	os.Exit(testenv.Run(m))
 }

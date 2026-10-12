@@ -62,7 +62,7 @@ for (const [name, engine] of [["webkit", webkit], ["chromium", chromium]]) {
         assert.ok(got.offered.includes("ja:日本語"));
         if (want === "ja") {
           assert.equal(got.lang, "ja-JP");
-          assert.deepEqual(got.nav, ["エージェント", "プロバイダ", "ゲートウェイ", "ルーティング", "使用量"]);
+          assert.deepEqual(got.nav, ["エージェント", "セッション", "ライブラリ", "プロバイダ", "ルーティング"]);
         }
         await page.close();
       }

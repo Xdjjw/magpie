@@ -28,7 +28,9 @@ function server(lang, asked) {
       account: { agent: "cursor", agentName: "Cursor", agentIcon: "cursor", user: "a@c", logins: [{ user: "a@c", active: true, on: true }, { user: "b@c", on: true }] } }],
     presets: [], excluded: [], gateway: { running: true, window: true }, plugins, onPlugins: ["zcode", "factory", "cursor"],
   });
-  let polls = 0;
+  // the provider being signed in to: kept apart from asked, which the test
+  // empties while the last sign-in's poll may still be on its way (#1440)
+  let polls = 0, signing = "";
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });
@@ -44,11 +46,12 @@ function server(lang, asked) {
       const b = body();
       asked.push(["signin", b]);
       polls = 0;
+      signing = b.provider;
       return json({ id: "s1", agent: b.provider, state: "waiting", url: "https://fake.test/device", code: b.provider === "factory" ? "ABCD-EFGH" : "", instructions: "Confirm the code ABCD-EFGH on Factory's page" });
     }
     if (url.pathname === "/api/signin/s1") {
       // ZCode's fails on the second look, to be tried again
-      const p = asked.filter(([k]) => k === "signin").at(-1)[1].provider;
+      const p = signing;
       if (++polls < 2 || p !== "zcode") return json({ id: "s1", agent: p, state: "waiting", url: "https://fake.test/device", code: p === "factory" ? "ABCD-EFGH" : "" });
       return json({ id: "s1", agent: "zcode", state: "failed", error: "the sign-in page expired" });
     }

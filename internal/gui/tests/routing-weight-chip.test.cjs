@@ -39,7 +39,9 @@ function serve(lang, scene) {
       return json({ mine: true, now: now.toISOString(), seq: 1, totals: { requests: 1 }, routes: [route] });
     }
     if (url.pathname === "/api/gateway/history") return json({ cut: false, days: [], routes: [] });
-    if (url.pathname === "/api/groups") return json({ groups: [] });
+    // the relay routes over its two keys, as /api/groups lists it
+    if (url.pathname === "/api/groups") return json({ groups: [], pools: [{ provider: "relay", name: "Relay", icon: "generic", kind: "key",
+      who: ["relay-a", "relay-b"], routing: scene === "weight" ? "weight" : "", affinity: "" }] });
     if (url.pathname === "/api/providers") return json({ providers: [], presets: [], excluded: [], gateway: { running: true, window: true } });
     if (url.pathname.startsWith("/api/")) return json({});
     const file = path.join(assets, url.pathname === "/" ? "index.html" : url.pathname);

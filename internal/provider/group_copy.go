@@ -37,28 +37,7 @@ func CopyGroup(id, name string) (Group, error) {
 	if name == "" {
 		name = src.Name + " copy"
 	}
-	names, ids := map[string]bool{}, map[string]bool{}
-	for _, o := range all {
-		ids[o.ID] = true
-		if !o.Hidden {
-			names[strings.ToLower(o.Name)] = true
-		}
-	}
-	for _, removed := range RemovedGroups() {
-		ids[removed] = true
-	}
-	base := name
-	for n := 2; names[strings.ToLower(name)]; n++ {
-		name = fmt.Sprintf("%s %d", base, n)
-	}
-	slug := GroupSlug(name)
-	if slug == "" {
-		slug = "group"
-	}
-	g.Name, g.ID = name, slug
-	for n := 2; ids[g.ID]; n++ {
-		g.ID = fmt.Sprintf("%s-%d", slug, n)
-	}
+	g.Name, g.ID = freeGroupName(all, name, "")
 	if err := SaveGroup(g); err != nil {
 		return Group{}, err
 	}
@@ -80,4 +59,36 @@ func CopyGroup(id, name string) (Group, error) {
 		}
 	}
 	return g, nil
+}
+
+// freeGroupName is name, numbered past a name in use ("name 2"), and slug —
+// or, when it is "", the id made of the name — numbered past an id in use or a group removed ("slug-2"):
+// what a group made in a click (a copy, a template) is saved as, so it
+// never replaces one there is.
+func freeGroupName(all []Group, name, slug string) (string, string) {
+	names, ids := map[string]bool{}, map[string]bool{}
+	for _, o := range all {
+		ids[o.ID] = true
+		if !o.Hidden {
+			names[strings.ToLower(o.Name)] = true
+		}
+	}
+	for _, removed := range RemovedGroups() {
+		ids[removed] = true
+	}
+	base := name
+	for n := 2; names[strings.ToLower(name)]; n++ {
+		name = fmt.Sprintf("%s %d", base, n)
+	}
+	if slug == "" {
+		slug = GroupSlug(name)
+	}
+	if slug == "" {
+		slug = "group"
+	}
+	id := slug
+	for n := 2; ids[id]; n++ {
+		id = fmt.Sprintf("%s-%d", slug, n)
+	}
+	return name, id
 }

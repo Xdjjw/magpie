@@ -34,6 +34,9 @@ type keyAllowance struct {
 	// stale: made stale (StaleKeyAllowance) while a reading was out, which
 	// was asked before the key said it was out and is followed by another
 	stale bool
+	// refused: the key said it was out (StaleKeyAllowance), so it is read
+	// again even while allowances are read only when asked (#1518)
+	refused bool
 	// read is what routing last read of the key, for its card
 	// (withKeyReadings), which only the Usage page reads
 	read keyReading
@@ -106,7 +109,9 @@ func KeyAllowance(p Provider) (Allowance, bool) {
 	if len(e.a) == 0 && !e.at.IsZero() {
 		age = keyNoWindowsAge
 	}
-	if !e.loading && time.Since(e.at) > age {
+	// with allowances read only when asked, routing goes by what was read
+	// last till the user asks, or the key says it is out (#1518)
+	if !e.loading && time.Since(e.at) > age && (e.refused || !readsAsked()) {
 		e.loading = true
 		go readKeyAllowance(p, id, c.gen)
 	}
@@ -117,13 +122,19 @@ func KeyAllowance(p Provider) (Allowance, bool) {
 // fails keeps what was known, and is tried again a minute later: a failed
 // read is not known, never empty.
 func readKeyAllowance(p Provider, id string, gen int) {
-	ctx, seq := quotaReading(context.Background())
+	ctx := context.Background()
+	c := &keyAllowances
+	c.Lock()
+	if e := c.m[id]; e != nil && e.refused {
+		e.refused, ctx = false, unheld(ctx)
+	}
+	c.Unlock()
+	ctx, seq := quotaReading(ctx)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	r, err := keyWindows(ctx, p)
 	ws := r.ws
 	now := time.Now()
-	c := &keyAllowances
 	c.Lock()
 	e := c.m[id]
 	if e == nil || c.gen != gen {
@@ -236,6 +247,7 @@ func StaleKeyAllowance(p Provider) {
 	c.Lock()
 	if e := c.m[keyAllowanceID(p)]; e != nil {
 		e.at, e.stale = time.Time{}, e.loading
+		e.refused = readsAsked()
 	}
 	c.Unlock()
 }

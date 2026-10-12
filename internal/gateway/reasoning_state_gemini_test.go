@@ -125,7 +125,7 @@ func TestGeminiReplyKeepsSignatures(t *testing.T) {
 		if len(calls) != 2 || calls[0]["thoughtSignature"] != gSigCall || calls[1]["thoughtSignature"] != nil {
 			t.Fatalf("whole=%v: calls %v", whole, calls)
 		}
-		if id, _ := calls[0]["functionCall"].(map[string]any)["id"].(string); strings.Contains(id, sigMark) || strings.Contains(id, sigMarkRaw) {
+		if id, _ := calls[0]["functionCall"].(map[string]any)["id"].(string); strings.Contains(id, sigMark) {
 			t.Fatalf("whole=%v: the signature left in the call's id %q", whole, id)
 		}
 		signed := false

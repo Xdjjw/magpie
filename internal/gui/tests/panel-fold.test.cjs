@@ -21,7 +21,8 @@ const agent = (id, used) => ({
 });
 const state = {
   agents: [...Array.from({ length: 10 }, (_, i) => agent("agent-" + i, true)), agent("codex", true), agent("unset-1", false), agent("unset-2", false)],
-  profiles: [], settings: { lang: "en", theme: "light" },
+  // Get started put away: the list and its scroll are what is measured
+  profiles: [], settings: { lang: "en", theme: "light", guideHidden: true },
 };
 
 async function serve(route) {

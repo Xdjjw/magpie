@@ -58,3 +58,34 @@ func TestRemoteMagpieDecisionPicker(t *testing.T) {
 		}
 	}
 }
+
+// Bailian's Token Plan (#1506): the editor is told its one decision model
+// beside the plan's chat models, so a routing group can pick it and no
+// agent is offered it.
+func TestBailianTokenPlanDecisionPicker(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	p, err := provider.FromPreset("bailian-token-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Key = "sk-sp-1"
+	if err := provider.Save(p); err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := provider.Find(p.ID)
+	if err := catalog.SaveLive(saved.ID, saved.Chat, []catalog.Model{{ID: "qwen3.8-max"}, {ID: "glm-5.3"}}); err != nil {
+		t.Fatal(err)
+	}
+	out := providerInfo(*saved, nil)
+	if out.Deciders == nil || !slices.Equal(*out.Deciders, []string{provider.BailianDecision}) {
+		t.Fatalf("editor decisions: %v", out.Deciders)
+	}
+	var got []string
+	for _, m := range out.Models {
+		got = append(got, m.ID)
+	}
+	if !slices.Equal(got, []string{"qwen3.8-max", "glm-5.3", provider.BailianDecision}) {
+		t.Fatalf("editor models: %v", got)
+	}
+}

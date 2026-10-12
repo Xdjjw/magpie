@@ -128,6 +128,43 @@ func TestLoopGuardFindsTheReportersLoop(t *testing.T) {
 	}
 }
 
+// A loop with no break in it, no line or sentence's end (#1489, bfxh: "the
+// model loops, saying mcp over and over"), is found too, in the reasoning
+// or the text, within some 2,000 tokens of it: run on, a unit is cut only
+// every unitMost bytes, and 256 of them would be far past any reply's
+// limit.
+func TestLoopGuardFindsARunOnLoop(t *testing.T) {
+	for name, loop := range map[string]string{
+		"spaced":      "mcp ",
+		"commas":      "mcp, MCP, ",
+		"no space":    "mcp",
+		"a few words": "call the mcp tool then call the mcp ",
+		"chinese":     "重复说mcp",
+	} {
+		for _, field := range []string{"reasoning_content", "content"} {
+			g := &loopGuard{}
+			before := "Let me look at the MCP servers configured for this project and pick the one that lists files"
+			trip, ok := feedAll(t, g, field, before+" "+strings.Repeat(loop, 20000/len(loop)))
+			if !ok || !trip.runOn || trip.reasoning != (field == "reasoning_content") {
+				t.Errorf("%s as %s: trip %+v %v", name, field, trip, ok)
+				continue
+			}
+			msg := trip.message()
+			if !strings.Contains(msg, "mcp") || !strings.Contains(msg, "without a break") || !strings.Contains(msg, "Stop looping replies") {
+				t.Errorf("%s: message %q", name, msg)
+			}
+			if trip.window > 3*unitMost {
+				t.Errorf("%s: found only after %d characters", name, trip.window)
+			}
+		}
+	}
+	// broken into lines longer than a unit, it is still found
+	g := &loopGuard{}
+	if _, ok := feedAll(t, g, "content", strings.Repeat(strings.Repeat("mcp ", 1500)+"\n", 4)); !ok {
+		t.Error("a run-on loop in long lines was not found")
+	}
+}
+
 // Every protocol's reasoning and text are read: Anthropic's thinking and
 // text deltas, Responses' reasoning and output text, Chat's
 // reasoning_content and reasoning, Gemini's thought parts.
@@ -239,6 +276,18 @@ func TestLoopGuardLeavesOrdinaryRepliesAlone(t *testing.T) {
 	for i := 76; i < len(texts["base64 lines"]); i += 77 {
 		texts["base64 lines"] = texts["base64 lines"][:i] + "\n" + texts["base64 lines"][i:]
 	}
+	// with no break at all, as a model writes a long paragraph, JSON or
+	// minified code on one line (#1489's run-on loops are found by how
+	// few its words are)
+	for _, f := range []string{"internal/gateway/gateway.go", "LESSONS.md", "internal/gui/assets/i18n.js", "log", "csv", "hex", "rules"} {
+		texts[f+" on one line"] = strings.Join(strings.Fields(texts[f]), " ")
+	}
+	var records strings.Builder
+	records.WriteString("[")
+	for i := 0; i < 2000; i++ {
+		fmt.Fprintf(&records, `{"id":%d,"type":"file","done":false},`, i)
+	}
+	texts["json records"] = records.String() + "]"
 	for name, text := range texts {
 		for _, field := range []string{"reasoning_content", "content"} {
 			g := &loopGuard{}
@@ -533,8 +582,13 @@ func TestReasoningLoopIsAskedAgain(t *testing.T) {
 			if n := v.asked.Load(); n != 2 {
 				t.Fatalf("the vendor was asked %d times, want 2", n)
 			}
-			if first, second := <-v.letGo, <-v.letGo; !first || second {
-				t.Fatalf("let go: the looping try %v, the next %v", first, second)
+			// The looping try is let go (true) and the next ends whole
+			// (false), in whichever order the two handlers get there: the
+			// next can finish before the first sees its request cancelled.
+			// Only the next try sends false at once; the looping one sends
+			// false only after 20s unreleased.
+			if a, b := <-v.letGo, <-v.letGo; a == b {
+				t.Fatalf("let go: %v and %v, want the looping try let go and the next not", a, b)
 			}
 		})
 	}

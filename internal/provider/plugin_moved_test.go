@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -222,10 +223,17 @@ func TestMovedSignInAsBuiltIn(t *testing.T) {
 		return ""
 	}
 	t.Cleanup(func() { DevinExecutable = oldExe })
-	release := make(chan struct{})
+	// an early failure ends the test with the install still held: the
+	// fake then gives up without touching the test that has gone
+	release, ended := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(ended) })
 	oldRun := runInstaller
 	runInstaller = func(ctx context.Context, c agentCLI) ([]byte, error) {
-		<-release
+		select {
+		case <-release:
+		case <-ended:
+			return nil, errors.New("the test ended")
+		}
 		os.MkdirAll(filepath.Dir(exe), 0o755)
 		return nil, testenv.WriteProgram(exe, "#!/bin/sh\n")
 	}

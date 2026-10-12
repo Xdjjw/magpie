@@ -14,11 +14,15 @@ package agent
 // on Windows; the npm install follows in the same line.
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
+	"time"
 
 	"github.com/yetone/magpie/internal/proc"
 )
@@ -33,6 +37,9 @@ type InstallCmd struct {
 	// here: nvm (Linux), nvm-mac (a Mac, where nvm's installer wants the
 	// Xcode Command Line Tools) or winget (Windows); "" when it doesn't
 	Node string `json:"node,omitempty"`
+	// Admin is npm's global folder, for an npm command run where only an
+	// administrator can change it (Windows' Program Files); "" otherwise
+	Admin string `json:"admin,omitempty"`
 }
 
 // Install is an agent not on this machine, and how to install it.
@@ -145,29 +152,82 @@ func nodeHere() bool {
 	}
 	dirs := proc.UserBinDirs()
 	if runtime.GOOS == "windows" {
-		dirs = append(dirs, proc.LoginPath()...)
+		dirs = append(dirs, proc.SystemDirs(proc.LoginPath()...)...)
 		if pf := os.Getenv("ProgramFiles"); pf != "" {
-			dirs = append(dirs, filepath.Join(pf, "nodejs"))
+			dirs = append(dirs, proc.SystemDirs(filepath.Join(pf, "nodejs"))...)
 		}
 	}
 	return npmIn(dirs, runtime.GOOS)
 }
 
-// npmIn says whether one of dirs has npm in it.
+// npmIn says whether one of dirs has npm in it: on Windows Node.js's
+// npm.cmd, or mise's shim npm.exe (its default shim mode) or npm.cmd.
 func npmIn(dirs []string, goos string) bool {
-	name := "npm"
+	names := []string{"npm"}
 	if goos == "windows" {
-		name = "npm.cmd"
+		names = []string{"npm.cmd", "npm.exe"}
 	}
 	return slices.ContainsFunc(dirs, func(d string) bool {
-		return d != "" && isFile(filepath.Join(d, name))
+		return d != "" && slices.ContainsFunc(names, func(n string) bool { return isFile(filepath.Join(d, n)) })
 	})
 }
 
 // Installs is every agent magpie knows a command for that isn't on this
 // machine, in the Agents page's order.
 func Installs() []Install {
-	return installsOf(All(), runtime.GOOS, nodeHere())
+	node := nodeHere()
+	out := installsOf(All(), runtime.GOOS, node)
+	if node && adminNPM {
+		npmNeedsAdmin(out, npmGlobalPrefix())
+	}
+	return out
+}
+
+// npmNeedsAdmin marks the npm commands of out with prefix, npm's global
+// folder, when it is one this user can't write in: Node.js's own under
+// Program Files, where npm's prefix was left there (新v学员 on Discord),
+// whose npm install -g fails with EPERM outside a terminal opened as
+// administrator.
+func npmNeedsAdmin(out []Install, prefix string) {
+	if prefix == "" || canWrite(prefix) {
+		return
+	}
+	for i := range out {
+		for j := range out[i].Commands {
+			if out[i].Commands[j].Via == "npm" {
+				out[i].Commands[j].Admin = prefix
+			}
+		}
+	}
+}
+
+var npmPrefixes memo
+
+// npmGlobalPrefix is where npm install -g puts packages (npm prefix -g),
+// "" when that isn't known.
+func npmGlobalPrefix() string {
+	npm, err := exec.LookPath("npm")
+	if err != nil {
+		npm = filepath.Join(os.Getenv("ProgramFiles"), "nodejs", "npm.cmd")
+		if os.Getenv("ProgramFiles") == "" || !isFile(npm) {
+			return ""
+		}
+	}
+	return npmPrefixes.get(npm, "", time.Hour, 5*time.Minute, func() (string, error) {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		cmd := proc.CommandContext(ctx, npm, "prefix", "-g")
+		cmd.Stdin = nil
+		out, err := cmd.Output()
+		if err != nil {
+			return "", err
+		}
+		p := strings.TrimSpace(string(out))
+		if !filepath.IsAbs(p) {
+			return "", errors.New("npm prefix -g: " + p)
+		}
+		return p, nil
+	})
 }
 
 func installsOf(all []*Agent, goos string, node bool) []Install {

@@ -104,7 +104,8 @@ func sideLogins(agent, ownUser string, usable func(savedLogin) bool) []sideLogin
 		if l.First || (first < 0 && l.own()) {
 			first = len(out)
 		}
-		out = append(out, sideLogin{Login{Agent: agent, User: l.User, Plan: l.Plan, Seen: l.Seen, On: l.On, Own: l.own()}, l})
+		// a sign-in its vendor revoked shows on the account (signin_revoked.go)
+		out = append(out, sideLogin{Login{Agent: agent, User: l.User, Plan: l.Plan, Seen: l.Seen, On: l.On, Own: l.own(), Lapsed: revokedLapse(l)}, l})
 	}
 	if len(out) == 0 {
 		return nil
@@ -282,6 +283,11 @@ func addSideLogin(l savedLogin, ownUser string, dup func(savedLogin)) (err error
 			ls[i].Auth, ls[i].Home, ls[i].Plan, ls[i].Seen = l.Auth, l.Home, l.Plan, l.Seen
 			if l.Agent == "copilot" {
 				ls[i].AccessSKU = l.AccessSKU
+			}
+			// a new sign-in: the token its vendor refused is gone
+			// (copilot_lapsed.go, signin_revoked.go)
+			if l.Agent == "copilot" || strings.HasPrefix(ls[i].Refused, revokedPrefix) {
+				ls[i].Lapsed, ls[i].Refused = "", ""
 			}
 			if old.own() {
 				ls[i].On = true

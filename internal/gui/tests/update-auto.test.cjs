@@ -11,6 +11,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 
@@ -97,10 +98,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         page.setDefaultTimeout(5000);
         page.on("pageerror", (e) => errors.push(e.message));
         await page.route("**/*", server(lang, ctl));
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=settings");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         // the rows are in Settings' About part
         const aboutTab = async () => {
-          await page.locator("#setTab-about").click();
+          await page.locator(":is(#setTab-about, .nav-s[data-of=setTab-about]):visible").click();
           await page.locator("#setPage-about").waitFor({ state: "visible" });
         };
         await aboutTab();

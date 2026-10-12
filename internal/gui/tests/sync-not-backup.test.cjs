@@ -77,7 +77,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           page.setDefaultTimeout(5000);
           await page.goto("http://magpie.test/");
           await page.locator("#prefs").click();
-          await page.locator("#setTab-sync").click();
+          await page.locator(":is(#setTab-sync, .nav-s[data-of=setTab-sync]):visible").click();
           const first = page.locator("#syncList .row.pref").first();
           await first.waitFor({ state: "visible" });
           const said = await first.locator(".who > .sub").first().textContent();

@@ -18,48 +18,72 @@ const summaryCacheSessions = 1024
 type summaryEntry struct {
 	version uint64
 	meta    string
-	value   Summary
+	// value keeps the top summaryCacheSessions sessions only, of its
+	// SessionCount
+	value Summary
 }
 
 var summaries struct {
 	sync.Mutex
 	entries map[Period]summaryEntry
+	worked  int // how many summaries were worked out, for the tests
 }
 
-func indexedSummary(p Period, now time.Time) Summary {
-	if p != Today && p != Week && p != Month {
-		p = All
+func indexedSummary(p Period, now time.Time) Summary { return topSummary(p, now, -1) }
+
+// SummarizeTop is Summarize with only the top n sessions by tokens (all of
+// them for n < 0); SessionCount says how many the period has. It is what a page that
+// shows a few of them or none asks for: a summary of more than
+// summaryCacheSessions sessions is kept with those only, and Summarize, which
+// gives every one, works it out again each time. Over a long history
+// (Vantiboo1ean, ~750k requests in ~84k sessions) that was every refresh of
+// the Usage page and the TUI, and the page was sent all 84k.
+func SummarizeTop(p Period, n int) Summary { return topSummary(p, Clock(), n) }
+
+func topSummary(p Period, now time.Time, n int) Summary {
+	p = p.shown()
+	snapshot := readLogSnapshot()
+	work := func() Summary {
+		summaries.Lock()
+		summaries.worked++
+		summaries.Unlock()
+		return summarizeFrom(p, now, snapshot.first, snapshot.keyProviders, func(fn func(Record)) { snapshot.visit(p.Since(now), fn) })
 	}
-	snapshot := logSnapshotFor(true)
+	if p.IsRange() {
+		// a picked range is read afresh each time, so ranges never pile up
+		// in the cache (#1492)
+		return topOf(work(), n)
+	}
 	meta := usagePriceCacheKey(now)
 	summaries.Lock()
 	old, ok := summaries.entries[p]
 	summaries.Unlock()
-	if ok && old.version == snapshot.version && old.meta == meta {
-		return cloneSummary(old.value)
+	if ok && old.version == snapshot.version && old.meta == meta && (n >= 0 && n <= len(old.value.Sessions) || old.value.SessionCount == len(old.value.Sessions)) {
+		return topOf(cloneSummary(old.value), n)
 	}
-	if snapshot.uncached && len(snapshot.blocks) == 0 {
-		snapshot = readLogSnapshot()
-	}
-	value := summarizeFrom(p, now, snapshot.first, snapshot.keyProviders, func(fn func(Record)) { snapshot.visit(p.Since(now), fn) })
-	// Keep every session in the returned result; limit retained cache data only.
-	if len(value.Sessions) > summaryCacheSessions {
-		summaries.Lock()
-		if previous := summaries.entries[p]; previous.version <= snapshot.version {
-			delete(summaries.entries, p)
-		}
-		summaries.Unlock()
-		return value
-	}
+	value := work()
+	// the cache keeps a copy with the top sessions only; the answer has as
+	// many as asked
+	kept := value
+	kept.Sessions = kept.Sessions[:min(len(kept.Sessions), summaryCacheSessions)]
+	kept = cloneSummary(kept)
 	summaries.Lock()
 	if summaries.entries == nil {
 		summaries.entries = map[Period]summaryEntry{}
 	}
 	if previous := summaries.entries[p]; previous.version <= snapshot.version {
-		summaries.entries[p] = summaryEntry{snapshot.version, meta, value}
+		summaries.entries[p] = summaryEntry{snapshot.version, meta, kept}
 	}
 	summaries.Unlock()
-	return cloneSummary(value)
+	return topOf(value, n)
+}
+
+// topOf is s with its top n sessions (all for n < 0).
+func topOf(s Summary, n int) Summary {
+	if n >= 0 && len(s.Sessions) > n {
+		s.Sessions = s.Sessions[:n:n]
+	}
+	return s
 }
 
 // The exported result remains owned by its caller.

@@ -37,7 +37,7 @@ func importAppsRoutes(mux *http.ServeMux) {
 			for _, it := range s.Items {
 				// Match openImportApps' default selection: disabled entries and
 				// ID collisions without an add-key option need a manual choice.
-				if it.Skip == "" && it.Status != "same" && it.Off == "" && (it.Status != "taken" || it.KeyOf != "") {
+				if it.Skip == "" && it.Status != "same" && it.Off == "" && (it.Status != "taken" || it.KeyOf != "" || it.Reserved) {
 					out = append(out, candidate{importFingerprint(s.ID, it), s.Name})
 				}
 			}

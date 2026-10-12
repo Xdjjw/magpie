@@ -15,10 +15,11 @@ import (
 )
 
 // The Restart button runs `codex app-server daemon restart` with the codex
-// magpie finds, for the Codex home it switches; a stand-in codex writes
+// magpie finds, for the Codex home it switches, the user's CODEX_HOME when
+// that is set; a stand-in codex writes
 // down how it was run, since the real one would restart the user's daemon.
 func TestCodexDaemonRestartRoute(t *testing.T) {
-	h := sandboxHome(t)
+	sandboxHome(t)
 	bin := t.TempDir()
 	t.Setenv("PATH", bin)
 	t.Setenv("CODEX_HOME", "/somewhere/else")
@@ -41,7 +42,7 @@ func TestCodexDaemonRestartRoute(t *testing.T) {
 		t.Fatalf("state %v %q", err, st.CodexDaemon)
 	}
 	b, _ := os.ReadFile(rec)
-	if got, want := strings.TrimSpace(string(b)), "app-server daemon restart|"+filepath.Join(h, ".codex"); got != want {
+	if got, want := strings.TrimSpace(string(b)), "app-server daemon restart|/somewhere/else"; got != want {
 		t.Fatalf("ran %q, want %q", got, want)
 	}
 	t.Setenv("FAIL", "1")

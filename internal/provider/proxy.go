@@ -2,7 +2,10 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 
 	"github.com/yetone/magpie/internal/netproxy"
@@ -130,6 +133,57 @@ func keyProxies(p Provider) map[string]string {
 		}
 	}
 	return out
+}
+
+// keepSignInProxy keeps the proxy an account of the subscription id was
+// signed in through, picked for that sign-in, as the one its requests go
+// through (#1663): the subscription's when the account is its only one,
+// as the editor shows one account's proxy, else the account's own.
+func keepSignInProxy(id, user, proxy string) error {
+	proxy = strings.TrimSpace(proxy)
+	if err := settings.CheckProxy(proxy); err != nil {
+		return err
+	}
+	if ProxyOfLogin(id, user) == proxy {
+		return nil
+	}
+	alone := true
+	for _, l := range Logins(id) {
+		if user == "" || accountKey(l.User) != accountKey(user) {
+			alone = false
+		}
+	}
+	f, err := read()
+	if err != nil {
+		return err
+	}
+	i := slices.IndexFunc(f.Providers, func(p Provider) bool { return p.ID == id })
+	if i < 0 {
+		f.Providers = append(f.Providers, Provider{ID: id})
+		i = len(f.Providers) - 1
+	}
+	p := &f.Providers[i]
+	own := maps.Clone(p.AccountProxies)
+	if own == nil {
+		own = map[string]string{}
+	}
+	switch {
+	case alone:
+		p.Proxy = proxy
+		delete(own, accountKey(user))
+	case user == "":
+		return errors.New("the account it signed in to isn't known")
+	case proxy == p.Proxy:
+		delete(own, accountKey(user))
+	case proxy == "":
+		// an account's own can't say "the global one": "" follows the
+		// subscription's
+		return errors.New("an account can't follow the global proxy while its subscription has a proxy of its own")
+	default:
+		own[accountKey(user)] = proxy
+	}
+	p.AccountProxies = normalAccountProxies(own)
+	return store(f)
 }
 
 // checkAccountProxies refuses an account's proxy Settings would refuse.

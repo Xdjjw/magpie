@@ -151,6 +151,9 @@ func quotaOfPlugin(q SubscriptionQuota, u plugin.Usage) SubscriptionQuota {
 		if t, err := time.Parse(time.RFC3339, x.ResetsAt); err == nil {
 			w.ResetsAt = &t
 		}
+		if t, err := time.Parse(time.RFC3339, x.RunsOutAt); err == nil {
+			w.RunsOutAt, w.RunsOut = &t, x.RunsOut
+		}
 		if set := idSetOf(x.Models); set != nil {
 			w.matches = set.has
 		} else if set := idSetOf(x.NotModels); set != nil {

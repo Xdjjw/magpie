@@ -115,3 +115,17 @@ func TestDshCallsKept(t *testing.T) {
 		t.Fatalf("after a restart: %d calls, want %d", len(again), len(first))
 	}
 }
+
+// magpie writes a route per protocol into dsh (agent.dshKinds): a call on
+// any of them went through the gateway and is the gateway's to count, while
+// a route of the user's named like one is not taken for it.
+func TestDshGatewayProviderTakesEveryRouteOfMagpies(t *testing.T) {
+	for p, want := range map[string]bool{
+		"magpie": true, "magpie-responses": true, "magpie-anthropic": true, "dial": true,
+		"magpie-mine": false, "jieyue": false, "": false,
+	} {
+		if got := dshGatewayProvider(dshSource{Provider: p}); got != want {
+			t.Errorf("%q: %v, want %v", p, got, want)
+		}
+	}
+}

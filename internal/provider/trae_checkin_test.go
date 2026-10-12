@@ -20,8 +20,9 @@ type fakeTraeCheckin struct {
 	enable    bool
 	checked   bool
 	claimCode int
-	expired   bool // the plugin marks the sign-in expired (code 1001)
-	old       bool // a plugin before 0.1.4: chat completions only
+	claimMsg  string // the claim's message with claimCode
+	expired   bool   // the plugin marks the sign-in expired (code 1001)
+	old       bool   // a plugin before 0.1.4: chat completions only
 	paths     []string
 }
 
@@ -45,7 +46,7 @@ func (f *fakeTraeCheckin) serve(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(map[string]any{"code": 0, "message": "success", "enable": f.enable, "checked_in": f.checked, "credits": 100})
 		case "/trae/api/v2/ug/checkin_credits/claim":
 			if f.claimCode != 0 {
-				json.NewEncoder(w).Encode(map[string]any{"code": f.claimCode, "message": "already checked in on this device"})
+				json.NewEncoder(w).Encode(map[string]any{"code": f.claimCode, "message": orStr(f.claimMsg, "already checked in on this device")})
 				return
 			}
 			f.checked = true
@@ -143,17 +144,17 @@ func TestTraeCheckinAnswers(t *testing.T) {
 		t.Fatalf("9095 asked again: %+v", rs)
 	}
 
-	// 9074: too often, tried again
-	busy := &fakeTraeCheckin{enable: true, claimCode: traeRateLimited}
-	busy.serve(t)
+	// a failure that got no answer is tried again the same day
+	down := &fakeTraeCheckin{enable: true, claimCode: 5000, claimMsg: "internal error"}
+	down.serve(t)
 	c = traeCheckinFixture(t, &now)
 	if rs := c.checkinNow(ctx, false); rs[0].Outcome != CheckinFailed {
-		t.Fatalf("9074: %+v", rs)
+		t.Fatalf("5000: %+v", rs)
 	}
-	busy.asked()
-	busy.claimCode = 0
+	down.asked()
+	down.claimCode = 0
 	if rs := c.checkinNow(ctx, true); rs[0].Outcome != CheckinClaimed {
-		t.Fatalf("9074, again: %+v", rs)
+		t.Fatalf("5000, again: %+v", rs)
 	}
 
 	// a refused token, marked by the plugin
@@ -173,6 +174,47 @@ func TestTraeCheckinAnswers(t *testing.T) {
 	rs = traeCheckinFixture(t, &now).checkinNow(ctx, false)
 	if rs[0].Outcome != CheckinFailed || !strings.Contains(rs[0].Msg, "0.1.4") {
 		t.Fatalf("old plugin: %+v", rs)
+	}
+}
+
+// #808: with the check-in on and today's not in, a claim answered 9074
+// 「当前参与用户太多，请稍后再试」 (the reporter's bytes) is Trae paying
+// only its own app: the day's answer, so neither the loop nor a press
+// claims again that day; the account is told to check in in Trae's app.
+// The next day it is asked as any other.
+func TestTraeCheckin9074IsOwnAppOnly(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 4, 9, 0, 0, 0, beijing)
+	f := &fakeTraeCheckin{enable: true, claimCode: 9074, claimMsg: "当前参与用户太多，请稍后再试"}
+	f.serve(t)
+	c := traeCheckinFixture(t, &now)
+	first := c.checkinNow(ctx, false)
+	if got := strings.Join(f.asked(), ", "); got != "POST /status, POST /claim" {
+		t.Fatalf("asked %s", got)
+	}
+	// the loop past wbCheckinRetry, and a press (soon), the same day
+	for _, soon := range []bool{false, true} {
+		now = now.Add(wbCheckinRetry + time.Minute)
+		rs := c.checkinNow(ctx, soon)
+		if got := f.asked(); len(got) != 0 {
+			t.Fatalf("same day, soon=%v, asked again after 9074: %v", soon, got)
+		}
+		if rs[0].Outcome != CheckinOwnApp || rs[0].Asked {
+			t.Fatalf("same day, soon=%v: %+v", soon, rs)
+		}
+	}
+	if len(first) != 1 || first[0].Outcome != CheckinOwnApp || first[0].Msg != "当前参与用户太多，请稍后再试" || !first[0].Asked {
+		t.Fatalf("9074: %+v", first)
+	}
+	now = time.Date(2026, 10, 5, 9, 0, 0, 0, beijing)
+	f.claimCode = 0
+	if rs := c.checkinNow(ctx, false); rs[0].Outcome != CheckinClaimed {
+		t.Fatalf("next day: %+v", rs)
+	}
+
+	// 9074 on the status, before any claim, is still a failure tried again
+	if r := traeRefused(9074, "当前参与用户太多，请稍后再试"); r.Outcome != CheckinFailed {
+		t.Fatalf("status 9074: %+v", r)
 	}
 }
 

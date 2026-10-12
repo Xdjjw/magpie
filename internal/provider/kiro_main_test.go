@@ -24,5 +24,8 @@ func TestMain(m *testing.M) {
 		// never the runner's keychain: a test that wants the Copilot
 		// CLI's token there stands one in itself
 		copilotCLISecret = func(string) string { return "" }
+		// the fakes of ChatGPT's backend read turns plain; codex_zstd's
+		// tests send them as the real one is sent
+		CodexZstdForTests(false)
 	}))
 }

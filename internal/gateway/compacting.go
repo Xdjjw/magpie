@@ -19,6 +19,8 @@ var compactSystems = []string{
 	"You are a specialized system component responsible for distilling chat history into a structured XML <state_snapshot>",
 	// Qwen Code
 	"You are the component that summarizes a conversation when its context window is about to overflow.",
+	// Minis (OpenMinis), iOS and Android alike (compactSummarySystemPrompt)
+	"You are a context compaction engine. Your summary will REPLACE the original messages in the conversation context window.",
 }
 
 // compactAsks are in the last user message of a compaction request.
@@ -29,6 +31,8 @@ var compactAsks = []string{
 	"You are performing a CONTEXT CHECKPOINT COMPACTION.",
 	// Kimi Code (prompts/compact.md)
 	"You are now given a task to compact this conversation context",
+	// Minis, around the conversation it sends as one user message
+	"END OF CONVERSATION TO COMPACT.",
 }
 
 // compacting reports whether req is an agent compacting its conversation.

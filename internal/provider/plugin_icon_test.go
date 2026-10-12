@@ -142,12 +142,29 @@ func TestRepoIconsWaitForFirstFetch(t *testing.T) {
 		t.Fatalf("first answer = %q", got)
 	}
 
-	start := time.Now()
-	got = RepoIcons([]string{"https://slow.example/icon.png"}, 300*time.Millisecond)
-	if got[0] != "" {
-		t.Fatalf("a fetch never finished = %q", got[0])
+	// The slow fetch is held until the test ends, so RepoIcons coming back at
+	// all is its wait ending it (#1617); the floor is that it did wait, which
+	// a busy machine only lengthens. The deadline only turns a wait past the
+	// 300ms into a FAIL, and is short of the fetch's own 30s.
+	type answer struct {
+		icon string
+		took time.Duration
 	}
-	if d := time.Since(start); d < 250*time.Millisecond || d > 3*time.Second {
-		t.Fatalf("waited %v for a 300ms wait", d)
+	answered := make(chan answer, 1)
+	go func() {
+		start := time.Now()
+		got := RepoIcons([]string{"https://slow.example/icon.png"}, 300*time.Millisecond)
+		answered <- answer{got[0], time.Since(start)}
+	}()
+	select {
+	case a := <-answered:
+		if a.icon != "" {
+			t.Fatalf("a fetch never finished = %q", a.icon)
+		}
+		if a.took < 250*time.Millisecond {
+			t.Fatalf("waited %v for a 300ms wait", a.took)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("RepoIcons waited past its 300ms for the held fetch")
 	}
 }

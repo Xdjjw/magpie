@@ -113,6 +113,15 @@ func TestBunDefaultSums(t *testing.T) {
 	}
 }
 
+// The tests' oldest Bun (testenv.Bun skips an older one on PATH) is the
+// oldest magpie runs plugins on. testenv can't import this package, whose
+// own tests use it, so it keeps a copy (#1600).
+func TestMinBunIsBunVersion(t *testing.T) {
+	if testenv.MinBun != BunVersion {
+		t.Fatalf("testenv.MinBun is %s, BunVersion %s: change both", testenv.MinBun, BunVersion)
+	}
+}
+
 func TestBunTarget(t *testing.T) {
 	want := map[string]string{
 		"darwin/arm64":  "bun-darwin-aarch64",

@@ -86,7 +86,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await page.goto("http://magpie.test/?view=plugins");
           const view = page.locator("#view-plugins");
           await view.waitFor({ state: "visible" });
-          await view.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+          await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
           const row = (n) => view.locator(".pm-row", { has: page.locator(".name span", { hasText: new RegExp("^" + n + "$") }) });
           const mine = row("my-acme"), theirs = row("opencode-acme-auth");
           await mine.waitFor();

@@ -57,6 +57,28 @@ func ModelListOf(agent string) ModelList {
 // changed, sorted.
 func SetModelLists(ls map[string]ModelList) ([]string, error) {
 	s := settings.Load()
+	changed, err := putModelLists(&s, ls)
+	if err != nil || len(changed) == 0 {
+		return nil, err
+	}
+	if err := settings.Save(s); err != nil {
+		return nil, err
+	}
+	catalog.Touched()
+	return changed, nil
+}
+
+// ModelListsHeld reports whether every list in ls is the one its agent has
+// now: SetModelLists would change none of them.
+func ModelListsHeld(ls map[string]ModelList) bool {
+	s := settings.Load() // parsed afresh: putModelLists writes into its maps
+	changed, err := putModelLists(&s, ls)
+	return err == nil && len(changed) == 0
+}
+
+// putModelLists puts ls into s as SetModelLists keeps them, and returns the
+// agents whose list changed, sorted.
+func putModelLists(s *settings.Settings, ls map[string]ModelList) ([]string, error) {
 	was := Renamed()
 	var changed []string
 	put := func(m *map[string][]string, agent string, ids []string, on bool) bool {
@@ -121,12 +143,5 @@ func SetModelLists(ls map[string]ModelList) ([]string, error) {
 			changed = append(changed, agent)
 		}
 	}
-	if len(changed) == 0 {
-		return nil, nil
-	}
-	if err := settings.Save(s); err != nil {
-		return nil, err
-	}
-	catalog.Touched()
 	return changed, nil
 }

@@ -189,7 +189,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         const q = page.locator(".pm-find input");
         await q.waitFor();
         // from Installed, the first key goes to Discover
-        await page.locator(".lib-tabs .opt", { hasText: w.installed }).click();
+        await page.locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: w.installed }).click();
         await watch(page, ".pm-find input");
         await q.focus();
         await typeIn(page, "1");

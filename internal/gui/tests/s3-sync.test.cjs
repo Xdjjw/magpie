@@ -64,7 +64,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       await page.goto("http://magpie.test/");
       await page.locator("#prefs").click();
-      await page.locator("#setTab-sync").click();
+      await page.locator(":is(#setTab-sync, .nav-s[data-of=setTab-sync]):visible").click();
       const list = page.locator("#syncList");
       const first = list.locator(".row.pref").first();
       await first.waitFor({ state: "visible" });
@@ -92,7 +92,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // at the page's end, then back up by the wheel till the choice is in sight
       await toEnd();
       const segTop = () => page.evaluate(() => document.querySelector(".sync-form .segs").getBoundingClientRect().top - document.querySelector("#view-settings").getBoundingClientRect().top);
-      for (let i = 0; i < 40 && (await segTop()) < 40; i++) { await page.mouse.wheel(0, -40); await page.waitForTimeout(15); }
+      for (let i = 0; i < 40 && (await segTop()) < 10; i++) { await page.mouse.wheel(0, -40); await page.waitForTimeout(15); }
       await page.waitForTimeout(300);
       const before = await top();
       assert.ok(before > 0, "the settings page must be scrolled");
@@ -127,7 +127,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       // going back and forth, the shorter form too, moves nothing
       // the fields filled scrolled the choice out of sight: wheeled back to it
       await page.mouse.move(450, 300);
-      for (let i = 0; i < 40 && (await segTop()) < 40; i++) { await page.mouse.wheel(0, -40); await page.waitForTimeout(15); }
+      for (let i = 0; i < 40 && (await segTop()) < 10; i++) { await page.mouse.wheel(0, -40); await page.waitForTimeout(15); }
       await page.waitForTimeout(300);
       const at = await top();
       assert.ok(at > 0, "the settings page must still be scrolled");
@@ -166,6 +166,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await form.locator("label.tick input").first().isChecked(), true);
 
       await page.setViewportSize({ width: 520, height: 700 });
+      // WebKit applies the sidebar's media rule to the new width at the next
+      // frame, so measure after that frame
+      await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
       assert.equal(await form.evaluate((e) => e.scrollWidth > e.clientWidth), false);
       assert.deepEqual(errors, []);
     });

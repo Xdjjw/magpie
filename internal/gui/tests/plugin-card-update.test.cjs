@@ -1,7 +1,8 @@
 // Run with Node's test runner and Playwright on the module path; see README.md.
-// The update chip on a Discover card is the button that updates the
-// plugin (Discord: 显示更新但是好像没有更新按钮): it names the version,
-// updates without opening the plugin's page, and goes once it's done.
+// A Discover card with an update out has Update as its button (Discord:
+// 显示更新但是好像没有更新按钮; #1587): the card names the version it goes
+// to, the button updates without opening the plugin's page, and goes once
+// it's done.
 // English and Chinese; the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -41,12 +42,12 @@ function server(lang) {
 }
 
 const L = {
-  en: { chip: "Update to v0.0.9" },
-  zh: { chip: "更新到 v0.0.9" },
+  en: { button: "Update", title: "Update to v0.0.9" },
+  zh: { button: "更新", title: "更新到 v0.0.9" },
 };
 
 for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
-  test(engine + ": a card's update chip updates the plugin", async (t) => {
+  test(engine + ": a card's Update button updates the plugin", async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
     for (const lang of ["en", "zh"]) {
@@ -60,11 +61,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.route("**/*", server(lang));
         await page.goto("http://magpie.test/?view=plugins");
         const card = page.locator('#view-plugins .pm-card[data-pkg="opencode-copilot-auth"]').first();
-        const chip = card.locator("button.pm-chip.up");
-        await chip.waitFor();
-        assert.equal((await chip.textContent()).trim(), w.chip);
-        await chip.click();
-        await page.waitForFunction(() => !document.querySelector('#view-plugins .pm-card[data-pkg="opencode-copilot-auth"] .pm-chip.up'));
+        const up = card.locator("button.pm-act.pm-up");
+        await up.waitFor();
+        assert.equal((await up.textContent()).trim(), w.button);
+        assert.equal(await up.getAttribute("title"), w.title);
+        assert.equal((await card.locator(".pm-ver").textContent()).trim(), "v0.0.7 → v0.0.9");
+        await up.click();
+        await page.waitForFunction(() => !document.querySelector('#view-plugins .pm-card[data-pkg="opencode-copilot-auth"] .pm-act.pm-up'));
         assert.equal(upgrades.length, 1);
         assert.equal(upgrades[0].package || upgrades[0].spec || upgrades[0].pkg, "opencode-copilot-auth");
         // it updated, and didn't open the plugin's page

@@ -54,6 +54,12 @@ type otelExporter struct {
 	identities sessions.TraceSessionIndex
 }
 
+// OTelEvery is how often the exporter sends what it holds, and
+// OTelSessionsEvery how often it reads the agents' transcripts for
+// sessions. Read once when StartOTel starts an exporter; tests shorten them
+// so a test that waits for an export doesn't wait seconds.
+var OTelEvery, OTelSessionsEvery = 5 * time.Second, 2 * time.Second
+
 // StartOTel runs only in the process serving the gateway. Stopping drains
 // accepted metadata for at most three seconds, after in-flight calls finish.
 func StartOTel() func() {
@@ -63,8 +69,8 @@ func StartOTel() func() {
 		log.Printf("otel: %s", err)
 	}
 	watchCtx, stopWatch := context.WithCancel(e.ctx)
-	go e.watchSessions(watchCtx, time.Now())
-	go e.run()
+	go e.watchSessions(watchCtx, time.Now(), OTelSessionsEvery)
+	go e.run(OTelEvery)
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -179,11 +185,11 @@ func (e *otelExporter) offer(item otelItem) {
 	}
 }
 
-func (e *otelExporter) run() {
+func (e *otelExporter) run(every time.Duration) {
 	defer close(e.done)
 	defer e.cancel()
 	defer e.client.CloseIdleConnections()
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(every)
 	defer ticker.Stop()
 	batch := make([]otelItem, 0, otelBatchSize)
 	flush := func() {

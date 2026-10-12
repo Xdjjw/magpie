@@ -75,7 +75,14 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         assert(box.x >= 0 && box.x + box.width <= width, `${width}px: Show more fits`);
 
         // the next page goes under the rows drawn; they and the scroll stay
-        await rows.nth(99).scrollIntoViewIfNeeded();
+        // the reader scrolls there: a scroll by code (scrollIntoViewIfNeeded)
+        // is put back at the next frame, and a click before that frame now
+        // puts it back too (#1554)
+        await page.mouse.move(width / 2, 320);
+        const inSight = () => rows.nth(99).evaluate((e) => { const r = e.getBoundingClientRect(); return r.top >= 0 && r.bottom <= innerHeight; });
+        for (let i = 0; i < 300 && !(await inSight()); i++) await page.mouse.wheel(0, 200);
+        await page.waitForTimeout(300);
+        assert(await inSight(), "the reader's wheel brings the last row drawn into sight");
         await rows.first().evaluate((e) => { e.kept = true; });
         const y = () => rows.nth(99).evaluate((e) => Math.round(e.getBoundingClientRect().top));
         const before = await y();

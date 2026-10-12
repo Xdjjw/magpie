@@ -14,7 +14,6 @@ import (
 
 	"github.com/godbus/dbus/v5"
 
-	"github.com/yetone/magpie/internal/gateway"
 	"github.com/yetone/magpie/internal/proc"
 )
 
@@ -32,7 +31,7 @@ func saveZedCredential(url string) error {
 		}
 		// GPUI uses an Internet Password whose server is the full API URL.
 		// Keep security trusted as well so it can update the key on later picks.
-		args = []string{"add-internet-password", "-U", "-T", app, "-T", "/usr/bin/security", "-s", url, "-a", "Bearer", "-w", gateway.TokenFor("zed")}
+		args = []string{"add-internet-password", "-U", "-T", app, "-T", "/usr/bin/security", "-s", url, "-a", "Bearer", "-w", agentKeyAt("zed", url)}
 	case "linux", "freebsd":
 		return saveZedSecret(ctx, url)
 	default:
@@ -149,7 +148,7 @@ func saveZedSecret(ctx context.Context, url string) error {
 			"url": url, "username": "Bearer",
 		}),
 	}
-	secret := zedSecret{Session: session, Parameters: []byte{}, Value: []byte(gateway.TokenFor("zed")), ContentType: "text/plain; charset=utf8"}
+	secret := zedSecret{Session: session, Parameters: []byte{}, Value: []byte(agentKey("zed")), ContentType: "text/plain; charset=utf8"}
 	var item dbus.ObjectPath
 	if err := conn.Object("org.freedesktop.secrets", collection).CallWithContext(ctx, "org.freedesktop.Secret.Collection.CreateItem", 0, properties, secret, true).Store(&item, &prompt); err != nil {
 		return err

@@ -476,7 +476,7 @@ func tomlTablesOf(path string) ([]tomlTableSpan, error) {
 // file is an empty document and no error.
 func tomlFileOf(path string) (tomlFile, error) {
 	doc, err := filememo.Read("toml file", path, func(b []byte) (tomlFile, error) {
-		doc, err := parseTOMLFile(splitLines(string(b)))
+		doc, err := parseTOMLFile(splitLines(string(TrimBOM(b))))
 		if err != nil {
 			return tomlFile{}, fmt.Errorf("%s: %w", path, err)
 		}
@@ -639,9 +639,6 @@ func tomlParseError(p *unstable.Parser, err error) error {
 	}
 	if len(pe.Highlight) > 0 {
 		pos = p.Shape(p.Range(pe.Highlight)).Start
-	}
-	if pos.Offset == 0 && bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
-		err = fmt.Errorf("UTF-8 BOM is not supported; save the file without BOM: %w", err)
 	}
 	return fmt.Errorf("line %d, column %d: %w", pos.Line, pos.Column, err)
 }

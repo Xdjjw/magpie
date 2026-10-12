@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 )
 
 // FindTool is the command-line tool name as a terminal would run it: on
@@ -12,29 +13,45 @@ import (
 // (UserBinDirs), else, on Windows, on the PATH the registry has now, which
 // a magpie started before the tool was installed doesn't have (#839: the
 // Claude sign-in said Claude Code wasn't installed, its installer having
-// put claude.exe in ~/.local/bin after magpie started). "" when none.
+// put claude.exe in ~/.local/bin after magpie started). A version
+// manager's wrapper script found there is given as the program it runs
+// (Unwrap). "" when none.
 func FindTool(name string) string {
 	if p, err := exec.LookPath(name); err == nil {
-		return p
+		return Unwrap(name, p)
 	}
 	dirs := UserBinDirs()
 	if runtime.GOOS == "windows" {
-		dirs = append(dirs, LoginPath()...)
+		dirs = append(dirs, SystemDirs(LoginPath()...)...)
 	}
-	return toolIn(name, runtime.GOOS, dirs)
+	return Unwrap(name, toolIn(name, runtime.GOOS, dirs))
 }
 
-// SystemBinDirs are the machine's own folders a user's tools are in when
-// PATH is a desktop app's: Homebrew's, and /usr/local's for a package
-// manager that installs there. launchd's PATH has neither, so a magpie
-// started from the Finder still finds a claude one of them holds.
-// Windows has none (its registry PATH is read instead). A var so a test
-// can point it away from the machine it runs on.
-var SystemBinDirs = func() []string {
-	if runtime.GOOS == "windows" {
-		return nil
+// sandboxVar is testenv.Marker, which proc can't import: the home a test
+// binary's testenv.Isolate made.
+const sandboxVar = "MAGPIE_TEST_SANDBOX"
+
+// SystemDirs are paths of the machine's own, outside any home (Homebrew's
+// /opt/homebrew/bin, /usr/local/bin, an app in /Applications, the
+// registry's PATH), as discovery looks in them: as they are, except in a
+// test binary testenv isolated, where each lies under the test's home
+// instead. A test that empties PATH means a machine without the tool; the
+// host's /opt/homebrew/bin/claude was found anyway, so the tests of the
+// downloaded Claude Code failed on a Mac with Homebrew's (#1525). A test
+// that wants one there writes it under its home at that path.
+func SystemDirs(paths ...string) []string {
+	root := os.Getenv(sandboxVar)
+	if root == "" {
+		return paths
 	}
-	return []string{"/opt/homebrew/bin", "/usr/local/bin"}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		if p == "" {
+			continue
+		}
+		out = append(out, filepath.Join(root, "system", strings.TrimPrefix(p, filepath.VolumeName(p))))
+	}
+	return out
 }
 
 // toolIn is name's program in the first of dirs that has one: on Windows

@@ -13,6 +13,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 )
@@ -96,4 +97,37 @@ func ReadFile(p string) ([]byte, error) {
 // Rename is os.Rename, waiting out a reader holding newpath open.
 func Rename(oldpath, newpath string) error {
 	return retry(func() error { return os.Rename(oldpath, newpath) })
+}
+
+// Sync is (*os.File).Sync; a test stands in for it to make a flush fail.
+var Sync = (*os.File).Sync
+
+// WriteFile replaces p with b, mode perm, through a temp file beside it
+// that is flushed to the disk before it is renamed over p. A rename reaches
+// the disk on its own schedule and the data behind it later: a Windows
+// machine that went down between the two left logins.json and
+// plugin-auth.json at their full length with every byte zero (#1505). A
+// write or flush that fails removes the temp file and leaves p as it was.
+func WriteFile(p string, b []byte, perm fs.FileMode) error {
+	tmp, err := os.CreateTemp(filepath.Dir(p), "."+filepath.Base(p)+".*")
+	if err != nil {
+		return err
+	}
+	_, err = tmp.Write(b)
+	if err == nil {
+		err = tmp.Chmod(perm)
+	}
+	if err == nil {
+		err = Sync(tmp)
+	}
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = Rename(tmp.Name(), p)
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
+	return err
 }

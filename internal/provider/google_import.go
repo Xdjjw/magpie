@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // ImportedAccount is what became of one account in an import.
@@ -174,6 +176,9 @@ func jsonStr(x map[string]any, keys ...string) string {
 // (see above), each file's text one element of files, and says what
 // became of each.
 func ImportGoogleAccounts(ctx context.Context, agent string, files []string) ([]ImportedAccount, error) {
+	if settings.AccountDiscoveryOff() {
+		return nil, errAccountDiscoveryOff
+	}
 	app, ok := googleAppOf(agent)
 	if !ok || agent != "antigravity" {
 		return nil, fmt.Errorf("accounts can't be imported for %s", agent)

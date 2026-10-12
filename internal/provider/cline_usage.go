@@ -80,8 +80,19 @@ func clineKeyUsage(ctx context.Context, p Provider) (windows []QuotaWindow, bala
 		}
 		return nil, "", limErr
 	}
+	if limErr != nil {
+		// the credits alone, but the limits failed for a reason other
+		// than no ClinePass: the card says so beside the balance, rather
+		// than look like an account without ClinePass (#79)
+		return nil, balance, fmt.Errorf("%s: %w", clineLimitsUnread, limErr)
+	}
 	return windows, balance, nil
 }
+
+// clineLimitsUnread is how a card whose ClinePass limits failed to read
+// begins its error, the words the Cline plugin uses too: the GUI says them
+// (quotaError) beside the balance read.
+const clineLimitsUnread = "ClinePass limits couldn't be read"
 
 // clineCredits is the account's credit balance, {balance} in millionths of
 // a dollar, at /users/{id}/balance with the id /users/me tells.

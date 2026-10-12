@@ -13,9 +13,19 @@ package agent
 // magpie's models beside its own (lijiho96940561 on X: Hermes went to Not
 // connected and magpie's models left its picker), and only Disconnect
 // takes the provider out.
+//
+// Each of Hermes's bots is a profile with its own config.yaml (see
+// hermesProfiles), which doesn't read the main one's: magpie's provider goes
+// into every profile's too, so magpie is offered in every bot's picker, not
+// the main one's alone (lijiho96940561 on X). A profile's own model and
+// provider are left as its user set them, and Disconnect takes the provider
+// out of each.
 
 import (
+	"errors"
+	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/yetone/magpie/internal/edit"
@@ -33,6 +43,19 @@ func hermesIn(at place) *Agent {
 	}
 	path := filepath.Join(dir, "config.yaml")
 	hermesProvider := func() hermesProviderEntry { return hermesProviderAt(at.gw()) }
+	// spread puts magpie's provider, as it is now, into every other
+	// profile's config beside the one magpie connects
+	spread := func() error {
+		var errs []error
+		for _, p := range hermesOthers(at, dir) {
+			if edit.GetYAMLMap(p, "providers."+magpieID) != nil {
+				errs = append(errs, syncYAML(p, "providers."+magpieID, func() any { return hermesProvider() }))
+			} else {
+				errs = append(errs, edit.SetYAML(p, edit.KV{Path: "providers." + magpieID, Value: hermesProvider()}))
+			}
+		}
+		return errors.Join(errs...)
+	}
 	key := "hermes:" + path + ":"
 	getKey := func(k string) string { v, _ := edit.GetYAML(path, k); return v }
 	onMagpie := func() bool { return getKey("model.provider") == magpieID }
@@ -66,11 +89,14 @@ func hermesIn(at place) *Agent {
 		UA:  []string{"hermes-agent"},
 		Bin: "hermes", Dir: dir, Path: path,
 		Sync: func() error {
-			return syncYAML(path, "providers."+magpieID, func() any { return hermesProvider() })
+			if err := syncYAML(path, "providers."+magpieID, func() any { return hermesProvider() }); err != nil || !joined() {
+				return err
+			}
+			return spread()
 		},
 		Notice: func() string {
 			if Running(`(^|/)hermes( |$)`) {
-				return "Hermes reads its settings at start-up — restart open Hermes sessions to use this."
+				return noticeHermes.String()
 			}
 			return ""
 		},
@@ -78,10 +104,14 @@ func hermesIn(at place) *Agent {
 		// Disconnect takes magpie's provider out; the model, when it is
 		// magpie's, goes back by the field
 		Unwire: func() error {
-			if !joined() {
-				return nil
+			var errs []error
+			if joined() {
+				errs = append(errs, edit.DelYAML(path, "providers."+magpieID))
 			}
-			return edit.DelYAML(path, "providers."+magpieID)
+			for _, p := range hermesOthers(at, dir) {
+				errs = append(errs, hermesUnwireProfile(p))
+			}
+			return errors.Join(errs...)
 		},
 		Check: func() string {
 			if !onMagpie() {
@@ -116,11 +146,14 @@ func hermesIn(at place) *Agent {
 							key + "model.default":  getKey("model.default"),
 						})
 					}
-					return edit.SetYAML(path,
+					if err := edit.SetYAML(path,
 						edit.KV{Path: "providers." + magpieID, Value: hermesProvider()},
 						edit.KV{Path: "model.provider", Value: magpieID},
 						edit.KV{Path: "model.default", Value: ref},
-					)
+					); err != nil {
+						return err
+					}
+					return spread()
 				}
 				if onMagpie() {
 					if err := restore(); err != nil {
@@ -150,6 +183,78 @@ func hermesIn(at place) *Agent {
 	}
 }
 
+// hermesProfileID is the name a Hermes profile may have
+// (hermes_constants.PROFILE_ID_RE).
+var hermesProfileID = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// hermesProfiles is the config.yaml of each of Hermes's own profiles (its
+// bots), as Hermes lists them (hermes_cli/profiles.py): the root's own, and
+// <root>/profiles/<name>'s for each name Hermes allows that holds a file
+// only a profile has and isn't deleted (a tombstone at
+// profiles/.deleted/<name>). The root is ~/.hermes, which HERMES_HOME under
+// it is a profile of; a HERMES_HOME elsewhere is the root itself, or, as
+// <root>/profiles/<name>, a profile of <root> (get_default_hermes_root).
+// A profile with no config.yaml yet is left out: magpie doesn't make one.
+func hermesProfiles(at place) []string {
+	root := filepath.Join(at.home, ".hermes")
+	if env := at.getenv("HERMES_HOME"); env != "" {
+		if rel, err := filepath.Rel(root, env); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			root = env
+			if filepath.Base(filepath.Dir(env)) == "profiles" {
+				root = filepath.Dir(filepath.Dir(env))
+			}
+		}
+	}
+	paths := []string{filepath.Join(root, "config.yaml")}
+	ps := filepath.Join(root, "profiles")
+	es, _ := os.ReadDir(ps)
+	for _, e := range es {
+		name := e.Name()
+		if !e.IsDir() || name == "default" || !hermesProfileID.MatchString(name) {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(ps, ".deleted", name)); err == nil {
+			continue
+		}
+		if st, err := os.Stat(filepath.Join(ps, name, "config.yaml")); err == nil && st.Mode().IsRegular() {
+			paths = append(paths, filepath.Join(ps, name, "config.yaml"))
+		}
+	}
+	return paths
+}
+
+// hermesOthers is every profile's config but the one at dir, which magpie
+// connects
+func hermesOthers(at place, dir string) []string {
+	var out []string
+	for _, p := range hermesProfiles(at) {
+		if filepath.Clean(filepath.Dir(p)) == filepath.Clean(dir) {
+			continue
+		}
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+// hermesUnwireProfile takes magpie's provider out of a profile's config. A
+// profile whose model is on magpie (one cloned from a connected main
+// config, or picked in that bot) would be left naming a provider that is
+// gone, so its provider and model go too, and Hermes takes its own
+// defaults, as the main config does with nothing stashed.
+func hermesUnwireProfile(p string) error {
+	if edit.GetYAMLMap(p, "providers."+magpieID) == nil {
+		return nil
+	}
+	del := []string{"providers." + magpieID}
+	if v, _ := edit.GetYAML(p, "model.provider"); v == magpieID {
+		del = append(del, "model.provider", "model.default")
+	}
+	return edit.DelYAML(p, del...)
+}
+
 type hermesProviderEntry struct {
 	Name    string            `yaml:"name"`
 	BaseURL string            `yaml:"base_url"`
@@ -172,3 +277,8 @@ func hermesProviderAt(gw string) hermesProviderEntry {
 		Headers: map[string]string{"User-Agent": "hermes-agent"}, Models: ms,
 	}
 }
+
+// what hermes says after a change (notice.go)
+var (
+	noticeHermes = newNotice("Hermes reads its settings at start-up — restart open Hermes sessions to use this.")
+)

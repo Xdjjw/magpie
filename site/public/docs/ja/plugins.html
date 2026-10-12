@@ -83,6 +83,7 @@
     <a href="#test">テスト</a>
     <a href="#publish">公開と掲載</a>
     <a href="#middleware">ゲートウェイミドルウェア</a>
+    <a href="#agents">エージェントプラグイン</a>
     <a href="#pi">pi パッケージ</a>
     <a href="#protocol">ホストプロトコル</a>
     <a href="#faq">よくある質問</a>
@@ -214,6 +215,7 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
           <li>コミュニティのパッケージ（<code>@magpie-community/*</code>）は、magpie の起動から少し後に自動で更新され、その後は 1 時間ごとに更新されます。</li>
           <li>そのほかのパッケージは、新しいバージョンがあると <span class="ui">プラグイン</span> にドットが表示され、ユーザーがクリックか <code>magpie plugin update</code> で更新します。</li>
           <li>バージョンを固定した指定（<code>name@1.2.3</code>）は、ユーザーが更新するまでそのバージョンのままです。<span class="ui">… にアップデート</span>、<span class="ui">すべてアップデート</span>、<code>magpie plugin update</code> は最新版をインストールし、固定を外します。</li>
+          <li>git リポジトリには比べるバージョンがありません。ブランチやタグ（<code>#ref</code> がなければデフォルトブランチ）が Bun のインストールしたコミットと違うときだけ、アップデートが表示されます。GitHub のものは GitHub の API に、ほかのホストは <code>git ls-remote</code> で、最大 10 分に 1 回問い合わせ、1 時間ごとのチェックでも問い合わせます。コミットに固定した指定にはアップデートはありません。行にはインストールしたコミットが表示されます。</li>
         </ul></li>
     </ul>
     <p>magpie が設定フォルダ（<code>~/.config/magpie</code> または <code>$XDG_CONFIG_HOME/magpie</code>）に保存するもの：</p>
@@ -252,10 +254,10 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
     <p>OpenCode は <code>magpie</code> オブジェクトを無視するので、OpenCode プラグインに追加しても安全です。</p>
     <div class="table-wrap"><table>
       <tr><th>フィールド</th><th>意味</th></tr>
-      <tr><td><code>magpie.icon</code></td><td>プロバイダの画像：<code>https://</code> URL または <code>data:image/…</code> URI、最大 1 MB。SVG、PNG など。</td></tr>
+      <tr><td><code>magpie.icon</code></td><td>プラグイン自身の画像。「発見」のカード（npm から、GitHub のものはリポジトリから読み込み）と「インストール済み」の行に表示され、自分の画像を持たないプロバイダにも使われます：<code>https://</code> URL または <code>data:image/…</code> URI、最大 1 MB。SVG、PNG など。</td></tr>
       <tr><td><code>magpie.maxConcurrency</code></td><td>各アカウントが同時に受けるリクエスト数。1 から 1000 の整数。ユーザーがプロバイダに設定した上限が優先されます。</td></tr>
     </table></div>
-    <p>同じフィールドは <code>auth</code> フックにも設定でき（<code>auth.icon</code>、<code>auth.maxConcurrency</code>）、そちらが <code>package.json</code> より優先されます。</p>
+    <p>同じフィールドは <code>auth</code> フックにも設定でき（<code>auth.icon</code>、<code>auth.maxConcurrency</code>）、そちらが <code>package.json</code> より優先されます。複数のプロバイダにサインインするプラグインは、プロバイダごとに <code>auth.icon</code> を設定し、<code>magpie.icon</code> をプラグイン自身のものにできます。</p>
 
     <h2 id="provider"><a class="anchor" href="#provider">プロバイダとモデル</a></h2>
     <h3>プロバイダを宣言する</h3>
@@ -284,6 +286,10 @@ magpie quota                             <span class="c"># acme · Pro · 5h 37%
 }</pre>
     </div>
     <p>モデルには、プロバイダとは別の API やアドレスを使うための <code>provider: { npm, api }</code>、<code>headers</code>、<code>options</code>、そして非表示にするための <code>disabled: true</code> も指定できます。</p>
+
+        <h3 id="decide">判定 API（System One）</h3>
+    <p>プラグインは自分のプロバイダ向けに TypeSafe の System One API を提供でき、そのモデルを<a href="/docs/ja/intent">ルーティンググループの分類器</a>にできます。<code>config</code> フックでプロバイダに <code>decide: true</code> を、会話ではなく質問に答えるモデルごとに <code>decides: true</code> を設定します（<code>config</code> フックでも <code>models</code> フックのリストでも構いません）。すると magpie は各質問を <code>POST {baseURL}/systemone</code> としてローダーの <code>fetch</code> に送ります。アカウントのサインイン情報は他のリクエストと同じく付きます。本文は <code>{"model", "questions", "state"}</code>、返答は <code>{"model", "answers": {"&lt;質問&gt;": {"choice", "score", "confidence"}}}</code> です。</p>
+    <p><code>decides</code> を付けたモデルと <code>jev-*</code> という名前のモデルは分類器として提示され、エージェントには見せません。それらへのチャットリクエストは拒否されます。プロバイダに <code>decide: true</code> がなければ <code>decides</code> は無視され、どのモデルも普通にチャットに使えます。</p>
 
     <h3 id="apis">モデルが話す API</h3>
     <p>モデルまたはプロバイダの <code>npm</code> で指定した AI SDK パッケージが API を決めます。それによって、あなたの <code>fetch</code> が受け取るリクエストの形が決まります。エージェントが何を送ってきても、magpie のゲートウェイがすでに変換済みです：</p>
@@ -656,6 +662,61 @@ magpie plugin options model-map '{"mapping": {"fast": "deepseek/deepseek-chat"}}
     <p><code>ctx</code> には次のものがあります：<code>protocol</code>（<code>anthropic</code>・<code>chat</code>・<code>responses</code>・<code>gemini</code>）、エージェントが指定した <code>model</code> と <code>stream</code>、<code>path</code>、magpie が把握している場合の <code>agent</code>、<code>options</code>（そのプラグインの<a href="#middleware-options">オプション</a>）、そしてリクエストごとのオブジェクト <code>state</code>。</p>
     <h3>フックが失敗したとき</h3>
     <p>フックの持ち時間は、リクエストまたは応答全体で 250 ms、1 イベントで 50 ms、読み込みで 1 秒です。例外を投げたフック、時間切れになったフック、想定外の値を返したフックは、なかったものとして扱われます。つまりリクエストやイベントは元のまま送られます。設定 → プラグインには、ミドルウェアごとのフック、呼び出し回数、1 回あたりの平均時間、失敗回数と直近のエラーが表示されます。フックが見るのは、エージェントが送ったものと受け取るものそのものです。送信時は magpie のマスキングより前、受信時はマスク解除の後です。magpie 自身のリクエスト（スレッドのタイトル、ルーターの分類器）はミドルウェアを通りません。</p>
+
+    <h2 id="agents"><a class="anchor" href="#agents">エージェントプラグイン</a></h2>
+    <p>プラグインは<em>エージェント</em>を追加することもできます。magpie に組み込みの設定がないエージェントです。そのエージェントがモデルをどこに書くか、magpie のゲートウェイを使うために他に何を書くかを伝えます。するとエージェントは magpie 自身のものと同じように<span class="ui">エージェント</span>ページに並びます。その行で magpie のモデルを選ぶと、magpie はモデルをゲートウェイのアドレスとエージェント専用のキーと一緒に設定へ書き込み、スイッチを切るとすべてユーザーの元の状態に戻します。下の例は <a href="https://aider.chat">Aider</a> を追加します。</p>
+    <div class="code">
+      <span class="lang">agent.js</span>
+      <button class="copy" data-copy="ag-ex">コピー</button>
+      <pre id="ag-ex"><span class="c">// agent.js（package.json の "magpie": { "agent": "./agent.js" } で指定）</span>
+<span class="k">export const</span> agent = {
+  id: <span class="s">"aider"</span>, name: <span class="s">"Aider"</span>, bin: <span class="s">"aider"</span>,
+  config: <span class="s">"~/.aider.conf.yml"</span>,  <span class="c">// magpie が編集するファイル</span>
+  model: <span class="s">"model"</span>,                 <span class="c">// その中のモデルのキー</span>
+  prefix: <span class="s">"openai/"</span>,              <span class="c">// magpie のモデル id の前に付ける</span>
+  ua: [<span class="s">"aider"</span>, <span class="s">"litellm"</span>],
+  notice: <span class="s">"Aider reads its settings when it starts: restart it to use the new model."</span>,
+}
+
+<span class="k">export function</span> connect({ gateway, model }) {
+  <span class="k">return</span> {
+    <span class="s">"openai-api-base"</span>: gateway.v1,
+    <span class="s">"openai-api-key"</span>: gateway.key,
+    <span class="s">"show-model-warnings"</span>: <span class="k">false</span>,
+  }
+}</pre>
+    </div>
+    <div class="code">
+      <span class="lang">shell</span>
+      <button class="copy" data-copy="ag-cli">コピー</button>
+      <pre id="ag-cli">magpie plugin add ./agent-aider   <span class="c"># 単一の *.agent.js ファイルでも可</span></pre>
+    </div>
+    <h3>agent エクスポート</h3>
+    <div class="table-wrap"><table>
+      <tr><th>フィールド</th><th>意味</th></tr>
+      <tr><td><code>id</code></td><td>エージェントページ、使用量、CLI で使う id。小文字、数字、<code>.</code>、<code>_</code>、<code>-</code> のみ。magpie 組み込みのエージェントの id（<code>codex</code>、<code>claude</code> など）は拒否されます。プラグインはエージェントを追加するもので、置き換えるものではありません。</td></tr>
+      <tr><td><code>name</code></td><td>ページでの表示名。省略すると id。</td></tr>
+      <tr><td><code>config</code></td><td>magpie が編集するファイル。<code>~</code> と <code>$VAR</code> は展開されます。なければ作成します。</td></tr>
+      <tr><td><code>format</code></td><td>ファイル名から分からないときの <code>json</code>、<code>yaml</code>、<code>env</code>（<code>.json</code>/<code>.jsonc</code>、<code>.yaml</code>/<code>.yml</code>、<code>.env</code>）。TOML はまだ対応していません。</td></tr>
+      <tr><td><code>model</code></td><td>ファイル内のモデルのキー。JSON と YAML ではドット区切りのパス（<code>llm.model</code>）。</td></tr>
+      <tr><td><code>prefix</code></td><td>magpie のモデル id の前に書くもの。LiteLLM 経由で OpenAI 互換エンドポイントを使うエージェントなら <code>openai/</code>。id 自体はゲートウェイが受け付ける <code>&lt;プロバイダー&gt;/&lt;モデル&gt;</code> です。</td></tr>
+      <tr><td><code>bin</code>、<code>dir</code></td><td>エージェントがインストール済みかを示す <code>PATH</code> 上のコマンドとフォルダー。</td></tr>
+      <tr><td><code>ua</code></td><td>キーなしで来たリクエストを使用量で名付けるための、エージェントの User-Agent に含まれる語。</td></tr>
+      <tr><td><code>icon</code></td><td>行のアイコン。アイコン名、<code>https://</code> または <code>data:</code> URL。省略するとプラグインのアイコン、それもなければ汎用のもの。</td></tr>
+      <tr><td><code>notice</code></td><td>モデルを変えた後に表示する案内。組み込みのエージェントと同じです。</td></tr>
+      <tr><td><code>library</code></td><td><span class="ui">ライブラリ</span>が渡すものをエージェントがどこで読むか：<code>instructions</code>（毎回の会話の前に読む Markdown ファイル）、<code>mcp</code>（MCP サーバーのファイル）とその書き方を表す <code>mcpFormat</code>（どのエージェントのファイルと同じ形か：<code>alma</code>, <code>antigravity</code>, <code>claude</code>, <code>cline</code>, <code>codex</code>, <code>commandcode</code>, <code>copilot</code>, <code>crush</code>, <code>cursor</code>, <code>devin</code>, <code>gemini</code>, <code>goose</code>, <code>grok</code>, <code>hermes</code>, <code>kimi</code>, <code>omp</code>, <code>opencode</code>, <code>zed</code>。<code>claude</code> は <code>{"mcpServers": {…}}</code>）、<code>skills</code>（<code>SKILL.md</code> のフォルダを置くフォルダ）。どれも省略でき、<code>~</code> と <code>$VAR</code> は展開されます：<code>library: { instructions: "~/.toy/AGENTS.md", mcp: "~/.toy/mcp.json", mcpFormat: "claude", skills: "~/.toy/skills" }</code>。書かなければライブラリからは何も渡されず、渡そうとするとプラグインが書くべきキーを示して断られます。</td></tr>
+    </table></div>
+    <h3>connect</h3>
+    <p><code>connect(input)</code> はモデルの横に書き込む他のキーを、キーのパスと値で返します。<code>async</code> でも構いません。受け取るのは <code>gateway</code>（<code>url</code>、<code>/v1</code> で終わる URL の <code>v1</code>、エージェント専用のキー <code>key</code>。リクエストはその id で数えられます）、<code>model</code>（<code>id</code>、<code>name</code>、<code>context</code>、<code>output</code>、<code>images</code>、<code>efforts</code>）、<code>models</code>（magpie がエージェントに出すすべてのモデル、同じ形）、<code>agent</code>（<code>id</code>、<code>config</code>）です。<code>connect</code> がないプラグインはモデルだけを書きます。</p>
+    <h3>magpie がすること</h3>
+    <ul>
+      <li><b>書き込み。</b>各キーをその場で書き換え、ユーザーのコメントや他のキーは残します。最初に書く前に、各キーの元の値を型ごと（数値は数値のまま）取っておきます。</li>
+      <li><b>元に戻す。</b>エージェント自身のモデルを選び直すか、スイッチを切ると、すべてのキーを元の値に戻し、なかったキーは取り除きます。ファイルを丸ごと上書きすることはありません。</li>
+      <li><b>接続の判定。</b>magpie のキーを入れたキーがまだそのキーを持っている間、行は接続中と表示します。後から手で変えられたキーは、組み込みのエージェントと同じく行に表示されます。</li>
+      <li><b>実行のされ方。</b><a href="#middleware">ミドルウェア</a>と同じく、magpie 自身のプロセスの moejs で動きます。インポートはプラグイン内のファイルのみ、Node API はなく、<code>console.log</code> は magpie のログに出ます。読み込みと <code>connect</code> はそれぞれ 1 秒まで。モジュールが読み込めない、または <code>connect</code> が例外を投げたプラグインは、プラグインページの行に理由を表示し、何も書き込みません。</li>
+      <li><b>ライブラリ。</b><code>library</code> があれば、組み込みのエージェントと同じくライブラリの中身を受け取ります：指示はファイル内の magpie の目印の行の間に、MCP サーバーはユーザー自身のものと同じファイルに（ユーザーが足したフィールドは残ります）、スキルはリンクかコピーでフォルダに入ります。外すときは magpie が書いた分だけを取り除き、元の内容は magpie のバックアップに残ります。<code>mcpFormat</code> がリストにない、または <code>mcp</code> に <code>mcpFormat</code> がないと、プラグインは読み込まれません。</li>
+      <li><b>宣言。</b><code>package.json</code> の <code>"magpie": { "agent": "./agent.js" }</code>、または <code>*.agent.js</code>（または <code>.mjs</code>）という単一ファイル。1 つのパッケージがプロバイダー、ミドルウェア、エージェントを兼ねられます。プラグインマーケットではエージェントのエントリーに <code>"kind": "agent"</code> を付け、<span class="ui">エージェント</span>の下に並びます。コミュニティのものは <code>@magpie-community/agent-&lt;name&gt;</code> と名付けます。</li>
+    </ul>
 
     <h2 id="pi"><a class="anchor" href="#pi">pi パッケージ</a></h2>
     <p>magpie は <a href="https://github.com/earendil-works/pi">pi</a> のパッケージも動かします。<code>pi.registerProvider</code> でプロバイダを登録する pi 拡張は、何も変えずに pi と同じように magpie で動き、ほかのプラグインと同じ方法で追加できます（<code>magpie plugin add pi-antigravity</code>）。</p>

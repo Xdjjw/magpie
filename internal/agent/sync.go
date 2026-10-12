@@ -47,7 +47,7 @@ func SyncCatalog() {
 		release := provider.Hold()
 		for _, a := range All() {
 			if a.Sync != nil {
-				_ = a.Sync()
+				_ = synced(a.Sync)
 			}
 		}
 		release()

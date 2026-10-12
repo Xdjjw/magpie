@@ -294,6 +294,24 @@ func findKey(p *Provider, ref string) (int, bool) {
 	return 0, false
 }
 
+// KeyOf is one of a provider's keys, by its id (keyID), for the editor
+// to show or copy: a provider of several keys has a row for each, and
+// each row copies its own (#1480).
+func KeyOf(id, keyRef string) (string, error) {
+	p, err := Find(id)
+	if err != nil {
+		return "", err
+	}
+	i, ok := findKey(p, keyRef)
+	if !ok {
+		return "", fmt.Errorf("%s has no such key", p.ID)
+	}
+	if i < 0 {
+		return p.Key, nil
+	}
+	return p.Keys[i].Key, nil
+}
+
 // UseKey makes one of a provider's keys the first, and turns it on; the
 // one it replaces stays on, next in line.
 func UseKey(id, keyRef string) error {

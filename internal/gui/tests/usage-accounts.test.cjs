@@ -92,7 +92,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(await page.locator("#usageAccounts .row").evaluateAll((rs) => rs.every((r) => parseFloat(getComputedStyle(r).borderLeftWidth) === 0)));
 
       // Requests: the Account filter asks for one account's calls
-      await page.locator("#usageTab .opt").nth(1).click();
+      await page.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await page.locator(".led tbody tr").first().waitFor();
       assert.equal(await page.locator("#ledAccount").isHidden(), false);
       assert.equal((await page.locator("#ledAccount").textContent()).trim(), w.all);

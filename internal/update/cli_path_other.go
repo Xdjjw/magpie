@@ -5,9 +5,10 @@ package update
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
+
+	"github.com/yetone/magpie/internal/proc"
 )
 
 // installedShells are the shells installed here that a terminal may open:
@@ -17,16 +18,7 @@ func installedShells() []cliShell {
 	login := os.Getenv("SHELL")
 	var out []cliShell
 	for _, n := range []string{"zsh", "bash", "fish"} {
-		p := ""
-		for _, d := range []string{"/bin", "/usr/bin", "/opt/homebrew/bin", "/usr/local/bin"} {
-			if st, err := os.Stat(filepath.Join(d, n)); err == nil && !st.IsDir() {
-				p = filepath.Join(d, n)
-				break
-			}
-		}
-		if p == "" {
-			p, _ = exec.LookPath(n)
-		}
+		p := proc.FindShell(n)
 		if p == "" {
 			continue
 		}

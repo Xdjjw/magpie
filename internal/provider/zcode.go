@@ -713,7 +713,7 @@ func startZCodeSignIn(s *signInFlow, site string) error {
 	if site != "bigmodel" {
 		site = "zai"
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.via(context.Background()))
 	b := make([]byte, 32)
 	_, _ = rand.Read(b)
 	poll := "Bearer " + hex.EncodeToString(b)

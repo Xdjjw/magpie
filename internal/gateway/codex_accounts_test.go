@@ -682,7 +682,7 @@ func TestCallKind(t *testing.T) {
 		}
 	}
 	for k, want := range map[string]bool{
-		"x-openai-subagent": true, "X-Codex-Turn-Metadata": true, "X-Codex-Turn-State": false, "x-openai-codex-luna-reserve": false, "session_id": true, "Session_id": true,
+		"x-openai-subagent": true, "X-Codex-Turn-Metadata": true, "X-Codex-Turn-State": false, "x-openai-codex-luna-reserve": false, "session_id": true, "Session_id": true, "session-id": true, "Thread-Id": true,
 		"Authorization": false, "chatgpt-account-id": false, "x-oai-attestation": false,
 		"x-openai-actor-authorization": false, "User-Agent": false, "Cookie": false,
 	} {

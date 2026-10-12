@@ -26,12 +26,13 @@ today.setHours(0, 0, 0, 0);
 const from = new Date(today);
 from.setDate(from.getDate() - ((today.getDay() + 6) % 7) - 7 * 52);
 const SPAN = Math.round((today - from) / 864e5) + 1; // 7 × 52 + this week's days so far
-// a day of every fifth quiet; the busiest by tokens is today, by requests ten days ago
+// a day of every fifth quiet; the busiest by tokens is today, by requests ten
+// days ago (never one of the quiet: on a Sunday SPAN - 11 is a fifth day)
 const DAYS = [];
 for (let i = 0; i < SPAN; i++) {
   const d = new Date(from);
   d.setDate(d.getDate() + i);
-  if (i % 5 === 0 && i !== SPAN - 1) continue;
+  if (i % 5 === 0 && i !== SPAN - 1 && i !== SPAN - 11) continue;
   const calls = i === SPAN - 11 ? 500 : (i % 13) + 1;
   DAYS.push({ date: iso(d), calls, tokens: i === SPAN - 1 ? 9e9 : calls * 1e5 * (1 + (i % 7)), cost: calls * 0.5 });
 }
@@ -89,7 +90,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await p.route("**/*", server(lang, theme, variant, asked));
       await p.goto("http://magpie.test/");
       await p.locator('[data-view="usage"]').first().click();
-      await p.locator("#usageTab .opt").nth(1).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
       await p.locator("#ledRank .rk").first().waitFor();
       return { p, errors, asked, context };
     };
@@ -141,7 +142,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         else assert(!sc.over, "a wide card holds every week");
 
         // the pointer on a day: its date and what it had, inside the card
-        const busy = DAYS.find((d) => d.date === iso(new Date(today.getTime() - 10 * 864e5)));
+        const busy = DAYS.find((d) => d.date === iso(new Date(today.getFullYear(), today.getMonth(), today.getDate() - 10)));
         const cell = heat.locator(`.heat-grid i[data-date="${busy.date}"]`);
         // the reader wheels the page to the card (magpie puts back a scroll by
         // code), and the pointer then rests on a day
@@ -196,8 +197,12 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await t.test("dark, and none", async () => {
       const { p, errors, context } = await open("en", { width: 1100, theme: "dark" });
       await p.locator("#ledHeat .heat-grid i").first().waitFor();
-      // a frame for the reduced-motion transitions the shades start with
-      await p.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+      // the shades start with reduced motion's .01ms transitions, which
+      // Chromium under load can still hold at their start two frames later
+      await p.evaluate(async () => {
+        await new Promise((r) => requestAnimationFrame(r));
+        await Promise.all(document.querySelector("#ledHeat").getAnimations({ subtree: true }).map((a) => a.finished));
+      });
       const [l0, l4, card] = await p.evaluate(() => [".heat-grid i.l0", ".heat-grid i.l4", "#ledHeat"].map((s) => getComputedStyle(document.querySelector(s)).backgroundColor));
       assert(l0 !== l4 && l0 !== card, `dark shades: ${l0} ${l4} on ${card}`);
       if (shots) await p.locator("#ledHeat").screenshot({ path: path.join(shots, `heatmap-${engine}-dark.png`) });

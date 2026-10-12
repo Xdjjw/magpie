@@ -29,7 +29,7 @@ const filler = Array.from({ length: 6 }, (_, i) => ({ id: "pi" + i, name: "Pi " 
 
 function serve(lang, sets) {
   let effort = "";
-  const st = () => ({ agents: [cursorLocal(effort), ...filler], profiles: [], settings: { lang, theme: "light" } });
+  const st = () => ({ agents: [cursorLocal(effort), ...filler], profiles: [], settings: { lang, theme: "light", guideHidden: true } }); // Get started put away: the row is read where it sits
   return async (route) => {
     const req = route.request(), url = new URL(req.url());
     if (url.pathname === "/boot.js") return route.fulfill({ contentType: "text/javascript", body: `window.bootPrefs = {lang:"${lang}",theme:"light",web:true};` });

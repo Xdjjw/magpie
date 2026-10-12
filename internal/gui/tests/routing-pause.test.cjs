@@ -5,7 +5,7 @@
 // group's rule reads as "→ pause <model>"; the trace tells the model was
 // paused, by which rule and when; in the editor the rule's action is picked
 // from the app menu, a pause shows only the conditions it holds by (hours,
-// days, agents), isn't saved without one, and is saved as pause:true. In
+// days, agents, folders), isn't saved without one, and is saved as pause:true. In
 // every language the page has, at a narrow width with nothing run past
 // the side.
 const assert = require("node:assert/strict");
@@ -36,8 +36,8 @@ const route = {
 };
 
 const words = {
-  en: { aside: "a/glm is paused by rule 1 (14:00–18:00 Mon–Fri), so it is left out until that ends.", title: "1. 14:00–18:00 Mon–Fri → pause A · glm", pause: "pause", send: "send to", edit: "Edit", add: "Add a rule", save: "Save", bare: "Rule 2: a pause needs hours, days or agents", warn: "left out of the group then: not tried, not a fallback" },
-  zh: { aside: "a/glm 被规则 1（周一–周五 14:00–18:00）暂停，在此之前不会被调用。", title: "1. 周一–周五 14:00–18:00 → 暂停 A · glm", pause: "暂停", send: "先发给", edit: "编辑", add: "添加规则", save: "保存", bare: "第 2 条规则：暂停需要设时段、星期或 Agent", warn: "这段时间移出分组：不会被调用，也不做备用" },
+  en: { aside: "a/glm is paused by rule 1 (14:00–18:00 Mon–Fri), so it is left out until that ends.", title: "1. 14:00–18:00 Mon–Fri → pause A · glm", pause: "pause", send: "send to", edit: "Edit", add: "Add a rule", save: "Save", bare: "Rule 2: a pause needs hours, days, agents or folders", warn: "left out of the group then: not tried, not a fallback" },
+  zh: { aside: "a/glm 被规则 1（周一–周五 14:00–18:00）暂停，在此之前不会被调用。", title: "1. 周一–周五 14:00–18:00 → 暂停 A · glm", pause: "暂停", send: "先发给", edit: "编辑", add: "添加规则", save: "保存", bare: "第 2 条规则：暂停需要设时段、星期、Agent 或文件夹", warn: "这段时间移出分组：不会被调用，也不做备用" },
   "zh-TW": { pause: "暫停", send: "先發給", edit: "編輯", add: "新增規則", save: "儲存" },
   ja: { pause: "一時停止", send: "送信先" },
   de: { pause: "pausieren", send: "senden an" },
@@ -95,7 +95,9 @@ async function press(page, x) {
   const d = await x.evaluate((e) => { const v = document.querySelector("#view-routing");
     return Math.round(e.getBoundingClientRect().top - v.getBoundingClientRect().top - v.clientHeight / 2); });
   if (Math.abs(d) > 100) {
-    await page.mouse.move(10, 300);
+    // over the view, not the sidebar beside it
+    const v = await page.locator("#view-routing").boundingBox();
+    await page.mouse.move(v.x + 10, 300);
     await page.mouse.wheel(0, d);
     await page.waitForTimeout(400);
   }

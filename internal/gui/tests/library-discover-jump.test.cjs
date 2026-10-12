@@ -68,7 +68,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
         for (const kind of ["skills", "mcp"]) {
           if (kind === "mcp") {
-            await view.locator(".lib-tabs .opt", { hasText: words[lang].tabs[1] }).click();
+            await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: words[lang].tabs[1] }).click();
             await view.locator('.mk[data-market="mcp"] .mk-card').first().waitFor();
           }
           await t.test(`${kind}: the market is far down, and the button takes the reader there`, async () => {
@@ -103,7 +103,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         }
 
         await t.test("the Instructions tab has no Discover button", async () => {
-          await view.locator(".lib-tabs .opt", { hasText: words[lang].tabs[0] }).click();
+          await view.page().locator(":is(.lib-tabs .opt, .nav-s):visible", { hasText: words[lang].tabs[0] }).click();
           await view.locator(".lib-body").first().waitFor();
           assert.equal(await head.locator(".lib-discover").count(), 0);
         });

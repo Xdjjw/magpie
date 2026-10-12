@@ -44,15 +44,10 @@ func warmClaudeLogin(send func(ctx context.Context, configDir string) error) fun
 		if i < 0 {
 			return fmt.Errorf("no Claude account %q", user)
 		}
-		dir := ""
 		if !ls[i].Active {
-			d, err := claudeSavedDir(ls[i].User)
-			if err != nil {
-				return err
-			}
-			dir = d
+			return inSavedClaudeDir(ls[i].User, func(dir string) error { return send(ctx, dir) })
 		}
-		return send(ctx, dir)
+		return send(ctx, "")
 	}
 }
 

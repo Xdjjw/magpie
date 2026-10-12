@@ -324,6 +324,11 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := lanGuard(New().Handler())
+	// a Claude subscription run is live: its callback token lets in its
+	// own callback alone (TestOnlyALiveRunsCallbackSkipsTheKey)
+	live := randomToken()
+	addCallback(live)
+	t.Cleanup(func() { dropCallback(live) })
 	routes := [][2]string{
 		{"GET", "/"}, {"GET", "/v1"}, {"GET", "/v1/models"}, {"GET", "/models"}, {"GET", "/v1/models/x"},
 		{"GET", "/muse-code/models"}, {"GET", "/api/hello"},
@@ -360,7 +365,8 @@ func TestNetworkGatewayGuardsEveryRoute(t *testing.T) {
 	}
 	for _, rt := range routes {
 		for _, from := range []string{"172.17.0.1:40312", "192.168.1.9:5000"} {
-			for _, hdr := range [][]string{nil, {"Authorization", "Bearer magpie"}, {"x-api-key", "anything"}, {"x-goog-api-key", "magpie"}} {
+			for _, hdr := range [][]string{nil, {"Authorization", "Bearer magpie"}, {"x-api-key", "anything"}, {"x-goog-api-key", "magpie"}, {"Authorization", "Bearer " + live}} {
+				resetAuthThrottle() // test each route's own guard, not the flood limiter that would 429 later tries
 				if c, b := call(rt[0], rt[1], from, hdr...); c != http.StatusUnauthorized || !strings.Contains(b, "gateway key") {
 					t.Errorf("%s %s from %s with %v: %d %.120s", rt[0], rt[1], from, hdr, c, b)
 				}

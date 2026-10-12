@@ -743,3 +743,28 @@ func TestAnteGroupSaysNoCapabilities(t *testing.T) {
 		t.Fatalf("no group in the list: %v", anteModelList(t, path))
 	}
 }
+
+// Ante skips a catalog entry whose max_tokens is not under its
+// context_limit, so a model whose reply limit reaches its window is told
+// one token less (#1179, liangkaichun).
+func TestAnteMaxTokensUnderTheWindow(t *testing.T) {
+	for _, c := range []struct {
+		name            string
+		context, output int
+		want            any
+	}{
+		{"equal", 128000, 128000, 127999},
+		{"over", 128000, 384000, 127999},
+		{"under", 200000, 64000, 64000},
+		{"no window", 0, 64000, 64000},
+		{"no output", 128000, 0, nil},
+	} {
+		e := anteModelJSON(catalog.Model{ID: "p/m", Context: c.context, Output: c.output})
+		if got := e["max_tokens"]; got != c.want {
+			t.Errorf("%s: max_tokens %v, want %v (%v)", c.name, got, c.want, e)
+		}
+		if n, ok := e["max_tokens"].(int); ok && c.context > 0 && n >= c.context {
+			t.Errorf("%s: max_tokens %d not under context_limit %d", c.name, n, c.context)
+		}
+	}
+}

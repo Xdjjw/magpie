@@ -138,8 +138,34 @@ func missingSeerNote() string {
 	return ""
 }
 
+// noSeerNote is what a request turned away for an image says of why no
+// model described it: the picked one is missing, Image recognition is
+// off, or none of the models the user enabled can see.
+func noSeerNote() string {
+	if n := missingSeerNote(); n != "" {
+		return n
+	}
+	if provider.HeldSettings().Vision == "off" {
+		return "; Image recognition is off in magpie's Settings → Models"
+	}
+	if _, ok := seer(); !ok {
+		return "; none of the models enabled in magpie can see images to describe it: enable one that can, or pick one in Settings → Models → Image recognition"
+	}
+	return ""
+}
+
+// autoSeerNote is what a request whose image wasn't described says of a
+// describer magpie picked itself, which the user may not know of.
+func autoSeerNote(see string) string {
+	if provider.HeldSettings().Vision != "" {
+		return ""
+	}
+	return fmt.Sprintf("; magpie picked %s of the models you enabled: pick another in Settings → Models → Image recognition", see)
+}
+
 // AutoVision is the model magpie picks to describe images when the
-// Settings name none: a small model that sees of the providers set up — a
+// Settings name none: a small model that sees, of the models the user
+// enabled on the providers switched on (smallModel) — a
 // Claude account's, a Codex account's, the cheapest of an API key's,
 // another account's. "" when no model sees.
 func AutoVision() string {
@@ -229,15 +255,21 @@ func (s *Server) describe(ctx context.Context, model, src string) (string, error
 // askVision asks model through the gateway itself, as a client would, what
 // the image at src shows.
 func (s *Server) askVision(ctx context.Context, model, src string) (string, error) {
+	return s.askVisionWith(ctx, model, src, visionSystem, "Describe this image.")
+}
+
+// askVisionWith asks model about the image at src: system, and the user's
+// text beside the image.
+func (s *Server) askVisionWith(ctx context.Context, model, src, system, text string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, describingKey{}, true), visionTimeout)
 	defer cancel()
 	req := map[string]any{
 		"model":  model,
 		"stream": false,
 		"messages": []map[string]any{
-			{"role": "system", "content": visionSystem},
+			{"role": "system", "content": system},
 			{"role": "user", "content": []map[string]any{
-				{"type": "text", "text": "Describe this image."},
+				{"type": "text", "text": text},
 				{"type": "image_url", "image_url": map[string]string{"url": src}},
 			}},
 		},
@@ -350,7 +382,7 @@ func smallModelWhere(p provider.Provider, keep func(catalog.Model) bool) (string
 	if id == "" {
 		return "", 0
 	}
-	for _, m := range p.Available() {
+	for _, m := range p.Exposed() {
 		if m.ID == id && m.Price != nil {
 			return id, m.Price.Input + m.Price.Output
 		}

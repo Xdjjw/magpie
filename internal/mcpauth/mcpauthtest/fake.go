@@ -48,9 +48,20 @@ type Fake struct {
 	// and a refresh token is given only to a sign-in that asked for
 	// offline_access, which the authorization server's metadata offers
 	OpenID bool
+	// AuthMethods are the token endpoint's client authentications, as its
+	// metadata lists them (none when unset): a registration asking for
+	// another is refused (RFC 7591's invalid_client_metadata), and a client
+	// registered for a secret is given one and has to send it as it said
+	AuthMethods []string
+	// RefuseRegistration turns every registration away as Figma's
+	// authorization server does a client it doesn't list: 403, a JSON
+	// content type and the bare body "Forbidden" (#1619)
+	RefuseRegistration bool
 
 	codes   map[string]codeGrant
-	valid   map[string]bool // access tokens
+	secrets map[string]string // client id → secret, of those that have one
+	methods map[string]string // client id → its token_endpoint_auth_method
+	valid   map[string]bool   // access tokens
 	refresh map[string]bool
 	n       int
 }
@@ -59,7 +70,14 @@ type codeGrant struct{ challenge, client, redirect, resource, scope string }
 
 // New starts the server.
 func New(t *testing.T) *Fake {
-	f := &Fake{codes: map[string]codeGrant{}, valid: map[string]bool{}, refresh: map[string]bool{}, ExpiresIn: 3600}
+	f := &Fake{codes: map[string]codeGrant{}, valid: map[string]bool{}, refresh: map[string]bool{}, ExpiresIn: 3600,
+		secrets: map[string]string{}, methods: map[string]string{}}
+	methods := func() []string {
+		if len(f.AuthMethods) == 0 {
+			return []string{"none"}
+		}
+		return f.AuthMethods
+	}
 	mux := http.NewServeMux()
 	f.Server = httptest.NewServer(mux)
 	t.Cleanup(f.Server.Close)
@@ -80,7 +98,7 @@ func New(t *testing.T) *Fake {
 		m := map[string]any{
 			"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token",
 			"registration_endpoint": issuer + "/register", "code_challenge_methods_supported": []string{"S256"},
-			"token_endpoint_auth_methods_supported": []string{"none"},
+			"token_endpoint_auth_methods_supported": methods(),
 		}
 		if f.OpenID {
 			m["scopes_supported"] = []string{"openid", "email", "offline_access", "profile"}
@@ -91,12 +109,52 @@ func New(t *testing.T) *Fake {
 	register := func(w http.ResponseWriter, r *http.Request) {
 		var reg map[string]any
 		json.NewDecoder(r.Body).Decode(&reg)
+		method, _ := reg["token_endpoint_auth_method"].(string)
 		f.mu.Lock()
+		if f.RefuseRegistration {
+			f.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json; charset=utf-8")
+			w.WriteHeader(http.StatusForbidden)
+			io.WriteString(w, "Forbidden")
+			return
+		}
 		f.Registered = append(f.Registered, reg)
 		id := fmt.Sprintf("client-%d", len(f.Registered))
+		// private_key_jwt and tls_client_auth need a key set or a
+		// certificate the registration didn't give
+		ok := slices.Contains(methods(), method) && method != "private_key_jwt" && method != "tls_client_auth"
+		out := map[string]any{"client_id": id, "redirect_uris": reg["redirect_uris"], "token_endpoint_auth_method": method}
+		if ok && method != "none" {
+			f.secrets[id] = "secret-" + id
+			out["client_secret"] = f.secrets[id]
+		}
+		f.methods[id] = method
 		f.mu.Unlock()
+		if !ok {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid_client_metadata", "error_description": "token_endpoint_auth_method " + method + " can't be registered without jwks or a certificate, or isn't offered"})
+			return
+		}
 		w.WriteHeader(http.StatusCreated)
-		json.NewEncoder(w).Encode(map[string]any{"client_id": id, "redirect_uris": reg["redirect_uris"]})
+		json.NewEncoder(w).Encode(out)
+	}
+	// client is the client a token request authenticates as, "" when it
+	// doesn't as it registered to
+	client := func(r *http.Request) string {
+		id, secret, basic := r.BasicAuth()
+		if basic {
+			id, _ = url.QueryUnescape(id)
+			secret, _ = url.QueryUnescape(secret)
+		} else {
+			id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+		}
+		switch m := f.methods[id]; {
+		case m == "client_secret_basic" && (!basic || secret != f.secrets[id]),
+			m == "client_secret_post" && (basic || secret != f.secrets[id]),
+			m == "client_secret_jwt" && r.PostForm.Get("client_assertion") == "":
+			return ""
+		}
+		return id
 	}
 	authorize := func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -130,7 +188,7 @@ func New(t *testing.T) *Fake {
 			g, ok := f.codes[r.PostForm.Get("code")]
 			delete(f.codes, r.PostForm.Get("code"))
 			sum := sha256.Sum256([]byte(r.PostForm.Get("code_verifier")))
-			if !ok || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge || r.PostForm.Get("client_id") != g.client ||
+			if !ok || base64.RawURLEncoding.EncodeToString(sum[:]) != g.challenge || client(r) != g.client ||
 				r.PostForm.Get("redirect_uri") != g.redirect || r.PostForm.Get("resource") != g.resource {
 				fail("invalid_grant")
 				return

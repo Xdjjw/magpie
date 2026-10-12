@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"math"
 	"regexp"
@@ -12,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	toml "github.com/pelletier/go-toml/v2"
@@ -19,6 +21,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/yetone/magpie/internal/edit"
+	"github.com/yetone/magpie/internal/filememo"
 	"github.com/yetone/magpie/internal/imagemcp"
 )
 
@@ -34,6 +37,10 @@ type Server struct {
 	URL       string            `json:"url,omitempty"`
 	Headers   map[string]string `json:"headers,omitempty"`
 	Agents    []string          `json:"agents"`
+	// DisabledTools are the server's tools its agents leave out, by the
+	// names the server gives them, written in each agent's own way where
+	// it has one (mcp_tools_off.go)
+	DisabledTools []string `json:"disabledTools,omitempty"`
 }
 
 // Remote reports whether the server is reached by URL.
@@ -812,17 +819,44 @@ func (f *mcpFile) decode(name string, m map[string]any) (*Server, bool) {
 	return s, true
 }
 
-// entries is every entry under the servers' key, as the file has it.
+// entries is every entry under the servers' key, as the file has it: a
+// copy of what was parsed when the file last changed. Codex's config.toml
+// holds a [projects."<dir>"] table for every folder Codex was ever opened
+// in, ten thousand of them for some, and go-toml checks each table's name
+// against every one before it, so a parse of such a file was ~0.2s of CPU,
+// paid by every visit to the Library (#1665).
 func (f *mcpFile) entries() (map[string]map[string]any, error) {
-	out := map[string]map[string]any{}
 	if f.Format == fmtDsh {
 		return dshEntries(f.Path)
 	}
-	raw, err := edit.Read(f.Path)
-	if err != nil || len(bytes.TrimSpace(raw)) == 0 {
-		return out, err
+	kind := fmt.Sprintf("mcp entries %d %s", f.Format, f.key())
+	es, err := filememo.Read(kind, f.Path, f.parseEntries)
+	if errors.Is(err, fs.ErrNotExist) {
+		return map[string]map[string]any{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]map[string]any, len(es))
+	for name, m := range es {
+		out[name] = cloneAny(m).(map[string]any)
+	}
+	return out, nil
+}
+
+// entriesParsed counts parseEntries, for a test to see a file parsed once.
+var entriesParsed atomic.Int64
+
+// parseEntries is entries of the file's bytes.
+func (f *mcpFile) parseEntries(raw []byte) (map[string]map[string]any, error) {
+	entriesParsed.Add(1)
+	out := map[string]map[string]any{}
+	raw = edit.TrimBOM(raw)
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return out, nil
 	}
 	var doc map[string]any
+	var err error
 	switch f.Format {
 	case fmtCodex, fmtGrok:
 		err = toml.Unmarshal(raw, &doc)
@@ -845,6 +879,32 @@ func (f *mcpFile) entries() (map[string]map[string]any, error) {
 		}
 	}
 	return out, nil
+}
+
+// cloneAny is a deep copy of a parsed value, so a caller can change what
+// entries gives without changing what the next one gets.
+func cloneAny(v any) any {
+	switch t := v.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(t))
+		for k, x := range t {
+			out[k] = cloneAny(x)
+		}
+		return out
+	case []any:
+		out := make([]any, len(t))
+		for i, x := range t {
+			out[i] = cloneAny(x)
+		}
+		return out
+	case []map[string]any:
+		out := make([]map[string]any, len(t))
+		for i, x := range t {
+			out[i] = cloneAny(x).(map[string]any)
+		}
+		return out
+	}
+	return v
 }
 
 // read is every server in the file, magpie's or not, by name.
@@ -1025,7 +1085,11 @@ func (f *mcpFile) merged(s *Server, old map[string]any) ordered {
 
 // put writes the server into the file, in place of one by its name.
 func (f *mcpFile) put(s *Server, old map[string]any) error {
-	o := f.merged(s, old)
+	return f.putEntry(s, f.merged(s, old))
+}
+
+// putEntry writes the entry o for the server into the file.
+func (f *mcpFile) putEntry(s *Server, o ordered) error {
 	switch f.Format {
 	case fmtCodex, fmtGrok:
 		return putCodex(f.Path, s.Name, o)
@@ -1252,10 +1316,13 @@ func appOwned(s *Server) bool {
 	return false
 }
 
-func foundServers(l *Library) []Found {
+func foundServers(l *Library) []Found { return foundServersOf(l, Targets()) }
+
+// foundServersOf is foundServers among these agents.
+func foundServersOf(l *Library, targets []*Target) []Found {
 	byName := map[string]*Found{}
 	var names []string
-	for _, t := range Targets() {
+	for _, t := range targets {
 		if t.MCP == nil {
 			continue
 		}

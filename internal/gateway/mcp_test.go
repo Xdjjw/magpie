@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/yetone/magpie/internal/access"
 	"github.com/yetone/magpie/internal/mcpauth"
 	"github.com/yetone/magpie/internal/mcpauth/mcpauthtest"
 )
@@ -129,6 +130,48 @@ func TestMCPProxyStaysHere(t *testing.T) {
 	h.ServeHTTP(w, r)
 	if w.Code != http.StatusUnauthorized || len(f.Calls) != 0 {
 		t.Fatalf("another machine got %d, calls %v", w.Code, f.Calls)
+	}
+}
+
+// A WSL agent under NAT, at Windows' address, is lent the sign-in with the
+// key the gateway is shared with as its Authorization (library's through),
+// which the server never sees: it gets magpie's token. Without the key the
+// call is a 401, which an MCP client takes for the server asking it to
+// sign in.
+func TestMCPProxyFromWSLWithLANKey(t *testing.T) {
+	fresh(t)
+	if err := access.ConfigureLAN(true, false); err != nil {
+		t.Fatal(err)
+	}
+	key := access.LANSecret()
+	f := mcpauthtest.New(t)
+	f.SignIn(t, "neon")
+	h := lanGuard(New().Handler())
+	call := func(auth string) *httptest.ResponseRecorder {
+		r := httptest.NewRequest("POST", "/mcp/neon", strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize"}`))
+		r.RemoteAddr = "172.20.0.5:40000"
+		r.Host = "172.20.0.1:3425"
+		r.Header.Set("Content-Type", "application/json")
+		r.Header.Set("Accept", "application/json, text/event-stream")
+		if auth != "" {
+			r.Header.Set("Authorization", auth)
+		}
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, r)
+		return w
+	}
+	if w := call(""); w.Code != http.StatusUnauthorized || len(f.Calls) != 0 {
+		t.Fatalf("without the key: %d, calls %v", w.Code, f.Calls)
+	}
+	w := call("Bearer " + key)
+	token, _ := mcpauth.Token(t.Context(), "neon")
+	if w.Code != 200 || f.Seen.Get("Authorization") != "Bearer "+token {
+		t.Fatalf("with the LAN key: %d %s, the server got Authorization %q", w.Code, w.Body, f.Seen.Get("Authorization"))
+	}
+	for k, v := range f.Seen {
+		if strings.Contains(strings.Join(v, " "), key) {
+			t.Fatalf("the server got the LAN key in %s", k)
+		}
 	}
 }
 

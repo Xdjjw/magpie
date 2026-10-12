@@ -47,9 +47,17 @@ func TestUnreadLoginsWriteErrorsKeepCredentials(t *testing.T) {
 						t.Fatal(err)
 					}
 				} else {
+					// the folder takes no new file, so the bad copy can't
+					// be made
 					blocked = p + ".bad-" + time.Now().Format("20060102-150405")
-					if err := os.Mkdir(blocked, 0o700); err != nil {
+					dir := filepath.Dir(p)
+					if err := os.Chmod(dir, 0o500); err != nil {
 						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+					if f, err := os.Create(filepath.Join(dir, "probe")); err == nil {
+						f.Close()
+						t.Skip("the filesystem does not enforce the read-only folder")
 					}
 				}
 				err := addGoogleLogin("gemini", "new@example.com", "", googleAuth{RefreshToken: "new-refresh-token", Project: "p"})

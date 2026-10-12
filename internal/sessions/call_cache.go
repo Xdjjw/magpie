@@ -34,7 +34,7 @@ import (
 // What each version names is what a cache of the one before it cannot serve:
 // the version is part of the directory's name, so a cache written by an older
 // one is never read (pruneCalls).
-const callCacheVersion = "calls-v10"
+const callCacheVersion = "calls-v11"
 const maxKeptCalls = 131072
 const maxKeptFiles = 64
 
@@ -175,6 +175,8 @@ var wholeCallReaders = map[string]func(file) (*callFile, bool){
 	"zcode":     readZCodeCalls,
 	"dsh":       readDshCalls,
 	"workbuddy": readWorkBuddyCalls,
+	// #1605
+	"minimax-code": readMiniMaxCalls,
 }
 
 func readCalls(f file) *callFile {
@@ -204,6 +206,9 @@ func readCalls(f file) *callFile {
 		}
 		return &callFile{Path: f.path, Agent: f.agent}
 	}
+	// a file to read: few at once while only the warm-up asks (quiet.go)
+	defer readSlot()()
+	defer readBegin()()
 	// Agents whose calls are read whole rather than line by line: a session
 	// that changed is read again, and one that did not is kept. OpenCode's
 	// and ZCode's are rows of a database or JSON documents; dsh's file is

@@ -96,7 +96,7 @@ var gatewayCache struct {
 // Retain a few window projections, not one copy for every native exclusion set.
 // The log snapshot version also detects rewrites and changes of config directory.
 func gatewayProjection(since time.Time) gatewayProjectionEntry {
-	snapshot := logSnapshotFor(true)
+	snapshot := readLogSnapshot()
 	meta := usagePriceCacheKey(time.Now())
 	gatewayCache.Lock()
 	defer gatewayCache.Unlock()
@@ -104,9 +104,6 @@ func gatewayProjection(since time.Time) gatewayProjectionEntry {
 		if e.version == snapshot.version && e.meta == meta && e.since.Equal(since) {
 			return e
 		}
-	}
-	if snapshot.uncached && len(snapshot.blocks) == 0 {
-		snapshot = readLogSnapshot()
 	}
 	ss, _ := buildGatewaySessions(snapshot, since, nil)
 	e := gatewayProjectionEntry{version: snapshot.version, meta: meta, since: since, sessions: ss, byID: make(map[string]int, len(ss))}

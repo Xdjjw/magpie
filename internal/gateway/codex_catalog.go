@@ -67,3 +67,17 @@ func (s *Server) codexCatalog(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	w.Write(b.Bytes())
 }
+
+// codexTiers are the service tiers Codex here is offered on each of shown,
+// by id: Fast on a ChatGPT account's GPT model, the tiers of Codex's own
+// entry on a relay's. Another magpie that has this one as its provider
+// offers its Codex the same, and sends the tier asked on (#1234).
+func codexTiers(shown []provider.Entry) map[string][]any {
+	out := map[string][]any{}
+	for id, ts := range codexcat.ServiceTiers(provider.CodexCatalog(shown)) {
+		for _, t := range ts {
+			out[id] = append(out[id], t)
+		}
+	}
+	return out
+}

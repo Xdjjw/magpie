@@ -78,7 +78,7 @@ func TestRateLimitBacksOffWhenItComesBack(t *testing.T) {
 	servedCandidate(c, 1)
 	h = http.Header{}
 	h.Set(resetsHeader, strconv.FormatInt(time.Now().Add(20*time.Minute).Unix(), 10))
-	if r := s.restAfter(c, 429, h, body); !near(time.Until(r.Until), 20*time.Minute) || r.By != "retry-after" {
+	if r := s.restAfter(c, 429, h, body); !near(time.Until(r.Until), 20*time.Minute) || r.By != "resets" {
 		t.Fatalf("reset noted: %v by %s", time.Until(r.Until), r.By)
 	}
 	// a rate limit long after the last one's rest ended is a new one

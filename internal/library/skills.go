@@ -1564,6 +1564,9 @@ func foundSkills(l *Library) []FoundSkill {
 			places = append(places, place{dir: t.Skills, agent: t.Agent.ID})
 		}
 	}
+	// a skill in several agents is compared with the first found, which
+	// is walked once
+	seen := walked{}
 	for _, pl := range places {
 		es, _ := os.ReadDir(pl.dir)
 		for _, e := range es {
@@ -1605,7 +1608,7 @@ func foundSkills(l *Library) []FoundSkill {
 			case pl.agent == "":
 				// another by that name in the shared folder than the one in
 				// the library's: no agent's, and left as it is
-			case sameTree(p, f.at):
+			case sameTreeIn(seen, p, f.at):
 				f.Copies = append(f.Copies, pl.agent)
 			default:
 				f.Others = append(f.Others, pl.agent)
@@ -1869,23 +1872,63 @@ func setAside(agent, p string) (string, error) {
 // sameTree is whether two skill folders (links followed) hold the same
 // files with the same bytes, leaving aside what Finder or version control
 // keeps in one (.DS_Store, .git) and the mark on magpie's own copy.
-func sameTree(a, b string) bool {
+// Two folders unchanged since they were last compared aren't read again
+// (treememo.go).
+func sameTree(a, b string) bool { return sameTreeIn(nil, a, b) }
+
+// walked is the folders one pass has walked (treeOf), for a folder
+// compared with several others to be walked once in it.
+type walked map[string]*tree
+
+// sameTreeIn is sameTree, taking a folder walked already in this pass
+// from w (nil: none).
+func sameTreeIn(w walked, a, b string) bool {
 	a, b = realDir(a), realDir(b)
-	fa, okA := treeOf(a)
-	fb, okB := treeOf(b)
-	if !okA || !okB || len(fa) != len(fb) {
+	look := func(d string) (tree, bool) {
+		if t, ok := w[d]; ok {
+			if t == nil {
+				return tree{}, false
+			}
+			return *t, true
+		}
+		t, ok := treeOf(d)
+		if w != nil {
+			if ok {
+				w[d] = &t
+			} else {
+				w[d] = nil
+			}
+		}
+		return t, ok
+	}
+	ta, okA := look(a)
+	tb, okB := look(b)
+	if !okA || !okB {
+		// unknown: not the same, and not kept as different
 		return false
+	}
+	return rememberedSame(a, b, ta, tb, func() (bool, bool) { return compareTrees(a, b, ta.files, tb.files) })
+}
+
+// compareTrees is sameTree, reading every file of both. sure is false
+// when one couldn't be read whole: they aren't taken to be the same, and
+// that isn't kept as what they are.
+func compareTrees(a, b string, fa, fb map[string]treeEntry) (same, sure bool) {
+	if len(fa) != len(fb) {
+		return false, true
 	}
 	for rel, x := range fa {
 		y, ok := fb[rel]
 		if !ok || x != y {
-			return false
+			return false, true
 		}
-		if x.link == "" && !sameFile(filepath.Join(a, rel), filepath.Join(b, rel)) {
-			return false
+		if x.link == "" {
+			if same, sure := sameFile(filepath.Join(a, rel), filepath.Join(b, rel)); !same {
+				return false, sure
+			}
 		}
 	}
-	return true
+	return true, true
 }
 
 type treeEntry struct {
@@ -1893,10 +1936,19 @@ type treeEntry struct {
 	link string // where a link in it points
 }
 
-// treeOf is a folder's files and links by where they are in it; not ok
-// when it can't be read, or is too big to be worth comparing.
-func treeOf(root string) (map[string]treeEntry, bool) {
+// tree is a folder's files and links by where they are in it, and the
+// stamp of them (treememo.go), from one walk that opens no file.
+type tree struct {
+	files   map[string]treeEntry
+	stamp   string
+	settled bool
+}
+
+// treeOf is a folder's files and links; not ok when it can't be read, or
+// is too big to be worth comparing.
+func treeOf(root string) (tree, bool) {
 	out := map[string]treeEntry{}
+	st := newStamper()
 	var total int64
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1918,6 +1970,10 @@ func treeOf(root string) (map[string]treeEntry, bool) {
 			return nil
 		}
 		rel, _ := filepath.Rel(root, p)
+		fi, err := d.Info()
+		if err != nil {
+			return err
+		}
 		if d.Type()&fs.ModeSymlink != 0 {
 			to, err := os.Readlink(p)
 			if err != nil {
@@ -1925,41 +1981,50 @@ func treeOf(root string) (map[string]treeEntry, bool) {
 			}
 			out[rel] = treeEntry{link: to}
 		} else if d.Type().IsRegular() {
-			fi, err := d.Info()
-			if err != nil {
-				return err
-			}
 			out[rel] = treeEntry{size: fi.Size()}
 			total += fi.Size()
+		} else {
+			return nil
 		}
+		st.add(rel, fi)
 		if len(out) > 20000 || total > 256<<20 {
 			return errors.New("too big to compare")
 		}
 		return nil
 	})
-	return out, err == nil
+	if err != nil {
+		return tree{}, false
+	}
+	stamp, settled := st.done()
+	return tree{files: out, stamp: stamp, settled: settled}, true
 }
 
-func sameFile(a, b string) bool {
+// sameFile is whether a and b hold the same bytes; sure is false when one
+// couldn't be read.
+func sameFile(a, b string) (same, sure bool) {
 	fa, err := os.Open(a)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer fa.Close()
 	fb, err := os.Open(b)
 	if err != nil {
-		return false
+		return false, false
 	}
 	defer fb.Close()
 	ba, bb := make([]byte, 64<<10), make([]byte, 64<<10)
+	end := func(e error) bool { return e == io.EOF || e == io.ErrUnexpectedEOF }
 	for {
 		na, ea := io.ReadFull(fa, ba)
 		nb, eb := io.ReadFull(fb, bb)
+		if ea != nil && !end(ea) || eb != nil && !end(eb) {
+			return false, false
+		}
 		if na != nb || !bytes.Equal(ba[:na], bb[:nb]) {
-			return false
+			return false, true
 		}
 		if ea != nil || eb != nil {
-			return ea == eb || (ea == io.EOF || ea == io.ErrUnexpectedEOF) && (eb == io.EOF || eb == io.ErrUnexpectedEOF)
+			return end(ea) && end(eb), true
 		}
 	}
 }

@@ -38,6 +38,11 @@ var errNotModified = errors.New("the file on the server is unchanged")
 type version struct {
 	ETag     string `json:"etag,omitempty"`
 	Modified string `json:"modified,omitempty"`
+	// Blind: a put told it wrote without the server checking the version
+	// it went over (s3.go's HEAD then PUT, where conditional writes are
+	// refused): another computer's write in the moment between may have
+	// gone over it (#1776)
+	Blind bool `json:"-"`
 }
 
 // conditions are the headers that ask for the file only when it isn't v.

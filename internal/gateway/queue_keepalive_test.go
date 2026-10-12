@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httptrace"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,14 +23,29 @@ import (
 type streamVendor struct {
 	mu    sync.Mutex
 	seen  int
+	at    []time.Time // when each request arrived
 	fail  int
 	block chan struct{} // the first request waits on it, if set
+	later time.Duration // the requests after the first wait this, quiet
+	// when it began to answer each request, after block and later
+	answered []time.Time
+}
+
+// arrived is when the vendor's n-th request (from 0) arrived.
+func (v *streamVendor) arrived(n int) (time.Time, bool) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if n < len(v.at) {
+		return v.at[n], true
+	}
+	return time.Time{}, false
 }
 
 func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	io.Copy(io.Discard, r.Body)
 	v.mu.Lock()
 	v.seen++
+	v.at = append(v.at, time.Now())
 	n := v.seen
 	failing := n > 1 && v.fail > 0
 	if failing {
@@ -42,6 +59,16 @@ func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	if n > 1 && v.later > 0 {
+		select {
+		case <-time.After(v.later):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	v.mu.Lock()
+	v.answered = append(v.answered, time.Now())
+	v.mu.Unlock()
 	if failing {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(500)
@@ -66,35 +93,6 @@ func (v *streamVendor) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// idleConn is a connection whose reads time out after idle with nothing
-// read, as an agent's HTTP client with an idle timeout (WorkBuddy, Trae,
-// Qoder): any byte, a comment's too, starts it again.
-type idleConn struct {
-	net.Conn
-	idle time.Duration
-}
-
-func (c idleConn) Read(b []byte) (int, error) {
-	c.SetReadDeadline(time.Now().Add(c.idle))
-	return c.Conn.Read(b)
-}
-
-// idleClient is an HTTP client that gives up once it hears nothing for
-// idle, headers or body.
-func idleClient(idle time.Duration) *http.Client {
-	d := &net.Dialer{}
-	return &http.Client{Transport: &http.Transport{
-		DisableKeepAlives: true,
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			c, err := d.DialContext(ctx, network, addr)
-			if err != nil {
-				return nil, err
-			}
-			return idleConn{c, idle}, nil
-		},
-	}}
-}
-
 // queueGateway is the real server (lanGuard in front) with a provider "q"
 // of one key, set up by p, and every keepalive within milliseconds.
 func queueGateway(t *testing.T, v *streamVendor, set func(*provider.Provider)) string {
@@ -111,9 +109,69 @@ func queueGateway(t *testing.T, v *streamVendor, set func(*provider.Provider)) s
 	if err := provider.Save(p); err != nil {
 		t.Fatal(err)
 	}
-	gw := httptest.NewServer(lanGuard(New().Handler()))
+	gw := httptest.NewUnstartedServer(lanGuard(New().Handler()))
+	gw.Listener = wroteListener{gw.Listener}
+	gw.Start()
 	t.Cleanup(gw.Close)
 	return gw.URL
+}
+
+// wrote is when the gateway first wrote to each agent's connection, by
+// the agent's address: the time the gateway sent it, which a client's own
+// read can't tell under load, its goroutine waiting to run.
+var wrote sync.Map // string -> *atomic.Int64
+
+type wroteListener struct{ net.Listener }
+
+func (l wroteListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return c, err
+	}
+	at, all := new(atomic.Int64), new(writeLog)
+	wrote.Store(c.RemoteAddr().String(), at)
+	writes.Store(c.RemoteAddr().String(), all)
+	return wroteConn{c, at, all}, nil
+}
+
+// writes is every time the gateway wrote to each agent's connection, by
+// the agent's address.
+var writes sync.Map // string -> *writeLog
+
+type writeLog struct {
+	mu sync.Mutex
+	at []time.Time
+}
+
+// within says how many writes were after from and before to.
+func (l *writeLog) within(from, to time.Time) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, t := range l.at {
+		if t.After(from) && t.Before(to) {
+			n++
+		}
+	}
+	return n
+}
+
+type wroteConn struct {
+	net.Conn
+	at  *atomic.Int64
+	all *writeLog
+}
+
+func (c wroteConn) Write(b []byte) (int, error) {
+	n, err := c.Conn.Write(b)
+	if n > 0 {
+		now := time.Now()
+		c.at.CompareAndSwap(0, now.UnixNano())
+		c.all.mu.Lock()
+		c.all.at = append(c.all.at, now)
+		c.all.mu.Unlock()
+	}
+	return n, err
 }
 
 var queueAsks = []struct{ name, path, body string }{
@@ -122,48 +180,187 @@ var queueAsks = []struct{ name, path, body string }{
 	{"messages", "/v1/messages", `{"model":"q/m","stream":true,"max_tokens":50,"messages":[{"role":"user","content":"hi"}]}`},
 }
 
-// askIdle sends body to path with an agent that gives up after idle of
-// silence, and returns the status, the stream read, and the read's error.
-func askIdle(gw, path, body string, idle time.Duration) (int, string, error) {
+// queueMinute is the minute of the tests that wait for room in it. A queued
+// request waits for what is left of it when it arrives, which under load
+// is late: it is long enough that what is left stays far over
+// keepHeldAfter (a request ~1.4s late was seen with 8 busy goroutines per
+// core).
+const queueMinute = 3 * time.Second
+
+// askHeard sends body to path as an agent would and returns the status, the
+// stream read, when the gateway first wrote to the agent (wrote), and the
+// read's error. heard, if set, is called once the agent has a first byte.
+func askHeard(gw, path, body string, heard func()) (int, string, time.Time, error) {
 	req, _ := http.NewRequest("POST", gw+path, strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
-	res, err := idleClient(idle).Do(req)
+	var from string
+	req = req.WithContext(httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+		GotConn: func(i httptrace.GotConnInfo) { from = i.Conn.LocalAddr().String() },
+		GotFirstResponseByte: func() {
+			if heard != nil {
+				heard()
+			}
+		},
+	}))
+	res, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 30 * time.Second}).Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", time.Time{}, err
 	}
 	defer res.Body.Close()
 	var b strings.Builder
 	_, err = io.Copy(&b, bufio.NewReader(res.Body))
-	return res.StatusCode, b.String(), err
+	var first time.Time
+	if at, ok := wrote.Load(from); ok {
+		if n := at.(*atomic.Int64).Load(); n != 0 {
+			first = time.Unix(0, n)
+		}
+	}
+	return res.StatusCode, b.String(), first, err
+}
+
+// waitSeen waits until v has had n requests.
+func waitSeen(t *testing.T, v *streamVendor, n int) {
+	t.Helper()
+	for end := time.Now().Add(10 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+		if _, ok := v.arrived(n - 1); ok {
+			return
+		}
+		if time.Now().After(end) {
+			t.Fatalf("the vendor never had %d requests", n)
+		}
+	}
 }
 
 // coeo91 on Discord: with a Requests per minute limit, a request held for
 // room in the minute had its agent hear nothing at all — WorkBuddy, Trae
 // and Qoder said it timed out. Through the real server, a streaming
-// request that waits 1.2s for the minute with an agent that gives up
-// after 400ms of silence is sent the stream's 200 and keepalives
-// meanwhile, then the vendor's reply, in each protocol's stream.
+// request that waits for the minute (queueMinute) hears the stream's 200 and
+// keepalives before the vendor is asked, then the vendor's reply, in each
+// protocol's stream. The test asks for that order, as the gateway wrote
+// it, rather than for a client's idle timeout: under load (machine load
+// ~130, 20582866a) every gap a client measures stretched, the first
+// request's too, the client's goroutine waiting to run.
 func TestQueuedStreamKeptAliveForTheMinute(t *testing.T) {
 	for _, a := range queueAsks {
 		t.Run(a.name, func(t *testing.T) {
-			shortMinute(t, 1200*time.Millisecond, time.Minute)
-			gw := queueGateway(t, &streamVendor{}, func(p *provider.Provider) { p.MaxRPM = 1 })
-			if code, body, err := askIdle(gw, a.path, a.body, 400*time.Millisecond); err != nil || code != 200 {
+			shortMinute(t, queueMinute, time.Minute)
+			v := &streamVendor{}
+			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxRPM = 1 })
+			if code, body, _, err := askHeard(gw, a.path, a.body, nil); err != nil || code != 200 {
 				t.Fatalf("first: %d %v %s", code, err, body)
 			}
-			began := time.Now()
-			code, body, err := askIdle(gw, a.path, a.body, 400*time.Millisecond)
-			if err != nil {
-				t.Fatalf("the agent gave up after %s of a queued request: %v (read %q)", time.Since(began).Round(time.Millisecond), err, body)
+			code, body, heard, err := askHeard(gw, a.path, a.body, nil)
+			if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "queued ok") {
+				t.Fatalf("queued = %d %v %q, want 200, keepalives, then the reply", code, err, body)
 			}
-			if code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "queued ok") {
-				t.Fatalf("queued = %d %q, want 200, keepalives, then the reply", code, body)
+			first, _ := v.arrived(0)
+			asked, ok := v.arrived(1)
+			if !ok || heard.IsZero() || !heard.Before(asked) {
+				t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 			}
-			if d := time.Since(began); d < time.Second {
-				t.Fatalf("answered after %s, inside the minute", d)
+			// it waited for the minute: the vendor sees the first late
+			// under load (rpmSlack, zero here), so half of it
+			if d := asked.Sub(first); d < queueMinute/2 {
+				t.Fatalf("the vendor was asked %s after the first, inside the minute", d)
 			}
 		})
 	}
+}
+
+// Once a queued request's agent has been kept alive, it hears a keepalive
+// every keepaliveEvery after the request goes to its vendor too, not
+// keepHeldAfter after that: the vendor's watch waited keepHeldAfter
+// before its first keepalive, as if the agent had heard nothing, so an
+// agent sent one just before the handoff went up to keepHeldAfter plus
+// keepaliveEvery (30s with the real 15s each) with none. Here
+// keepHeldAfter is 1.5s, keepaliveEvery 100ms, and the vendor stays
+// quiet 1s on the queued request: the gateway must write to the agent
+// between the vendor being asked and its answer, where the old watch,
+// begun before the vendor was asked, wrote nothing until keepHeldAfter
+// after it began. The check is on the gateway's own writes, in order,
+// not on gaps a client measures, which stretch under load (3f4287e6).
+// The request waits for a slot (MaxConcurrency), freed once its agent has
+// heard a keepalive, so it is kept alive before the handoff however late
+// it runs; a wait for room in the minute is kept alive and handed over
+// the same way (keepQueued, then watch), but needed a minute sized for a
+// loaded machine (#1654).
+func TestQueuedStreamKeptAliveOnceSentToItsVendor(t *testing.T) {
+	for _, a := range queueAsks {
+		t.Run(a.name, func(t *testing.T) {
+			one := 1
+			v := &streamVendor{block: make(chan struct{}), later: time.Second}
+			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
+			keepFast(t, keepaliveGap, 100*time.Millisecond, keepaliveLongest)
+			keepHeldAfter = 1500 * time.Millisecond // put back by queueGateway's cleanup
+			first := holdSlot(t, gw, v, a.path, a.body)
+			req, _ := http.NewRequest("POST", gw+a.path, strings.NewReader(a.body))
+			req.Header.Set("Content-Type", "application/json")
+			var from string
+			req = req.WithContext(httptrace.WithClientTrace(context.Background(), &httptrace.ClientTrace{
+				GotConn:              func(i httptrace.GotConnInfo) { from = i.Conn.LocalAddr().String() },
+				GotFirstResponseByte: first.free,
+			}))
+			res, err := (&http.Client{Transport: &http.Transport{DisableKeepAlives: true}, Timeout: 30 * time.Second}).Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := io.ReadAll(res.Body)
+			res.Body.Close()
+			if err != nil || res.StatusCode != 200 || !strings.Contains(string(b), ": keepalive") || !strings.Contains(string(b), "queued ok") {
+				t.Fatalf("queued = %d %v %q, want 200, keepalives, then the reply", res.StatusCode, err, b)
+			}
+			first.done(t)
+			l, ok := writes.Load(from)
+			if !ok {
+				t.Fatal("no writes recorded for the agent's connection")
+			}
+			log := l.(*writeLog)
+			v.mu.Lock()
+			asked, answered := v.at[1], v.answered[1]
+			v.mu.Unlock()
+			if log.within(time.Time{}, asked) == 0 {
+				t.Fatalf("the agent wasn't kept alive before the vendor was asked")
+			}
+			if n := log.within(asked, answered); n == 0 {
+				t.Fatalf("the gateway wrote nothing to the kept-alive agent in the %s between the vendor being asked and its answer, want a keepalive every %s", answered.Sub(asked).Round(time.Millisecond), keepaliveEvery)
+			}
+		})
+	}
+}
+
+// heldSlot is a request holding a provider's one slot (MaxConcurrency 1)
+// at a vendor whose first request waits on its block.
+type heldSlot struct {
+	once sync.Once
+	v    *streamVendor
+	err  chan error
+}
+
+// free lets the holder's vendor answer, which frees the slot; once.
+func (h *heldSlot) free() { h.once.Do(func() { close(h.v.block) }) }
+
+// done waits for the holder's own reply.
+func (h *heldSlot) done(t *testing.T) {
+	t.Helper()
+	if err := <-h.err; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// holdSlot sends a request that takes the slot and keeps it until free; it
+// is freed after 5s if nothing frees it, so a queued agent that hears
+// nothing fails its test rather than hanging it.
+func holdSlot(t *testing.T, gw string, v *streamVendor, path, body string) *heldSlot {
+	t.Helper()
+	h := &heldSlot{v: v, err: make(chan error, 1)}
+	go func() {
+		_, _, _, err := askHeard(gw, path, body, nil)
+		h.err <- err
+	}()
+	waitSeen(t, v, 1) // the first has the slot
+	stop := time.AfterFunc(5*time.Second, h.free)
+	t.Cleanup(func() { stop.Stop(); h.free() })
+	return h
 }
 
 // A slot of MaxConcurrency waited for is kept alive the same way.
@@ -173,14 +370,21 @@ func TestQueuedStreamKeptAliveForASlot(t *testing.T) {
 	gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
 	first := make(chan error, 1)
 	go func() {
-		_, _, err := askIdle(gw, queueAsks[0].path, queueAsks[0].body, 5*time.Second)
+		_, _, _, err := askHeard(gw, queueAsks[0].path, queueAsks[0].body, nil)
 		first <- err
 	}()
-	time.AfterFunc(time.Second, func() { close(v.block) })
-	time.Sleep(100 * time.Millisecond) // the first has the slot
-	code, body, err := askIdle(gw, queueAsks[0].path, queueAsks[0].body, 400*time.Millisecond)
+	waitSeen(t, v, 1) // the first has the slot
+	// the slot is freed once the queued agent has heard something, or
+	// after 5s when nothing reaches it
+	var once sync.Once
+	free := func() { once.Do(func() { close(v.block) }) }
+	time.AfterFunc(5*time.Second, free)
+	code, body, heard, err := askHeard(gw, queueAsks[0].path, queueAsks[0].body, free)
 	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "queued ok") {
 		t.Fatalf("queued for a slot = %d %v %q, want 200, keepalives, then the reply", code, err, body)
+	}
+	if asked, ok := v.arrived(1); !ok || heard.IsZero() || !heard.Before(asked) {
+		t.Fatalf("the gateway first wrote to the agent at %s, the vendor was asked at %s: nothing reached it while it waited", heard.Format("15:04:05.000"), asked.Format("15:04:05.000"))
 	}
 	if err := <-first; err != nil {
 		t.Fatal(err)
@@ -190,7 +394,11 @@ func TestQueuedStreamKeptAliveForASlot(t *testing.T) {
 // Once a queued request's agent has the stream's 200, the vendor failing
 // after it reaches the agent as its stream's error event, in its
 // protocol's own shape, not as a status the agent can no longer be told,
-// nor a JSON error body inside the stream.
+// nor a JSON error body inside the stream. The request waits for a slot
+// (MaxConcurrency), freed once its agent has heard a keepalive: a wait for
+// room in the minute goes through the same keepQueued and handoff, but
+// there each of the vendor's retries waited a minute more, nine seconds a
+// protocol (#1654).
 func TestQueuedStreamFailureIsTheStreamsError(t *testing.T) {
 	wants := map[string][]string{
 		"chat":      {`"error"`, "the vendor is overloaded"},
@@ -199,14 +407,17 @@ func TestQueuedStreamFailureIsTheStreamsError(t *testing.T) {
 	}
 	for _, a := range queueAsks {
 		t.Run(a.name, func(t *testing.T) {
-			shortMinute(t, 1200*time.Millisecond, time.Minute)
-			gw := queueGateway(t, &streamVendor{fail: 10}, func(p *provider.Provider) { p.MaxRPM = 1 })
-			if code, body, err := askIdle(gw, a.path, a.body, 400*time.Millisecond); err != nil || code != 200 {
-				t.Fatalf("first: %d %v %s", code, err, body)
-			}
-			code, body, err := askIdle(gw, a.path, a.body, 2*time.Second)
+			one := 1
+			v := &streamVendor{fail: 10, block: make(chan struct{})}
+			gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency = &one })
+			first := holdSlot(t, gw, v, a.path, a.body)
+			code, body, _, err := askHeard(gw, a.path, a.body, first.free)
 			if err != nil || code != 200 || !strings.Contains(body, ": keepalive") {
 				t.Fatalf("queued = %d %v %q, want the stream's 200 and keepalives", code, err, body)
+			}
+			first.done(t)
+			if _, ok := v.arrived(1); !ok {
+				t.Fatal("the queued request never reached the vendor")
 			}
 			for _, w := range wants[a.name] {
 				if !strings.Contains(body, w) {
@@ -227,9 +438,9 @@ func TestQueuedStreamWaitedOutIsTheStreamsError(t *testing.T) {
 	v := &streamVendor{block: make(chan struct{})}
 	defer close(v.block)
 	gw := queueGateway(t, v, func(p *provider.Provider) { p.MaxConcurrency, p.QueueWait = &one, 1 })
-	go askIdle(gw, queueAsks[2].path, queueAsks[2].body, 5*time.Second)
-	time.Sleep(100 * time.Millisecond)
-	code, body, err := askIdle(gw, queueAsks[2].path, queueAsks[2].body, 400*time.Millisecond)
+	go askHeard(gw, queueAsks[2].path, queueAsks[2].body, nil)
+	waitSeen(t, v, 1) // the first has the slot
+	code, body, _, err := askHeard(gw, queueAsks[2].path, queueAsks[2].body, nil)
 	if err != nil || code != 200 || !strings.Contains(body, ": keepalive") || !strings.Contains(body, "event: error") || !strings.Contains(body, "requests at once is its limit") {
 		t.Fatalf("waited out = %d %v %q, want keepalives, then the limit as the stream's error", code, err, body)
 	}
@@ -238,12 +449,12 @@ func TestQueuedStreamWaitedOutIsTheStreamsError(t *testing.T) {
 // A wait shorter than keepHeldAfter sends nothing ahead: turned away, it
 // is still a 429 with its Retry-After.
 func TestQueuedBrieflyStill429(t *testing.T) {
-	shortMinute(t, 1500*time.Millisecond, 50*time.Millisecond)
+	shortMinute(t, 10*time.Second, 50*time.Millisecond)
 	gw := queueGateway(t, &streamVendor{}, func(p *provider.Provider) { p.MaxRPM = 1 })
-	if code, _, err := askIdle(gw, queueAsks[0].path, queueAsks[0].body, time.Second); err != nil || code != 200 {
+	if code, _, _, err := askHeard(gw, queueAsks[0].path, queueAsks[0].body, nil); err != nil || code != 200 {
 		t.Fatalf("first: %d %v", code, err)
 	}
-	code, body, err := askIdle(gw, queueAsks[0].path, queueAsks[0].body, time.Second)
+	code, body, _, err := askHeard(gw, queueAsks[0].path, queueAsks[0].body, nil)
 	if err != nil || code != 429 || strings.Contains(body, "keepalive") {
 		t.Fatalf("second = %d %v %q, want a plain 429", code, err, body)
 	}

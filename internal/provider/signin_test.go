@@ -33,16 +33,27 @@ func finishInBrowser(t *testing.T, st SignInState, code string) string {
 	return string(b)
 }
 
+// signInDeadline is how long waitDone waits for a sign-in to end. Most of
+// these sign-ins run fake CLIs (a `claude auth login`, `devin`, ...) that
+// fork a shell, its cat/echo/rm, and then magpie's own `auth status` probe:
+// a few hundred ms alone, but seconds while `go test ./...` runs every
+// package's binaries at once (and macOS checks each new executable on its
+// first run). 2s was not enough (#1552). The deadline sits above every
+// bound the flows keep themselves (claudePaste's minute, claudeSignedIn's
+// 15s), so a flow that times out says so in its own state, not here.
+const signInDeadline = 90 * time.Second
+
+// waitDone waits for sign-in id to leave "waiting" and returns its state.
+// It returns as soon as it does, so the deadline only costs time when a
+// sign-in really never ends.
 func waitDone(t *testing.T, id string) SignInState {
 	t.Helper()
-	for i := 0; i < 100; i++ {
-		st, _ := SignInStatus(id)
-		if st.State != "waiting" {
+	for end := time.Now().Add(signInDeadline); time.Now().Before(end); time.Sleep(20 * time.Millisecond) {
+		if st, _ := SignInStatus(id); st.State != "waiting" {
 			return st
 		}
-		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatal("sign-in never finished")
+	t.Fatalf("sign-in never finished in %s", signInDeadline)
 	return SignInState{}
 }
 

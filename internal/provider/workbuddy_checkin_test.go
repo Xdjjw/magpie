@@ -24,6 +24,10 @@ type fakeWBCheckin struct {
 	claimCode int
 	down      bool // the network: every request fails
 	broken    bool // every request is answered with a 500
+	// refuse401 is the paths WorkBuddy's gateway answers with its bare
+	// 401 page; "*" is every one (a token it refuses)
+	refuse401 []string
+	summaries int
 	statuses  int
 	claims    int
 }
@@ -42,6 +46,18 @@ func (f *fakeWBCheckin) serve(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
+		if slices.Contains(f.refuse401, "*") || slices.Contains(f.refuse401, r.URL.Path) {
+			switch r.URL.Path {
+			case "/v2/billing/meter/checkin-activity-status":
+				f.statuses++
+			case "/billing/meter/get-user-resource-summary":
+				f.summaries++
+			}
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusUnauthorized)
+			io.WriteString(w, wbGateway401)
+			return
+		}
 		if r.Header.Get("Authorization") != "Bearer wb-access" || r.Header.Get("X-User-Id") != "u1" ||
 			!strings.HasPrefix(r.Header.Get("User-Agent"), "WorkBuddy/") {
 			json.NewEncoder(w).Encode(map[string]any{"code": 10085, "msg": "请求不合法"})
@@ -53,6 +69,9 @@ func (f *fakeWBCheckin) serve(t *testing.T) *httptest.Server {
 			f.statuses++
 			ok(map[string]any{"active": f.active, "today_checked_in": f.checked, "streak_days": 3,
 				"daily_credit": 100, "today_credit": map[bool]int{true: 100}[f.checked], "total_credits": 300})
+		case "/billing/meter/get-user-resource-summary":
+			f.summaries++
+			ok(map[string]any{"Packages": []any{map[string]any{"CycleTotalCapacity": "1500", "CycleUsedCapacity": "0"}}})
 		case "/v2/billing/meter/daily-checkin":
 			f.claims++
 			if f.claimCode != 0 {
@@ -68,6 +87,17 @@ func (f *fakeWBCheckin) serve(t *testing.T) *httptest.Server {
 	t.Cleanup(srv.Close)
 	return srv
 }
+
+// wbGateway401 is what copilot.tencent.com's gateway (APISIX) answers a
+// token it refuses with, as captured on 2026-10-10.
+const wbGateway401 = `<html>
+<head><title>401 Authorization Required</title></head>
+<body>
+<center><h1>401 Authorization Required</h1></center>
+<hr><center>openresty</center>
+<p><em>Powered by <a href="https://apisix.apache.org/">APISIX</a>.</em></p></body>
+</html>
+`
 
 func (f *fakeWBCheckin) counts() (int, int) {
 	f.mu.Lock()
@@ -425,5 +455,69 @@ func TestWorkBuddyCheckinPluginUnderItsOwnID(t *testing.T) {
 	}}
 	if rs := c.checkinNow(context.Background(), true); len(rs) != 1 || asked != 1 || rs[0].Outcome != CheckinDone {
 		t.Fatalf("one account twice: %d asked, %+v", asked, rs)
+	}
+}
+
+// WorkBuddy's gateway answering the check-in with its bare 401 (モモコ on
+// Discord: 签到失败，magpie 稍后重试 · Unauthorized, all day, and signing in
+// again didn't help) is told apart by reading the account's credits with
+// the same headers: they read, so the sign-in is good and the check-in
+// takes WorkBuddy's own app — an answer for the day, not asked again; they
+// don't, so the sign-in is refused and the account is to be signed in
+// again, said in those words, not "Unauthorized".
+func TestWorkBuddyCheckinUnauthorized(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		refuse  []string
+		outcome string
+		msg     string
+		claims  int
+		again   bool
+	}{
+		{"status", []string{"/v2/billing/meter/checkin-activity-status"}, CheckinOwnApp, "WorkBuddy's own app", 0, false},
+		{"claim", []string{"/v2/billing/meter/daily-checkin"}, CheckinOwnApp, "WorkBuddy's own app", 1, false},
+		{"sign-in", []string{"*"}, CheckinFailed, "sign in to it again", 0, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeWBCheckin{active: true, refuse401: tc.refuse}
+			srv := f.serve(t)
+			now := time.Date(2026, 10, 10, 2, 0, 0, 0, time.UTC)
+			c := wbCheckinFixture(t, srv, &now)
+			rs := c.checkinNow(context.Background(), false)
+			if len(rs) != 1 || rs[0].Outcome != tc.outcome || !strings.Contains(rs[0].Msg, tc.msg) || rs[0].Checked() {
+				t.Fatalf("got %+v", rs)
+			}
+			if f.summaries != 1 {
+				t.Fatalf("credits read %d times", f.summaries)
+			}
+			now = now.Add(wbCheckinRetry + time.Minute)
+			c.checkinNow(context.Background(), false)
+			s, cl := f.counts()
+			if again := s == 2; again != tc.again || cl > tc.claims {
+				t.Fatalf("after the retry: status %d, claims %d", s, cl)
+			}
+		})
+	}
+}
+
+// Through the plugin's fetch too: a moved account's check-in answered 401
+// while its credits read is the WorkBuddy app's to do.
+func TestWorkBuddyCheckinUnauthorizedThroughPlugin(t *testing.T) {
+	var paths []string
+	via := func(req *http.Request) (*http.Response, error) {
+		paths = append(paths, req.URL.Path)
+		if strings.HasSuffix(req.URL.Path, "/checkin-activity-status") {
+			return &http.Response{StatusCode: 401, Body: io.NopCloser(strings.NewReader(wbGateway401)), Header: http.Header{"X-Magpie-Sign-In": {"kept"}}}, nil
+		}
+		body := `{"code":0,"data":{"Packages":[]}}`
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(body)), Header: http.Header{}}, nil
+	}
+	a := wbAccount{Login: Login{User: "me", On: true}, site: wbCN, creds: wbCreds{UID: "u1"}, via: via}
+	r := wbCheckin(context.Background(), a)
+	if r.Outcome != CheckinOwnApp {
+		t.Fatalf("got %+v", r)
+	}
+	if len(paths) != 2 || !strings.HasSuffix(paths[1], "/billing/meter/get-user-resource-summary") || strings.Contains(paths[1], "/v2/") {
+		t.Fatalf("asked %v", paths)
 	}
 }

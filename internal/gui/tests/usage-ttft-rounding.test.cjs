@@ -82,7 +82,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await p.route("**/*", server(lang));
         await p.goto("http://magpie.test/");
         await p.locator('[data-view="usage"]').first().click();
-        await p.locator("#usageTab .opt").nth(1).click();
+        await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click();
         await p.locator("#ledWrap .led tbody tr").first().waitFor();
         await p.waitForTimeout(300);
 

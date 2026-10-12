@@ -773,7 +773,7 @@ func wbCallVia(ctx context.Context, do func(*http.Request) (*http.Response, erro
 // app asks for a state and a page, opens the page for the user to sign in,
 // then polls for the token and the account.
 func startWorkBuddySignIn(s *signInFlow, w *wbSite) error {
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.via(context.Background()))
 	var state struct {
 		State   string `json:"state"`
 		AuthURL string `json:"authUrl"`

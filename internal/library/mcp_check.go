@@ -35,6 +35,10 @@ type ServerHealth struct {
 	// sign-in or a key) or error (Why says what went wrong)
 	State string `json:"state"`
 	Tools int    `json:"tools"`
+	// ToolList is each tool's name and what it says it does, as tools/list
+	// gave them, for the page to list (nf1qaz2w on Discord); at most
+	// maxToolList, while Tools counts every one
+	ToolList []Tool `json:"toolList,omitempty"`
 	// Why is the kind of error, for the page to put in its own words:
 	// notfound, start, exited, timeout, http, refused, unreachable,
 	// protocol, novar (a ${NAME} magpie's environment hasn't: Detail names
@@ -44,13 +48,25 @@ type ServerHealth struct {
 	Detail string `json:"detail,omitempty"` // the last line it wrote to stderr, or the error's text
 	// OAuth is a refusal that named a sign-in (WWW-Authenticate), which
 	// magpie can do itself for a streamable HTTP server
-	OAuth bool  `json:"oauth,omitempty"`
-	At    int64 `json:"at"` // when it was checked, unix ms
+	OAuth bool `json:"oauth,omitempty"`
+	// Step is what a server that timed out was asked and didn't answer
+	// (initialize, notifications/initialized, tools/list, or connect: an
+	// SSE server's stream), and Waited how long it was waited for, in ms
+	Step   string `json:"step,omitempty"`
+	Waited int64  `json:"waited,omitempty"`
+	At     int64  `json:"at"` // when it was checked, unix ms
 }
 
-// checkTimeout is how long a server has to start and list its tools: npx
-// fetching a package the first time can take a while.
-var checkTimeout = 15 * time.Second
+// Each step of a check (initialize, notifications/initialized, tools/list)
+// has a budget of its own, not one for the whole check: a remote server
+// that is slow but healthy took 0.6-12s to initialize and 38-53s to list
+// its tools (#1467, xiaozhu1337), which a 15s budget for all of it always
+// called "no answer". A command gets less: it runs on this machine, though
+// npx fetching a package the first time can take a while.
+var (
+	stdioStep  = 30 * time.Second
+	remoteStep = 60 * time.Second
+)
 
 // checkAtOnce is how many servers are checked together, each a process or
 // a few requests.
@@ -128,9 +144,17 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 			slots <- struct{}{}
 			defer func() { <-slots }()
 			h := CheckServer(ctx, s)
-			if ctx.Err() == nil { // a check cut short by the page going away isn't one
+			// a check cut short by the page going away isn't one, and a
+			// server that didn't answer in time is asked again next time:
+			// a slow server may answer then (#1467)
+			if ctx.Err() == nil {
 				checked.Lock()
-				checked.m[s.Name] = checkedServer{key, h}
+				if h.Why == "timeout" {
+					// nor is an answer from before kept in its place
+					delete(checked.m, s.Name)
+				} else {
+					checked.m[s.Name] = checkedServer{key, h}
+				}
 				checked.Unlock()
 			}
 			outMu.Lock()
@@ -144,8 +168,15 @@ func CheckServers(ctx context.Context, names []string, fresh bool) (map[string]S
 
 // CheckServer connects to one server and asks it for its tools.
 func CheckServer(ctx context.Context, s *Server) ServerHealth {
-	ctx, cancel := context.WithTimeout(ctx, checkTimeout)
+	each := remoteStep
+	if s.Transport == "stdio" {
+		each = stdioStep
+	}
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	st := &checkSteps{step: "initialize", each: each, timer: time.AfterFunc(each, cancel)}
+	defer st.timer.Stop()
+	ctx = context.WithValue(ctx, stepsKey{}, st)
 	var h ServerHealth
 	switch s.Transport {
 	case "stdio":
@@ -163,9 +194,40 @@ func failed(why, detail string) ServerHealth {
 	return ServerHealth{State: "error", Why: why, Detail: detail}
 }
 
-// timedOut is a server that didn't answer in checkTimeout; the page says
-// how long that is.
-func timedOut() ServerHealth { return failed("timeout", "") }
+// checkSteps is the step a check is at, and the timer that ends the check
+// when the step takes longer than each.
+type checkSteps struct {
+	mu    sync.Mutex
+	step  string
+	each  time.Duration
+	timer *time.Timer
+}
+
+type stepsKey struct{}
+
+// stepTo starts the check's next step, with a budget of its own.
+func stepTo(ctx context.Context, step string) {
+	st, _ := ctx.Value(stepsKey{}).(*checkSteps)
+	if st == nil || ctx.Err() != nil {
+		return
+	}
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	st.step = step
+	st.timer.Reset(st.each)
+}
+
+// timedOut is a server that didn't answer a step in time; the page says
+// which step, and how long it waited.
+func timedOut(ctx context.Context) ServerHealth {
+	h := failed("timeout", "")
+	if st, _ := ctx.Value(stepsKey{}).(*checkSteps); st != nil {
+		st.mu.Lock()
+		h.Step, h.Waited = st.step, st.each.Milliseconds()
+		st.mu.Unlock()
+	}
+	return h
+}
 
 // rpcMsg is a JSON-RPC message from the server: a reply has an id.
 type rpcMsg struct {
@@ -199,22 +261,113 @@ func initializeReq() []byte {
 
 var initializedNote = []byte(`{"jsonrpc":"2.0","method":"notifications/initialized"}`)
 
-// toolsOf is the health the reply to tools/list says: a server with no
-// tools may not know the method at all.
-func toolsOf(m *rpcMsg) ServerHealth {
+// Tool is one tool a server listed: its name, and the first paragraph of
+// its description, cut short.
+type Tool struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+}
+
+// What of the tools a check keeps: every tool's name up to maxToolList,
+// a description up to maxToolDesc runes, and up to maxToolPages pages of
+// tools/list, each with a step's budget of its own.
+const (
+	maxToolList  = 500
+	maxToolName  = 128
+	maxToolDesc  = 500
+	maxToolPages = 10
+)
+
+// clip is s with its whitespace runs made one space, cut at n runes.
+func clip(s string, n int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > n {
+		return strings.TrimSpace(string(r[:n])) + "…"
+	}
+	return s
+}
+
+// toolDesc is the first paragraph of a tool's description: the rest is
+// usually how to call it, which the agent reads, not the person.
+func toolDesc(d string) string {
+	d = strings.TrimSpace(strings.ReplaceAll(d, "\r\n", "\n"))
+	if i := strings.Index(d, "\n\n"); i >= 0 {
+		d = d[:i]
+	}
+	return clip(d, maxToolDesc)
+}
+
+// toolsOf is the health one reply to tools/list says, and the cursor of
+// the page after it: a server with no tools may not know the method at all.
+func toolsOf(m *rpcMsg) (ServerHealth, string) {
 	if m.Error != nil {
 		if m.Error.Code == -32601 {
-			return ServerHealth{State: "ok"}
+			return ServerHealth{State: "ok"}, ""
 		}
-		return failed("protocol", "tools/list: "+m.Error.Message)
+		return failed("protocol", "tools/list: "+m.Error.Message), ""
 	}
 	var r struct {
-		Tools []json.RawMessage `json:"tools"`
+		Tools []struct {
+			Name        string `json:"name"`
+			Title       string `json:"title"`
+			Description string `json:"description"`
+		} `json:"tools"`
+		NextCursor string `json:"nextCursor"`
 	}
 	if err := json.Unmarshal(m.Result, &r); err != nil {
-		return failed("protocol", "tools/list: "+err.Error())
+		return failed("protocol", "tools/list: "+err.Error()), ""
 	}
-	return ServerHealth{State: "ok", Tools: len(r.Tools)}
+	h := ServerHealth{State: "ok", Tools: len(r.Tools)}
+	for _, t := range r.Tools {
+		if len(h.ToolList) == maxToolList {
+			break
+		}
+		d := toolDesc(t.Description)
+		if d == "" {
+			d = clip(t.Title, maxToolDesc)
+		}
+		h.ToolList = append(h.ToolList, Tool{Name: clip(t.Name, maxToolName), Description: d})
+	}
+	return h, r.NextCursor
+}
+
+// listTools asks for the server's tools, a page at a time while it names
+// a next one, up to maxToolPages. ask sends a request and reads the reply
+// to its id. A page after the first that is refused ends the list there.
+func listTools(ctx context.Context, ask func(id int, req []byte) (*rpcMsg, *ServerHealth)) ServerHealth {
+	var all ServerHealth
+	cursor := ""
+	for page := 0; page < maxToolPages; page++ {
+		stepTo(ctx, "tools/list")
+		var params any
+		if cursor != "" {
+			params = map[string]any{"cursor": cursor}
+		}
+		id := 2 + page
+		m, bad := ask(id, request(id, "tools/list", params))
+		if bad != nil {
+			return *bad
+		}
+		h, next := toolsOf(m)
+		if h.State != "ok" {
+			if page == 0 {
+				return h
+			}
+			break
+		}
+		all.State = "ok"
+		all.Tools += h.Tools
+		for _, t := range h.ToolList {
+			if len(all.ToolList) < maxToolList {
+				all.ToolList = append(all.ToolList, t)
+			}
+		}
+		if next == "" || next == cursor {
+			break
+		}
+		cursor = next
+	}
+	return all
 }
 
 // initError is what an error reply to initialize says.
@@ -347,7 +500,7 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 					return nil, &h
 				}
 			case <-ctx.Done():
-				h := timedOut()
+				h := timedOut(ctx)
 				h.Detail = errs.last()
 				return nil, &h
 			}
@@ -367,12 +520,10 @@ func checkStdio(ctx context.Context, s *Server) ServerHealth {
 		return *h
 	}
 	_ = send(initializedNote)
-	_ = send(request(2, "tools/list", nil))
-	m, h = await(2)
-	if h != nil {
-		return *h
-	}
-	return toolsOf(m)
+	return listTools(ctx, func(id int, req []byte) (*rpcMsg, *ServerHealth) {
+		_ = send(req)
+		return await(id)
+	})
 }
 
 func exitHealth(err error, errs *tail) ServerHealth {
@@ -411,7 +562,7 @@ func remoteHeaders(ctx context.Context, s *Server) (http.Header, *ServerHealth) 
 // netHealth puts a failed request in the page's words.
 func netHealth(ctx context.Context, err error) ServerHealth {
 	if ctx.Err() != nil || errors.Is(err, context.DeadlineExceeded) {
-		return timedOut()
+		return timedOut(ctx)
 	}
 	if errors.Is(err, connectionRefused) {
 		return failed("refused", err.Error())
@@ -484,7 +635,7 @@ func checkHTTP(ctx context.Context, s *Server) ServerHealth {
 		m, err := replyOf(res, id)
 		if err != nil {
 			if ctx.Err() != nil {
-				h := timedOut()
+				h := timedOut(ctx)
 				return nil, &h
 			}
 			h := failed("protocol", err.Error())
@@ -508,15 +659,14 @@ func checkHTTP(ctx context.Context, s *Server) ServerHealth {
 	if session != "" {
 		defer endSession(s.URL, hdr, session)
 	}
+	stepTo(ctx, "notifications/initialized")
 	if res, err := post(initializedNote); err == nil {
 		io.Copy(io.Discard, io.LimitReader(res.Body, 1<<16))
 		res.Body.Close()
+	} else if ctx.Err() != nil {
+		return timedOut(ctx)
 	}
-	m, h = call(2, request(2, "tools/list", nil))
-	if h != nil {
-		return *h
-	}
-	return toolsOf(m)
+	return listTools(ctx, call)
 }
 
 // endSession tells the server the check is done with its session, as a
@@ -616,6 +766,7 @@ func checkSSE(ctx context.Context, s *Server) ServerHealth {
 	if bad != nil {
 		return *bad
 	}
+	stepTo(ctx, "connect")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, s.URL, nil)
 	if err != nil {
 		return failed("unreachable", err.Error())
@@ -640,7 +791,7 @@ func checkSSE(ctx context.Context, s *Server) ServerHealth {
 		select {
 		case e, ok := <-events:
 			if !ok {
-				h := timedOut()
+				h := timedOut(ctx)
 				if ctx.Err() == nil {
 					h = failed("protocol", "the event stream ended")
 				}
@@ -648,7 +799,7 @@ func checkSSE(ctx context.Context, s *Server) ServerHealth {
 			}
 			return e, nil
 		case <-ctx.Done():
-			h := timedOut()
+			h := timedOut(ctx)
 			return sseEvent{}, &h
 		}
 	}
@@ -705,6 +856,7 @@ func checkSSE(ctx context.Context, s *Server) ServerHealth {
 			}
 		}
 	}
+	stepTo(ctx, "initialize")
 	if h := post(initializeReq()); h != nil {
 		return *h
 	}
@@ -715,13 +867,14 @@ func checkSSE(ctx context.Context, s *Server) ServerHealth {
 	if h := initError(m); h != nil {
 		return *h
 	}
-	_ = post(initializedNote)
-	if h := post(request(2, "tools/list", nil)); h != nil {
+	stepTo(ctx, "notifications/initialized")
+	if h := post(initializedNote); h != nil && h.Why == "timeout" {
 		return *h
 	}
-	m, h = await(2)
-	if h != nil {
-		return *h
-	}
-	return toolsOf(m)
+	return listTools(ctx, func(id int, req []byte) (*rpcMsg, *ServerHealth) {
+		if h := post(req); h != nil {
+			return nil, h
+		}
+		return await(id)
+	})
 }

@@ -41,7 +41,10 @@ func TestCodexCompactsThroughCodexRelay(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("%d %s\nrelay got %s", code, body, f.got)
 	}
-	if strings.Contains(string(f.got), `"tools"`) || !strings.Contains(string(f.got), "CONTEXT CHECKPOINT COMPACTION") {
+	// no tool offered, written as Codex writes its own summary request:
+	// "tools": [] (#1511)
+	if !strings.Contains(string(f.got), `"tools":[]`) || strings.Contains(string(f.got), "shell") ||
+		!strings.Contains(string(f.got), "CONTEXT CHECKPOINT COMPACTION") {
 		t.Errorf("relay got %s", f.got)
 	}
 	var item, done map[string]any

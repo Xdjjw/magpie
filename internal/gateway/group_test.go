@@ -60,6 +60,7 @@ func fresh(t *testing.T) {
 	remoteRefreshes.Lock()
 	remoteRefreshes.at = map[string]time.Time{}
 	remoteRefreshes.Unlock()
+	resetAuthThrottle()
 	forgetRouting()
 }
 

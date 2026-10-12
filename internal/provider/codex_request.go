@@ -49,18 +49,29 @@ func codexSign(token func(context.Context) (tok, accountID string, err error)) f
 			return nil
 		}
 		req.Header.Set("Accept", "text/event-stream")
-		var v struct {
-			Key string `json:"prompt_cache_key"`
-		}
-		json.Unmarshal(body, &v)
-		if v.Key != "" {
-			req.Header.Set("session_id", v.Key)
-			req.Header.Set("conversation_id", v.Key)
-		} else {
-			req.Header.Del("session_id")
-			req.Header.Del("conversation_id")
-		}
+		sessionHeaders(req.Header, body)
 		return nil
+	}
+}
+
+// sessionHeaders names the conversation body belongs to (its
+// prompt_cache_key) in the headers Codex CLI 0.162 sends it in, session-id
+// and thread-id. The ChatGPT backend finds a conversation's cached prompt
+// by them, not by the body's key: on a real account a request with tools
+// and the key alone was cached 0 tokens six times in a row, and 7552 of
+// 7659 from the second on with the headers (#1473). The underscored names
+// older Codex sent go no more, since a proxy may drop a header named with
+// an underscore. A body without a key leaves the session the client named.
+func sessionHeaders(h http.Header, body []byte) {
+	h.Del("session_id")
+	h.Del("conversation_id")
+	var v struct {
+		Key string `json:"prompt_cache_key"`
+	}
+	json.Unmarshal(body, &v)
+	if v.Key != "" {
+		h.Set("session-id", v.Key)
+		h.Set("thread-id", v.Key)
 	}
 }
 

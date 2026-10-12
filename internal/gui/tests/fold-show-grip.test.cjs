@@ -21,7 +21,9 @@ const quotas = [
 ];
 
 function server(lang) {
-  const settings = { lang, theme: "dark", agentsHidden: ["idle"] };
+  // the Get started card put away: the rows are the page, and the fold opened
+  // takes the view down with it once the page is taller than the window
+  const settings = { lang, theme: "dark", agentsHidden: ["idle"], guideHidden: true };
   return async (route) => {
     const url = new URL(route.request().url());
     const json = (data) => route.fulfill({ json: data });

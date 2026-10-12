@@ -173,6 +173,25 @@ type state struct {
 	// File is what the server held where the backup should be, when the
 	// last sync couldn't read it as one
 	File *ServerFile `json:"file,omitempty"`
+	// Blind is the last write, when the server didn't check the version
+	// it went over (version.Blind), until a sync reads it back
+	Blind *blind `json:"blind,omitempty"`
+}
+
+// blind is a write the server didn't check: the file it wrote (Sum), and
+// the parts on the server and here as they were before it, by hash. When
+// the next sync finds another file, another computer's write may have
+// gone over this one in the moment between the HEAD and the PUT, both
+// told they wrote (#1776); that sync merges from before this write, so
+// what this computer changed counts as changed here again and goes back
+// up beside the other's, where taking the other's file as having seen
+// this one's would bring the old parts in over this computer's changes.
+// Remote and Local are nil for a write to an empty server: the next sync
+// is then a first one, as it would have been.
+type blind struct {
+	Sum    string            `json:"sum"`
+	Remote map[string]string `json:"remote,omitempty"`
+	Local  map[string]string `json:"local,omitempty"`
 }
 
 func path(name string) string { return filepath.Join(settings.Dir(), name) }
@@ -900,6 +919,14 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	if err != nil && !unchanged {
 		return err
 	}
+	// a blind write read back: the server still has it, or another
+	// computer's write went over it (blind)
+	if b := st.Blind; b != nil {
+		if !unchanged && sum(data) != b.Sum {
+			st.Remote, st.Local = b.Remote, b.Local
+		}
+		st.Blind = nil
+	}
 	local, err := collect(c)
 	if err != nil {
 		return err
@@ -919,7 +946,9 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	}
 	etag := ver.ETag
 	rebuilt := false // a damaged server file replaced by this computer's merge
-	push := func(b backup.Bundle, etag string) error {
+	// push writes b over etag; were, as the parts on the server and here
+	// were before it, is kept when the write is blind
+	push := func(b backup.Bundle, etag string, were blind) error {
 		b.Created, b.App = time.Now().UTC(), "magpie"
 		sealed, err := backup.Seal(b, c.Passphrase)
 		if err != nil {
@@ -930,11 +959,15 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 			return err
 		}
 		st.Sum, st.Server, st.Remote = sum(sealed), v, hashes(b)
+		if v.Blind {
+			were.Sum = st.Sum
+			st.Blind = &were
+		}
 		remember(sealed)
 		return nil
 	}
 	if data == nil { // nothing there yet: this computer's setup is the first
-		if err := push(local, ""); err != nil {
+		if err := push(local, "", blind{}); err != nil {
 			return err
 		}
 		st.Local = L
@@ -1079,7 +1112,7 @@ func syncOnce(ctx context.Context, c Config, st *state) error {
 	// A rebuild always writes back: the server's file is the damaged one,
 	// so even a merge that matches the cached copy must replace it.
 	if rebuilt || !maps.Equal(M, R) {
-		if err := push(merged, etag); err != nil {
+		if err := push(merged, etag, blind{Remote: R, Local: pending}); err != nil {
 			return err
 		}
 	}

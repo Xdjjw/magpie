@@ -44,8 +44,9 @@ func TestCollapseAntigravityModels(t *testing.T) {
 		"gemini-3.5-flash|Gemini 3.5 Flash|low,medium",
 		"gemini-3.5-flash-lite|Gemini 3.5 Flash Lite|",
 		"gemini-3.7-flash|Gemini 3.7 Flash|low,medium,high",
-		// Antigravity names no -tiered id: it is named for its model
-		"gemini-3.7-flash-tiered|Gemini 3.7 Flash (Tiered)|",
+		// Antigravity names no -tiered id: it is named for its model, and
+		// thinks at its model's levels (PapainTea on X)
+		"gemini-3.7-flash-tiered|Gemini 3.7 Flash (Tiered)|low,medium,high",
 		"gemini-pro-agent|Gemini 3.1 Pro (High)|",
 		"gpt-oss-120b-medium|GPT-OSS 120B (Medium)|",
 	}
@@ -124,7 +125,7 @@ func TestAntigravityLegacyPicks(t *testing.T) {
 			got = append(got, m.ID+"|"+strings.Join(p.Efforts(m.ID), ","))
 		}
 	}
-	if strings.Join(got, " ") != "gemini-3.7-flash|low,medium,high gemini-3.7-flash-tiered|" {
+	if strings.Join(got, " ") != "gemini-3.7-flash|low,medium,high gemini-3.7-flash-tiered|low,medium,high" {
 		t.Fatalf("available %v", got)
 	}
 }
@@ -142,9 +143,10 @@ func TestAntigravityUnnamedModels(t *testing.T) {
 	}
 	var got []string
 	for _, m := range collapseAntigravityModels(raw) {
-		got = append(got, m.ID+"|"+m.Name)
+		got = append(got, m.ID+"|"+m.Name+"|"+strings.Join(m.Efforts, ","))
 	}
-	want := "gemini-3.6-flash|Gemini 3.6 Flash gemini-3.6-flash-tiered|Gemini 3.6 Flash (Tiered) gemini-9-flash-tiered|gemini-9-flash-tiered mystery-model|mystery-model"
+	// a -tiered id with no model of its own to take levels from has none
+	want := "gemini-3.6-flash|Gemini 3.6 Flash|low,high gemini-3.6-flash-tiered|Gemini 3.6 Flash (Tiered)|low,high gemini-9-flash-tiered|gemini-9-flash-tiered| mystery-model|mystery-model|"
 	if strings.Join(got, " ") != want {
 		t.Fatalf("got %s\nwant %s", strings.Join(got, " "), want)
 	}

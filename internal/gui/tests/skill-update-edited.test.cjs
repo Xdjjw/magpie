@@ -58,7 +58,10 @@ function server(lang, posts, st) {
   };
 }
 
+// a mouse press where the button is: a dialog still coming in moves it, so
+// the press waits for the dialog to stop, or it lands beside the button
 const press = async (page, loc) => {
+  await page.waitForFunction(() => !document.getAnimations().some((a) => a.playState === "running" && a.effect?.target?.closest?.("#modal")));
   const b = await loc.boundingBox();
   await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
 };

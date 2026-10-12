@@ -171,10 +171,11 @@ func TestCheckinOnTheUsageLine(t *testing.T) {
 		{Name: "WorkBuddy", User: "旅行者", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: today, Outcome: provider.CheckinClaimed, Credit: 100, Streak: 4}},
 		{Name: "WorkBuddy", User: "second", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: "2020-01-01", Outcome: provider.CheckinClaimed}},
 		{Name: "WorkBuddy", User: "third", Checkins: true, Error: "sign-in has expired", Checkin: &provider.WorkBuddyCheckin{Day: today, Outcome: provider.CheckinFailed}},
+		{Name: "WorkBuddy", User: "fourth", Checkins: true, Windows: win, Checkin: &provider.WorkBuddyCheckin{Day: today, Outcome: provider.CheckinOwnApp}},
 		{Name: "Codex", User: "me@example.com", Windows: win},
 	}
 	got := strings.Join(quotaLines(qs, true, false, 200, now), "\n")
-	for _, want := range []string{"签到 ✓ +100 · 4-day streak", "second", "签到 not yet today · c", "sign-in has expired   签到 failed · c tries again"} {
+	for _, want := range []string{"签到 ✓ +100 · 4-day streak", "second", "签到 not yet today · c", "sign-in has expired   签到 failed · c tries again", "签到 only in WorkBuddy's own app · check in there"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("missing %q in\n%s", want, got)
 		}

@@ -18,19 +18,19 @@ import (
 	_ "time/tzdata"
 )
 
-// claudeCLIUsage runs Claude Code's /usage for the account it is signed in
-// to and is what it printed. The gateway, which runs Claude Code, sets it
+// claudeCLIUsage runs Claude Code's /usage in configDir, or its own
+// directory when empty, and is what it printed. The gateway sets it
 // (UsageClaudeVia). It is held for reading while it runs, as
 // loginUsageFor is: Allowances reads Claude's usage in the background, and
 // tests swap it.
 var claudeCLIUsage struct {
 	sync.RWMutex
-	f func(ctx context.Context) (string, error)
+	f func(ctx context.Context, configDir string) (string, error)
 }
 
 // UsageClaudeVia sets how Claude Code's /usage runs. It returns once no
 // run is still going through the one it replaces.
-func UsageClaudeVia(f func(ctx context.Context) (string, error)) {
+func UsageClaudeVia(f func(ctx context.Context, configDir string) (string, error)) {
 	claudeCLIUsage.Lock()
 	claudeCLIUsage.f = f
 	claudeCLIUsage.Unlock()
@@ -38,19 +38,19 @@ func UsageClaudeVia(f func(ctx context.Context) (string, error)) {
 
 // runClaudeUsage is what Claude Code's /usage printed, through
 // claudeCLIUsage; errClaudeCannotRun when nothing set it.
-func runClaudeUsage(ctx context.Context) (string, error) {
+func runClaudeUsage(ctx context.Context, configDir string) (string, error) {
 	claudeCLIUsage.RLock()
 	defer claudeCLIUsage.RUnlock()
 	if claudeCLIUsage.f == nil {
 		return "", errClaudeCannotRun
 	}
-	return claudeCLIUsage.f(ctx)
+	return claudeCLIUsage.f(ctx, configDir)
 }
 
-// readClaudeUsage is the allowance of the account Claude Code is signed in
-// to, from its /usage.
-func readClaudeUsage(ctx context.Context) ([]QuotaWindow, error) {
-	text, err := runClaudeUsage(ctx)
+// readClaudeUsage is the allowance of the account in configDir, from
+// Claude Code's /usage. Empty reads the account it is signed in to.
+func readClaudeUsage(ctx context.Context, configDir string) ([]QuotaWindow, error) {
+	text, err := runClaudeUsage(ctx, configDir)
 	if err != nil {
 		return []QuotaWindow{}, err
 	}

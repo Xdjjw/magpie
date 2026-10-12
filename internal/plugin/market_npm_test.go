@@ -137,3 +137,36 @@ func TestNPMInfoAtOnce(t *testing.T) {
 		t.Fatalf("%d asked at once, want at most 3", most)
 	}
 }
+
+// yetone: 这里的 agent plugin 为什么没有 logo. The picture a package gives
+// in package.json's magpie.icon comes with what npm says of it, so a
+// listing the market gives no icon shows it; anything but an https URL or
+// a data:image URI is left out.
+func TestNPMInfoGivesIcon(t *testing.T) {
+	icons := map[string]string{
+		"agent-aider": "data:image/png;base64,iVBORw0KGgo=",
+		"agent-web":   "https://aider.chat/icon.png",
+		"agent-plain": "http://aider.chat/icon.png",
+		"agent-js":    "javascript:alert(1)",
+		"agent-none":  "",
+	}
+	fakeNPM(t, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/downloads/") {
+			w.Write([]byte(`{"downloads":1}`))
+			return
+		}
+		name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/"), "/latest")
+		w.Write([]byte(`{"version":"0.1.1","magpie":{"agent":"./a.agent.js","icon":"` + icons[name] + `"}}`))
+	})
+	names := []string{}
+	for n := range icons {
+		names = append(names, n)
+	}
+	got := Info(context.Background(), names)
+	want := map[string]string{"agent-aider": icons["agent-aider"], "agent-web": icons["agent-web"]}
+	for _, n := range names {
+		if got[n].Version != "0.1.1" || got[n].Icon != want[n] {
+			t.Errorf("%s: %+v, want icon %q", n, got[n], want[n])
+		}
+	}
+}

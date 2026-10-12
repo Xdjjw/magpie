@@ -160,6 +160,8 @@ nav.open .menu .i-close { display: block; }
 
 .sponsor { padding: 24px 0 8px; text-align: center; }
 .sponsor p { font-size: 12px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink3); margin: 0 0 14px; }
+.sponsor .cards { display: inline-grid; gap: 12px; max-width: 100%; }
+.sponsor .cards span { flex: 1; }
 .sponsor .card { display: inline-flex; align-items: center; gap: 20px; max-width: 100%; padding: 12px 20px 12px 22px; background: var(--card); border: 1px solid var(--line); border-radius: 14px; text-decoration: none; text-align: left; transition: border-color .2s, box-shadow .2s, transform .2s; }
 .sponsor .card:hover { border-color: color-mix(in srgb, var(--ink) 18%, var(--line)); box-shadow: var(--shadow); transform: translateY(-1px); }
 .sponsor .card img { flex: none; width: 124px; height: auto; opacity: .92; }
@@ -438,12 +440,21 @@ footer a:hover { color: var(--ink); }
 
   <aside class="sponsor" aria-label="Sponsor">
     <p data-i18n="sponsor.by">Sponsored by</p>
+    <div class="cards">
     <a class="card" href="https://yylx.io/?ref=magpie" target="_blank" rel="noopener sponsored">
       <img class="bird" src="/img/sponsor-yylx.png" width="640" height="184" alt="鱼鱼连线 YYLX.IO AI Router">
       <hr>
       <span data-i18n="sponsor.yylx">One API gateway for Claude and GPT, tuned for Claude Code.</span>
       <i aria-hidden="true">→</i>
     </a>
+    <a class="card" href="https://apinebula.ai/ref/Gs54HwyB" target="_blank" rel="noopener sponsored">
+      <img class="for-light" src="/img/sponsor-apinebula.svg" width="143" height="37" alt="APINEBULA">
+      <img class="for-dark" src="/img/sponsor-apinebula-dark.svg" width="143" height="37" alt="APINEBULA">
+      <hr>
+      <span data-i18n="sponsor.apinebula">One API for the world's top AI models. Pay as you go, from 10% of list price.</span>
+      <i aria-hidden="true">→</i>
+    </a>
+    </div>
     <br><a class="more" href="mailto:yetoneful@gmail.com?subject=Sponsoring%20magpie" data-i18n="sponsor.become">Become a sponsor</a>
   </aside>
 
@@ -495,6 +506,7 @@ footer a:hover { color: var(--ink); }
       <li><img class="bird" src="/icons/xai.svg" alt="">xAI</li>
       <li><img class="bird" src="/icons/groq.svg" alt="">Groq</li>
       <li><img class="bird" src="/icons/openrouter.svg" alt="">OpenRouter</li>
+      <li><img src="/icons/aihubmix-color.svg" alt="">AiHubMix</li>
       <li><img class="bird" src="/icons/ollama.svg" alt="">Ollama</li>
     </ul>
   </div>

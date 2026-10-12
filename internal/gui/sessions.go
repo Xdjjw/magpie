@@ -275,10 +275,23 @@ func sessionRoutes(mux *http.ServeMux, w Windows) {
 // file is saved under: the session found as listed, never a path from the
 // page. It is made whole before any of it is sent, so a file that can't be
 // read is an error and not half a download.
+//
+// A session only magpie's gateway recorded is written from that record, as
+// transcript reads it: the agent of one that reaches this magpie through a
+// remote magpie ran on another machine, so there is no file of it here, and
+// its download was a 400 "no such session" (akic404 on Discord).
 func sessionMarkdown(agentID, id string) (stem string, md []byte, err error) {
 	s, ok := sessions.Find(agentID, id)
+	var t sessions.Transcript
 	if !ok {
-		return "", nil, errors.New("no such session")
+		g, found := usage.GatewaySessionByID(agentID, id, nil)
+		if !found {
+			return "", nil, errors.New("no such session")
+		}
+		if t, err = sessions.GatewayTranscript(agentID, id); err != nil {
+			return "", nil, err
+		}
+		s = gatewaySession(g)
 	}
 	name := s.Agent
 	for _, a := range agent.Clients() {
@@ -287,7 +300,12 @@ func sessionMarkdown(agentID, id string) (stem string, md []byte, err error) {
 		}
 	}
 	var b bytes.Buffer
-	if err := sessions.WriteMarkdown(&b, s, wslName(name, s)); err != nil {
+	if ok {
+		err = sessions.WriteMarkdown(&b, s, wslName(name, s))
+	} else {
+		err = sessions.WriteGatewayMarkdown(&b, s, name, t)
+	}
+	if err != nil {
 		return "", nil, err
 	}
 	short := []rune(s.ID)
@@ -389,11 +407,15 @@ func warmSessions() {
 	}
 	go func() {
 		time.Sleep(3 * time.Second)
-		warmUp(
-			func() { statsFor(0) },
-			func() { statsFor(30) },
-			func() { usage.QueryPage(usage.All, usage.Filter{}, 0, 50) },
-		)
+		// with few readers, as nobody waits on it yet: after an update
+		// that reads every file again, it held every core (#1665)
+		sessions.Warm(func() {
+			warmUp(
+				func() { statsFor(0) },
+				func() { statsFor(30) },
+				func() { usage.QueryPage(usage.All, usage.Filter{}, 0, 50) },
+			)
+		})
 	}()
 }
 

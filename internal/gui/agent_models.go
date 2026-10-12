@@ -78,7 +78,7 @@ func takesCatalog(fields []fieldJSON) bool {
 func agentFields(a *agent.Agent, vals map[string]string) []fieldJSON {
 	out := []fieldJSON{}
 	for _, f := range a.Fields {
-		opts := f.Options(vals)
+		opts := a.Picks(f, vals)
 		if opts == nil {
 			opts = []agent.Option{}
 		}
@@ -203,7 +203,10 @@ func agentModelsAPI(mux *http.ServeMux) {
 			return
 		}
 		_, only := provider.PickedModels(a.ListsFor())
-		writeJSON(rw, map[string]any{"models": agentModelList(a), "ordered": len(provider.ModelOrder(a.ListsFor())) > 0, "only": only})
+		// own: its pickers offer models of the agent's own beside
+		// magpie's, which ownHidden leaves out (#1642)
+		writeJSON(rw, map[string]any{"models": agentModelList(a), "ordered": len(provider.ModelOrder(a.ListsFor())) > 0, "only": only,
+			"own": a.OwnModels(a.Values()), "ownHidden": provider.OwnModelsHidden(a.ListsFor())})
 	})
 	// hidden is every entry to take out of the agent's lists; the others
 	// are shown, and one the agent is set to is kept in whatever is asked
@@ -218,12 +221,17 @@ func agentModelsAPI(mux *http.ServeMux) {
 	// staying as they are; shown, for an agent shown only its picks, is
 	// every entry its lists show, the others not, a model that comes later
 	// among them
+	//
+	// ownHidden switches the agent's pickers between offering its own
+	// models beside magpie's and offering magpie's alone (#1642)
 	mux.HandleFunc("POST /api/agent-models/{id}", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
 			Hidden []string
 			Shown  *[]string
 			Order  *[]string
 			Only   *bool
+			// OwnHidden, sent as ownHidden
+			OwnHidden *bool
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
@@ -232,6 +240,14 @@ func agentModelsAPI(mux *http.ServeMux) {
 		a, err := agent.Find(r.PathValue("id"))
 		if err != nil {
 			fail(rw, err)
+			return
+		}
+		if in.OwnHidden != nil {
+			if err := provider.SetOwnModelsHidden(a.ListsFor(), *in.OwnHidden); err != nil {
+				fail(rw, err)
+				return
+			}
+			writeJSON(rw, map[string]any{"ownHidden": provider.OwnModelsHidden(a.ListsFor())})
 			return
 		}
 		if in.Order != nil {

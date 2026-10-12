@@ -22,7 +22,7 @@ func fakeClaudeUsage(t *testing.T, out *atomic.Value, fail *atomic.Bool) *atomic
 	old := claudeCLIUsage.f
 	claudeCLIUsage.RUnlock()
 	oldAsked := claudeAsked.Load()
-	UsageClaudeVia(func(context.Context) (string, error) {
+	UsageClaudeVia(func(context.Context, string) (string, error) {
 		runs.Add(1)
 		if fail != nil && fail.Load() {
 			return "", errors.New("Claude Code: network is unreachable")

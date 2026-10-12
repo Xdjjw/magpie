@@ -863,7 +863,9 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 	c := &keyBalanceCache
 	_, again := refreshing(ctx) // one card read again (RefreshUsage)
 	c.Lock()
-	if !again && c.data != nil && time.Since(c.at) < time.Minute {
+	// with allowances read only when asked, the cards stand as they were
+	// last read till the user asks (#1518)
+	if !again && c.data != nil && (time.Since(c.at) < time.Minute || heldRead(ctx)) {
 		defer c.Unlock()
 		return c.data
 	}
@@ -926,7 +928,8 @@ func KeyBalances(ctx context.Context) []SubscriptionQuota {
 			if clineKeyCard(j.p) {
 				// ClinePass's limits beside the credits (cline_usage.go)
 				if ws, amount, err := clineKeyUsage(ctx, j.p); err != nil {
-					q.Error = err.Error()
+					// a balance read beside limits that weren't is kept
+					q.Error, q.Balance = err.Error(), amount
 				} else {
 					q.Windows = append(q.Windows, ws...)
 					q.Balance = amount

@@ -102,6 +102,11 @@ func (a *Agent) Apply(key, v string) error {
 		}
 	}
 	record(a.ID, f.Key, f.Get())
+	// magpie picked in by the user's own hand (magpie model, a pick in
+	// the CLI) connects it again
+	if a.Wired() {
+		forget(a.ID + disconnectedKey)
+	}
 	return nil
 }
 
@@ -115,7 +120,10 @@ type Drift struct {
 	//              nothing of it reached the gateway — it runs on an old
 	//              config, or something outside the file overrides it;
 	//   "unreachable" the config is right, but the address off loopback
-	//              it names the gateway at doesn't answer (#1013).
+	//              it names the gateway at doesn't answer (#1013);
+	//   "proxied"  the config is right, but the agent sends its requests
+	//              for the gateway through a proxy (Addr) that doesn't
+	//              pass them on to it (codex_proxy.go).
 	Kind   string `json:"kind"`
 	Field  string `json:"field"`         // the field it shows on
 	Now    string `json:"now,omitempty"` // what that field says now
@@ -185,6 +193,9 @@ func (a *Agent) Drift() *Drift {
 	}
 	if onMagpie || joined {
 		if d := a.unreachable(on, vals[on.Key]); d != nil {
+			return d
+		}
+		if d := a.proxied(on, vals[on.Key]); d != nil {
 			return d
 		}
 	}
@@ -351,7 +362,11 @@ func (a *Agent) Reapply() error {
 	}
 	vals := a.Values()
 	for _, f := range a.Fields {
-		if v := vals[f.Key]; v != "" && (d != nil && f.Key == d.Field || magpieValue(a, f, v, vals)) {
+		// magpie as the agent's provider too (Claude Desktop's provider
+		// field, beside its tiers on magpie's models), as Wired takes it:
+		// left out, Reconnect set the tiers again and never the gateway
+		// Check found off (dumplings on Discord)
+		if v := vals[f.Key]; v != "" && (d != nil && f.Key == d.Field || v == magpieID || magpieValue(a, f, v, vals)) {
 			if err := a.Apply(f.Key, v); err != nil {
 				return err
 			}
@@ -475,7 +490,16 @@ func (a *Agent) ConnectHow() (Connection, error) {
 	return a.connect()
 }
 
+// disconnectedKey, after an agent's id, marks in the stash an agent the
+// user disconnected: Disconnect sets it, connecting again takes it out.
+const disconnectedKey = ".disconnected"
+
+// Disconnected reports whether the user disconnected the agent and hasn't
+// connected it since.
+func (a *Agent) Disconnected() bool { return stashLoad()[a.ID+disconnectedKey] == "1" }
+
 func (a *Agent) connect() (Connection, error) {
+	forget(a.ID + disconnectedKey)
 	// what it is on now, for Disconnect to put back what it can't
 	// otherwise (Goose's own model)
 	now := a.Values()
@@ -643,6 +667,10 @@ func (a *Agent) Disconnect() error {
 	if !a.Wired() {
 		return nil
 	}
+	// the user's say, kept till they connect it again: nothing magpie does
+	// by itself (a start's Sync, Codex's account failover) puts magpie back
+	// in, this Disconnect's own writes included (paynezhuang on Discord)
+	stash(map[string]string{a.ID + disconnectedKey: "1"})
 	before, rec := a.Values(), appliedOf(a.ID)
 	if a.Unwire != nil {
 		if err := a.Unwire(); err != nil {
@@ -671,6 +699,11 @@ func (a *Agent) Disconnect() error {
 			if err := f.Set(w); err != nil {
 				return fmt.Errorf("%s: %w", f.Label, err)
 			}
+		}
+	}
+	if a.Restore != nil {
+		if err := a.Restore(); err != nil {
+			return err
 		}
 	}
 	// what it was on through magpie, for switching it on again

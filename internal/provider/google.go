@@ -946,7 +946,8 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 		// with the account's tier named, as Antigravity asks; a tier Google
 		// won't take from it is left out, down to none
 		sent := ""
-		for _, t := range append(p.entitlements(), "") {
+		tiers := append(p.entitlements(), "")
+		for i, t := range tiers {
 			body := map[string]any{"project": p.id}
 			if t != "" {
 				body["entitlement"] = map[string]any{"userTier": t}
@@ -958,8 +959,13 @@ func (g googleAccount) modelInfo(ctx context.Context) ([]googleModelInfo, error)
 			if ctx.Err() != nil {
 				return nil, err
 			}
-			if t != "" {
-				log.Printf("antigravity %s: fetchAvailableModels with entitlement %s: %v", g.user, t, err)
+			switch {
+			case t == "":
+				log.Printf("antigravity %s: fetchAvailableModels at %s (project %q, no entitlement): %v", g.user, g.app.base, p.id, err)
+			case tiers[i+1] == "":
+				log.Printf("antigravity %s: fetchAvailableModels with entitlement %s: %v; asking with none next", g.user, t, err)
+			default:
+				log.Printf("antigravity %s: fetchAvailableModels with entitlement %s: %v; asking with %s next", g.user, t, err, tiers[i+1])
 			}
 		}
 		if err != nil {

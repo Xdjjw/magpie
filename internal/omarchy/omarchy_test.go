@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 const tokyoColors = `mode = "dark"
@@ -124,6 +125,11 @@ func TestCurrent(t *testing.T) {
 	if !Detect() {
 		t.Fatal("not detected")
 	}
+	// start from nothing read: a theme a run before read (-count=2) would
+	// otherwise be handed back within its second, its font with it
+	mu.Lock()
+	cached, seen, asked, desk, font = Theme{}, "", time.Time{}, "", ""
+	mu.Unlock()
 	th, ok := Current()
 	if !ok || th.Name != "tokyo-night" || th.Vars["--bg"] != "#1a1b26" || th.Stamp == "" {
 		t.Fatalf("%v %+v", ok, th)

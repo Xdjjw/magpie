@@ -31,6 +31,12 @@ function lift(header) {
   return source.slice(start, end + 2);
 }
 const loadUsageSource = lift("async function loadUsage(asked) {");
+// an asked read goes through quotasOpened (#1588), which asks only once in
+// QUOTAS_OPEN_GAP; both are lifted with loadUsage, so a page() without them
+// can't stop loadUsage before it reads (#1632)
+const gap = source.match(/^const QUOTAS_OPEN_GAP = [^;\n]+;$/m);
+assert.ok(gap, "app.js no longer has const QUOTAS_OPEN_GAP");
+const quotasOpenedSource = gap[0] + "\nlet quotasAskedAt = -Infinity;\n" + lift("function quotasOpened() {");
 
 // values cross the vm's realm boundary (its Array and Object are not the
 // test's), so what is handed to assert is copied into this one first
@@ -45,6 +51,7 @@ function page() {
     `
 let view = "usage", usageTab = "usage", period = "today", usage = null;
 let usageRead = 0;
+const performance = { now: () => 0 };
 const reads = [];        // api() paths, in the order they were asked for
 const drawn = [];        // renderUsage(): { period, usage }
 const quotaCalls = [];   // loadQuotas() arguments
@@ -56,10 +63,11 @@ function renderUsage() { drawn.push({ period, usage: usage && usage.tag }); }
 function renderUsageTab() {}
 function renderUsageEvery() {}
 function renderUsageLoading() {}
-function loadQuotas(asked) { quotaCalls.push(asked === true); }
+function loadQuotas(asked) { quotaCalls.push(asked === true); if (asked) quotasAskedAt = performance.now(); }
 function loadSessions() { return Promise.resolve("sessions"); }
 function loadLedger() { return Promise.resolve("requests"); }
 `,
+    quotasOpenedSource,
     loadUsageSource,
     `
 globalThis.page = {
@@ -191,10 +199,11 @@ function renderUsage() { loading = false; drawn.push({ period, usage: usage && u
 function renderUsageTab() {}
 function renderUsageEvery() {}
 function renderUsageLoading() { loading = true; }
-function loadQuotas(asked) { quotaCalls.push(asked === true); return Promise.resolve(); }
+function loadQuotas(asked) { quotaCalls.push(asked === true); if (asked) quotasAskedAt = performance.now(); return Promise.resolve(); }
 function loadSessions() { return Promise.resolve("sessions"); }
 function loadLedger() { return Promise.resolve("requests"); }
 `,
+    quotasOpenedSource,
     loadUsageSource,
     refreshSource,
     `

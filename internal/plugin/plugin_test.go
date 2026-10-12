@@ -414,6 +414,51 @@ func TestPluginProxy(t *testing.T) {
 	}
 }
 
+// A sign-in goes through the proxy it was begun with (#1663): the
+// plugin's requests while it authorizes, and the ones its callback makes
+// to trade the code, which Finish is asked for with no proxy named; the
+// global one is asked for neither.
+func TestPluginSignInProxy(t *testing.T) {
+	sandbox(t)
+	var mu sync.Mutex
+	var own, global []string
+	proxy := func(seen *[]string) *httptest.Server {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			*seen = append(*seen, r.URL.String())
+			mu.Unlock()
+			fmt.Fprint(w, "ok")
+		}))
+		t.Cleanup(srv.Close)
+		return srv
+	}
+	ownSrv, globalSrv := proxy(&own), proxy(&global)
+	t.Setenv("HTTP_PROXY", globalSrv.URL)
+	t.Setenv("http_proxy", globalSrv.URL)
+	t.Setenv("FAKE_SIGNIN", "http://vendor.invalid/signin")
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	abs, _ := filepath.Abs("testdata/fake/index.js")
+	if _, err := Add(ctx, abs); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Providers(ctx); err != nil {
+		t.Fatal(err)
+	}
+	a, err := Authorize(netproxy.With(ctx, ownSrv.URL), "fakeco", 1, map[string]string{"where": "home"}, NewAccount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Finish(ctx, a.Session, "good"); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if !slices.Equal(own, []string{"http://vendor.invalid/signin/device", "http://vendor.invalid/signin/token"}) || len(global) != 0 {
+		t.Fatalf("the sign-in's own proxy saw %q, the global one %q", own, global)
+	}
+}
+
 // Plugins changed by another magpie (magpie plugin add or move in a
 // terminal while the app runs) reach the one running: its host starts
 // again with them, and meanwhile it knows the providers the other magpie

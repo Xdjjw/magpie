@@ -199,9 +199,18 @@ func apiGet(u string) ([]byte, int, bool, error) {
 func hashDir(dir string) string { return hashFiles(dir, false) }
 
 // hashFiles is hashDir, leaving aside the .DS_Store files Finder leaves in
-// a folder it shows when noFinder is set.
+// a folder it shows when noFinder is set. A folder unchanged since it was
+// last hashed isn't read again (treememo.go).
 func hashFiles(dir string, noFinder bool) string {
+	return rememberedHash(dir, noFinder)
+}
+
+// hashWalk walks dir as hashFiles reads it, stamping each file and link
+// it would hash (treememo.go); with read, it also hashes their bytes. ok
+// is false when it can't be walked, or a file can't be read.
+func hashWalk(dir string, noFinder, read bool) (hash, stamp string, settled, ok bool) {
 	h := sha256.New()
+	st := newStamper()
 	err := filepath.WalkDir(dir, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -214,15 +223,30 @@ func hashFiles(dir string, noFinder bool) string {
 				return filepath.SkipDir
 			}
 		case d.Type()&fs.ModeSymlink != 0:
-			t, _ := os.Readlink(p)
-			fmt.Fprintf(h, "link %s %s\n", rel, filepath.ToSlash(t))
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			st.add(rel, fi)
+			if read {
+				t, _ := os.Readlink(p)
+				fmt.Fprintf(h, "link %s %s\n", rel, filepath.ToSlash(t))
+			}
 		case d.Type().IsRegular() && rel != marker && !(noFinder && d.Name() == ".DS_Store"):
+			fi, err := d.Info()
+			if err != nil {
+				return err
+			}
+			st.add(rel, fi)
+			if !read {
+				return nil
+			}
 			f, err := os.Open(p)
 			if err != nil {
 				return err
 			}
 			defer f.Close()
-			fi, _ := f.Stat()
+			fi, _ = f.Stat()
 			fmt.Fprintf(h, "file %s %d\n", rel, fi.Size())
 			if _, err := io.Copy(h, f); err != nil {
 				return err
@@ -231,9 +255,13 @@ func hashFiles(dir string, noFinder bool) string {
 		return nil
 	})
 	if err != nil {
-		return ""
+		return "", "", false, false
 	}
-	return hex.EncodeToString(h.Sum(nil))
+	stamp, settled = st.done()
+	if read {
+		hash = hex.EncodeToString(h.Sum(nil))
+	}
+	return hash, stamp, settled, true
 }
 
 func firstLine(s string) string {

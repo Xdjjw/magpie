@@ -3,7 +3,8 @@
 // only once it is trusted in WorkBuddy itself (mcp-approvals.json), and
 // again after its command or address changes. The servers page says so
 // while a server is given to WorkBuddy, and not otherwise. In en, zh,
-// zh-tw, ja and de at 440px, with no sideways scroll.
+// zh-tw, ja and de at 440px, with no sideways scroll. WorkBuddy AI, the
+// international build (#1494), is said by its own name.
 // No backend: the API is faked here.
 const assert = require("node:assert/strict");
 const fs = require("node:fs/promises");
@@ -16,7 +17,7 @@ const HOME = "/Users/emo";
 const agent = (id, name, more = {}) => ({ id, name, icon: "", skills: `${HOME}/.${id}/skills`, mcp: `${HOME}/.${id}/mcp.json`, ...more });
 const lib = (servers) => ({
   dir: `${HOME}/.magpie/library`, backups: `${HOME}/.magpie/backups`, home: HOME,
-  agents: [agent("claude", "Claude Code"), agent("workbuddy", "WorkBuddy")],
+  agents: [agent("claude", "Claude Code"), agent("workbuddy", "WorkBuddy"), agent("workbuddy-ai", "WorkBuddy AI")],
   instructions: { agents: [] }, servers, skills: [], foundServers: [], projects: [], foundSkills: [], problems: [],
 });
 
@@ -65,10 +66,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
     for (const lang of ["en", "zh", "zh-TW", "ja", "de"]) {
       await t.test(lang, async () => {
-        const note = tr(lang, "{agent} connects a server only once you trust it: switch it on in {agent}'s MCP settings, and again after its command or address changes.", { agent: "WorkBuddy" });
+        const note = (agent) => tr(lang, "{agent} connects a server only once you trust it: switch it on in {agent}'s MCP settings, and again after its command or address changes.", { agent });
         for (const [servers, shown] of [
-          [[{ name: "fs", transport: "stdio", command: "fs-mcp", args: [], agents: ["claude", "workbuddy"] }], true],
-          [[{ name: "fs", transport: "stdio", command: "fs-mcp", args: [], agents: ["claude"] }], false],
+          [[{ name: "fs", transport: "stdio", command: "fs-mcp", args: [], agents: ["claude", "workbuddy"] }], "WorkBuddy"],
+          [[{ name: "fs", transport: "stdio", command: "fs-mcp", args: [], agents: ["claude", "workbuddy-ai"] }], "WorkBuddy AI"],
+          [[{ name: "fs", transport: "stdio", command: "fs-mcp", args: [], agents: ["claude"] }], ""],
         ]) {
           const errors = [];
           const ctx = await browser.newContext({ viewport: { width: 440, height: 1000 }, reducedMotion: "reduce" });
@@ -83,7 +85,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           await v.locator(".lib-server").first().waitFor();
           const p = v.locator(".lib-wb-trust");
           if (shown) {
-            assert.equal((await p.textContent()).trim(), note);
+            assert.equal((await p.textContent()).trim(), note(shown));
             assert(await p.isVisible());
             const over = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
             assert(over <= 0, "sideways scroll " + over);

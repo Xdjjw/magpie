@@ -17,6 +17,7 @@ package gateway
 // isn't asked to go on (prefill.go).
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -56,17 +57,72 @@ const loopReasks = 1
 // without waiting on a vendor that keeps the connection open after it.
 var errStreamCut = errors.New("stream cut mid-reply")
 
-// errEndedShort is an Anthropic stream that ended, its connection closed
-// cleanly, before it said its reply had: the passthrough's word for it.
+// errEndedShort is a stream that ended, its connection closed cleanly,
+// before it said its reply had — an Anthropic one with no stop_reason and
+// no message_stop, a Responses one with no response.completed: the same
+// two the passthrough tells apart. A Chat stream may end without [DONE]
+// and be whole, so Chat is not one.
 var errEndedShort = errors.New("the reply ended before it was complete")
 
-// anthropicEnds says whether an Anthropic stream's event ends the reply:
-// its message_stop (a stop_reason is upstreamStop's), or an error.
-func anthropicEnds(data string) bool {
+// upstreamEnds says whether a stream's event ends the reply, by its type
+// as the passthrough's sniffer counts it (sniff.whole): an Anthropic
+// message_stop or error, a Responses response.completed,
+// response.incomplete or response.failed — a response.completed carrying
+// no status field among them, as relays send it. upstreamStop reads the
+// stop a stop_reason or a response status carries; this reads the type.
+func upstreamEnds(data string) bool {
 	var v struct {
 		Type string `json:"type"`
 	}
 	return json.Unmarshal([]byte(data), &v) == nil && lastEvent(v.Type)
+}
+
+// geminiEnds says whether a Gemini chunk ends the reply, as upstreamEnds
+// does for events that name their type. Gemini's and Code Assist's chunks
+// name none and there is no [DONE]: the last one is the one whose
+// candidate carries a finishReason (Code Assist's wrap theirs in a
+// response). usageMetadata is no end: Vertex AI sends it on every chunk
+// ({"trafficType":"ON_DEMAND"} until the last, vertexThought), so a
+// stream cut after any of them would read as whole. A chunk with no
+// candidate at all — usage alone, or a prompt blocked — ends it too: such
+// a reply said nothing, and is the empty reply's to answer (#667), not a
+// cut one's.
+func geminiEnds(data []byte) bool {
+	if !bytes.Contains(data, []byte(`"finishReason"`)) && bytes.Contains(data, []byte(`"candidates"`)) {
+		return false
+	}
+	type chunk struct {
+		Candidates []struct {
+			FinishReason string `json:"finishReason"`
+		} `json:"candidates"`
+	}
+	var ch struct {
+		chunk
+		Response *chunk `json:"response"`
+	}
+	if json.Unmarshal(data, &ch) != nil {
+		return false
+	}
+	c := ch.chunk
+	if ch.Response != nil {
+		c = *ch.Response
+	}
+	if len(c.Candidates) == 0 {
+		return true
+	}
+	for _, cand := range c.Candidates {
+		if cand.FinishReason != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// geminiKin is an upstream whose chunks the Gemini decoder reads: Gemini
+// (a custom provider's Gemini URL, Vertex AI, Factory's generate route)
+// and Code Assist.
+func geminiKin(actual provider.Protocol) bool {
+	return actual == provider.Gemini || actual == provider.CodeAssist
 }
 
 // groupTryKey marks a try of a routing group's member. A member whose
@@ -409,7 +465,9 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				serr = readSSEAlive(rd, func(_, data string) error {
 					st := upstreamStop([]byte(data))
 					u.add(Usage{Upstream: upstreamOf([]byte(data)), Stop: st})
-					ended = ended || st != "" || actual == provider.Anthropic && anthropicEnds(data)
+					ended = ended || st != "" ||
+						(actual == provider.Anthropic || actual == provider.Responses) && upstreamEnds(data) ||
+						geminiKin(actual) && geminiEnds([]byte(data))
 					if err := dec(data, attemptSee); err != nil {
 						return err
 					}
@@ -422,12 +480,16 @@ func (s *Server) streamTranslated(w http.ResponseWriter, r *http.Request, p prov
 				if errors.Is(serr, errStreamCut) {
 					serr = nil
 				}
-				if serr == nil && failed == "" && !ended && !relooped && actual == provider.Anthropic && r.Context().Err() == nil {
+				if serr == nil && failed == "" && !ended && !relooped &&
+					(actual == provider.Anthropic || actual == provider.Responses || geminiKin(actual)) && r.Context().Err() == nil {
 					// an Anthropic stream that just stopped — no
-					// stop_reason, no message_stop — is a reply cut
-					// short, not a finished one: a relay's (蓝猫 on
-					// Discord) read as whole ended the agent's turn a
-					// few words in, with nothing to say why
+					// stop_reason, no message_stop — or a Responses one
+					// with no response.completed is a reply cut short,
+					// not a finished one: a relay's (蓝猫 on Discord)
+					// read as whole ended the agent's turn a few words
+					// in, with nothing to say why, and a Responses reply
+					// whole would say completed it never said. A Gemini
+					// one is told by its finishReason (geminiEnds, #1643)
 					serr = errEndedShort
 				}
 			}

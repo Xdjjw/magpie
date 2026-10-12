@@ -5,6 +5,7 @@ package proc
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -20,7 +21,9 @@ import (
 // or codex installed with a custom npm prefix (~/.npm-global/bin), nvm, bun,
 // volta or asdf wasn't found: the agent wasn't seen and its subscription
 // couldn't be used. The folders those tools use are added at once, when they
-// exist; the login shell's own PATH is asked for after.
+// exist; the login shell's own PATH is asked for after. Of nvm's Nodes only
+// the one a terminal gets is added: its default alias's, not the folder
+// whose name sorts last (nvmBins).
 //
 // The same call brings the agents' own variables (agentenv.Vars:
 // PI_CODING_AGENT_DIR, CODEX_HOME, CLAUDE_CONFIG_DIR, ...) the profile sets
@@ -95,7 +98,9 @@ func LoginPath() []string {
 // UserBinDirs are the folders a user's command-line tools are installed in
 // that exist here — npm's prefixes, each Node version of nvm, fnm and mise,
 // bun, volta, pnpm, asdf, the standalone installers' ~/.local/bin,
-// Homebrew — for finding one PATH doesn't reach.
+// Homebrew — for finding one PATH doesn't reach. A manager's Node versions
+// come in the order a terminal would reach them: its default first, then
+// the highest version (v22 before v9).
 func UserBinDirs() []string { return userDirs(true) }
 
 func userDirs(everyNode bool) []string {
@@ -104,26 +109,31 @@ func userDirs(everyNode bool) []string {
 	for _, d := range []string{".local/bin", ".npm-global/bin", ".npm/bin", ".bun/bin", ".volta/bin", ".asdf/shims", ".local/share/mise/shims", ".cargo/bin", ".deno/bin", "Library/pnpm"} {
 		known = append(known, filepath.Join(home, d))
 	}
-	nodes := func(pattern string) {
-		vs, _ := filepath.Glob(filepath.Join(home, pattern))
-		if len(vs) == 0 {
-			return
+	// nvm's Node a terminal gets: its default, or with none usable the
+	// highest installed; none when the default is the system's Node
+	if nvm := nvmDir(home); nvm != "" {
+		bins, def, system := nvmBins(nvm)
+		switch {
+		case everyNode:
+			known = append(known, bins...)
+		case def != "":
+			known = append(known, def)
+		case !system && len(bins) > 0:
+			known = append(known, bins[0])
 		}
-		if !everyNode {
-			known = append(known, vs[len(vs)-1])
-			return
-		}
-		slices.Reverse(vs)
-		known = append(known, vs...)
 	}
-	nodes(".nvm/versions/node/*/bin")
 	if everyNode {
 		known = append(known, filepath.Join(home, ".local/share/pnpm"), npmPrefix(home))
-		nodes(".local/share/mise/installs/node/*/bin")
-		nodes(".local/share/fnm/node-versions/*/installation/bin")
-		nodes("Library/Application Support/fnm/node-versions/*/installation/bin")
+		known = append(known, nodeBins(filepath.Join(home, ".local/share/mise/installs/node"))...)
+		fnm := []string{filepath.Join(home, ".local/share/fnm"), filepath.Join(home, "Library/Application Support/fnm")}
+		if d := os.Getenv("FNM_DIR"); filepath.IsAbs(d) {
+			fnm = append([]string{d}, fnm...)
+		}
+		for _, d := range slices.Compact(fnm) {
+			known = append(known, fnmBins(d)...)
+		}
 	}
-	known = append(known, SystemBinDirs()...)
+	known = append(known, SystemDirs("/opt/homebrew/bin", "/usr/local/bin")...)
 	var have []string
 	for _, d := range known {
 		if st, err := os.Stat(d); d != "" && err == nil && st.IsDir() {
@@ -159,6 +169,14 @@ func npmPrefix(home string) string {
 // shellEnv asks the user's login shell for its PATH and the values it has
 // for agentenv.Vars ("" for one it hasn't); "" and nil when it can't say
 // within a few seconds.
+//
+// fish and nushell are asked too, when they are installed and set up here
+// but aren't the login shell: they aren't POSIX shells, so many keep zsh or
+// bash as the login shell and have the terminal open fish instead (its
+// profile setting, or exec fish from .zshrc). An agent installed in a folder
+// only config.fish adds wasn't found (John on Discord: 二进制文件没有从用户环境变量
+// 找到，我终端环境使用的fish). Their PATH comes after the login shell's, and
+// a variable the login shell leaves empty is taken from them.
 func shellEnv() (string, map[string]string) {
 	sh := os.Getenv("SHELL")
 	if sh == "" || !filepath.IsAbs(sh) {
@@ -167,7 +185,115 @@ func shellEnv() (string, map[string]string) {
 			sh = "/bin/sh"
 		}
 	}
-	return askShell(sh)
+	asks := append([]string{sh}, termShells(sh)...)
+	paths := make([]string, len(asks))
+	vars := make([]map[string]string, len(asks))
+	var wg sync.WaitGroup
+	for i, s := range asks {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			paths[i], vars[i] = askShell(s)
+		}()
+	}
+	wg.Wait()
+	return mergeShellEnv(paths, vars)
+}
+
+// termShells are the shells other than the login shell sh that a terminal
+// here may open instead of it: fish and nushell, when installed and their
+// config folder is there (each makes it on its first run).
+func termShells(sh string) []string {
+	home, _ := os.UserHomeDir()
+	cfg := os.Getenv("XDG_CONFIG_HOME")
+	if !filepath.IsAbs(cfg) && home != "" {
+		cfg = filepath.Join(home, ".config")
+	}
+	confs := map[string][]string{
+		"fish": {filepath.Join(cfg, "fish")},
+		"nu":   {filepath.Join(cfg, "nushell"), filepath.Join(home, "Library", "Application Support", "nushell")},
+	}
+	var out []string
+	for _, n := range []string{"fish", "nu"} {
+		if filepath.Base(sh) == n || cfg == "" {
+			continue
+		}
+		set := slices.ContainsFunc(confs[n], func(d string) bool {
+			st, err := os.Stat(d)
+			return err == nil && st.IsDir()
+		})
+		if p := FindShell(n); set && p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// shellDirs are the folders FindShell looks in, before /etc/shells and
+// PATH: the system's, Homebrew's, MacPorts', Nix's, cargo's.
+var shellDirs = func() []string {
+	home, _ := os.UserHomeDir()
+	dirs := []string{"/bin", "/usr/bin", "/opt/homebrew/bin", "/usr/local/bin", "/opt/local/bin",
+		"/home/linuxbrew/.linuxbrew/bin", "/run/current-system/sw/bin", "/nix/var/nix/profiles/default/bin"}
+	if home != "" {
+		dirs = append(dirs, filepath.Join(home, ".nix-profile", "bin"), filepath.Join(home, ".local", "bin"), filepath.Join(home, ".cargo", "bin"))
+	}
+	return dirs
+}
+
+// FindShell is the program of the shell name (zsh, bash, fish, nu)
+// installed here, "" when there is none. A desktop app's PATH is launchd's,
+// so the folders shells are installed in are looked in first, then the
+// shells /etc/shells lists, then PATH.
+func FindShell(name string) string {
+	isProg := func(p string) bool {
+		st, err := os.Stat(p)
+		return err == nil && !st.IsDir() && st.Mode()&0o111 != 0
+	}
+	for _, d := range shellDirs() {
+		if p := filepath.Join(d, name); isProg(p) {
+			return p
+		}
+	}
+	if b, err := os.ReadFile("/etc/shells"); err == nil {
+		for _, l := range strings.Split(string(b), "\n") {
+			l = strings.TrimSpace(l)
+			if filepath.IsAbs(l) && filepath.Base(l) == name && isProg(l) {
+				return l
+			}
+		}
+	}
+	p, _ := exec.LookPath(name)
+	return p
+}
+
+// mergeShellEnv puts shellEnv's answers together, the login shell's first:
+// the PATH folders the first lacks after its own, and each variable from
+// the first that has it.
+func mergeShellEnv(paths []string, vars []map[string]string) (string, map[string]string) {
+	var dirs []string
+	for _, p := range paths {
+		for _, d := range filepath.SplitList(p) {
+			if d != "" && !slices.Contains(dirs, d) {
+				dirs = append(dirs, d)
+			}
+		}
+	}
+	var merged map[string]string
+	for _, vs := range vars {
+		if vs == nil {
+			continue
+		}
+		if merged == nil {
+			merged = make(map[string]string, len(vs))
+		}
+		for k, v := range vs {
+			if merged[k] == "" {
+				merged[k] = v
+			}
+		}
+	}
+	return strings.Join(dirs, string(os.PathListSeparator)), merged
 }
 
 // askShell runs sh as a terminal opens it and reads what shellEnv says.
@@ -182,12 +308,35 @@ func shellEnv() (string, map[string]string) {
 // the whole group, magpie with it (DD on Discord: magpie web → zsh:
 // suspended (tty input)). A timeout also killed only the shell, leaving
 // what its profile started holding the terminal; a probe's whole group goes.
+//
+// It is asked as an interactive login shell first, since many put PATH in
+// .zshrc/.bashrc or a config.fish block under `status is-interactive`. A
+// profile that hands an interactive shell over to something else — `exec
+// tmux` or zellij's auto-start, common in config.fish — or takes longer
+// than shellAsk to come up never runs the probe, and magpie got no PATH at
+// all (John on Discord, fish set with chsh: an agent fish's PATH has
+// wasn't found). Without an answer it is asked again as a login shell
+// only, which still reads config.fish, .zprofile and .bash_profile.
+// MAGPIE_SHELL_PROBE=1 is in its environment both times, for a profile to
+// tell magpie's question from a terminal.
 func askShell(sh string) (string, map[string]string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	for _, flags := range []string{"-ilc", "-lc"} {
+		if p, vars := askShellAs(sh, flags); p != "" || vars != nil {
+			return p, vars
+		}
+	}
+	return "", nil
+}
+
+// shellAsk is how long one question to a shell may take.
+var shellAsk = 5 * time.Second
+
+func askShellAs(sh, flags string) (string, map[string]string) {
+	ctx, cancel := context.WithTimeout(context.Background(), shellAsk)
 	defer cancel()
-	// interactive too, since many put PATH in .zshrc/.bashrc
-	cmd := ProbeContext(ctx, sh, "-ilc", shellProbe(sh))
+	cmd := ProbeContext(ctx, sh, flags, shellProbe(sh))
 	cmd.Stdin = nil
+	cmd.Env = append(os.Environ(), "MAGPIE_SHELL_PROBE=1")
 	out, _ := cmd.Output()
 	return parseShellEnv(string(out), shellMark)
 }
@@ -210,7 +359,9 @@ const shellMark = "__magpie_path__"
 // agentenv.Vars, between two marks. A NUL (which no variable can hold)
 // parts the values: PATH first, then each of agentenv.Vars in order.
 //
-// A POSIX shell (zsh, bash, fish too) expands "$PATH" itself. nushell
+// A POSIX shell (zsh, bash) expands "$PATH" itself, and so does fish:
+// PATH, as each variable whose name ends in PATH, is a path variable there,
+// joined with ':' in double quotes, not with the spaces another list gets. nushell
 // doesn't: a double-quoted string is literal there, so it printed "$PATH",
 // "$CLAUDE_CONFIG_DIR", ... and magpie set each variable to its own name
 // (#738: then Claude sign-in failed with "mkdir $CLAUDE_CONFIG_DIR:

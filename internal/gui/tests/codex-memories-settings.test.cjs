@@ -14,6 +14,7 @@ const fs = require("node:fs/promises");
 const path = require("node:path");
 const { test } = require("node:test");
 const { chromium, webkit } = require("playwright");
+const { watchSettingsReads, settingsDrawn } = require("./reader.cjs");
 
 const assets = path.resolve(__dirname, "../assets");
 const models = [{ value: "gpt-5.5", label: "GPT-5.5", ref: "openai/gpt-5.5" }, { value: "gpt-5.4-mini", label: "GPT-5.4 mini", ref: "openai/gpt-5.4-mini" }];
@@ -97,7 +98,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
           }
           await browser.close();
         });
+        await watchSettingsReads(page);
         await page.goto("http://magpie.test/?view=settings");
+        await settingsDrawn(page); // rows found are the ones that stay (#1659)
         const row = page.locator("#codexMemoriesRow");
         const pick = page.locator("#codexMemoriesPick button");
         await pick.waitFor();
@@ -171,7 +174,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     page.on("pageerror", (e) => errors.push(e.message));
     await page.route("**/*", server("en", [], false));
     t.after(() => browser.close());
+    await watchSettingsReads(page);
     await page.goto("http://magpie.test/?view=settings");
+    await settingsDrawn(page); // rows found are the ones that stay (#1659)
     await page.locator("#codexAutoReviewPick button").waitFor();
     await page.waitForTimeout(300);
     assert.equal(await page.locator("#codexMemoriesRow").isHidden(), true);

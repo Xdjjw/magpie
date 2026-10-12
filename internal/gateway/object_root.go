@@ -14,14 +14,18 @@ import (
 // type", #1271: Grok on a relay's key or xAI's own API, not only the Grok
 // subscription, whose requests grokBody folds) and by Anthropic's
 // ("input_schema does not support oneOf, allOf, or anyOf at the top
-// level", #646) behind a relay's Chat API. xAI's own API gets such a tool
-// folded to an object root (provider.ObjectRoot) from the start; any other
-// upstream that refuses one is asked once more with them folded, and so
-// from then on for that model.
+// level", #646) behind a relay's Chat API, and by OpenAI's API and any
+// upstream that validates tools as it does ("schema must have type
+// 'object' and not have 'oneOf'/'anyOf'/'allOf'/'enum'/'const'/'not' at
+// the top level", #1493; for a root with no type, "schema must be a JSON
+// Schema of 'type: "object"', got 'type: "None"'"). xAI's own API gets
+// such a tool folded to an object root (provider.ObjectRoot) from the
+// start; any other upstream that refuses one is asked once more with them
+// folded, and so from then on for that model.
 
 // rootUnionRefusal is an upstream refusing a tool's parameters for a
 // union at their root.
-var rootUnionRefusal = regexp.MustCompile(`(?i)tool parameter root must be an object type|does not support oneOf, allOf, or anyOf at the top level`)
+var rootUnionRefusal = regexp.MustCompile(`(?i)tool parameter root must be an object type|does not support oneOf, allOf, or anyOf at the top level|schema must have type .object. and not have .oneOf.|schema must be a JSON Schema of .type: \\?"object\\?".`)
 
 // rootUnionRefused is how unfit remembers model refusing one.
 func rootUnionRefused(model string) string { return "root union\x00" + model }

@@ -323,7 +323,8 @@ func noteCodexUsedUp(now bool) {
 
 // KeepOnAnAccountWithRoom runs SwitchWhenSpent for Codex and Claude Code a
 // minute after it starts and every loginSwitchEvery after that, until ctx
-// ends.
+// ends, and keeps Claude Code's proxy that of its account
+// (SyncClaudeProxyEnv).
 func KeepOnAnAccountWithRoom(ctx context.Context) {
 	t := time.NewTimer(time.Minute)
 	defer t.Stop()
@@ -340,6 +341,9 @@ func KeepOnAnAccountWithRoom(ctx context.Context) {
 			}
 			cancel()
 		}
+		// a sign-in made in Claude Code itself, or a proxy picked since,
+		// takes its account's proxy too (#1807)
+		syncClaudeProxyEnvNow()
 		c, cancel := context.WithTimeout(ctx, time.Minute)
 		noteCodexUsedUp(CodexUsedUp(c))
 		cancel()

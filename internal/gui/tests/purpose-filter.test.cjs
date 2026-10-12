@@ -135,7 +135,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert.equal(await page.locator("#ledPurpose span").textContent(), lang === "zh" ? "未标记" : "Unmarked");
       await choose("#ledPurpose", "kind:thread_title");
       await waitRows(100);
-      await click(page, page.locator("#ledStatus .opt").last());
+      await click(page, page.locator("#ledStatus .opt").nth(1)); // Failed
       await waitRows(1);
       await click(page, page.locator("#ledExport"));
       await page.waitForFunction(() => document.querySelector("#status")?.textContent.includes("purpose.csv"));
@@ -278,8 +278,11 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await click(page, page.locator("#rtPurpose"));
       const view = await page.locator("#view-routing").boundingBox();
       await page.mouse.move(view.x + 10, view.y + 80);
-      await page.mouse.wheel(0, -200);
+      // a scroll closes it: down first if the view is at its top, and to the top again
+      if (!(await page.locator("#view-routing").evaluate((e) => e.scrollTop))) await page.mouse.wheel(0, 200);
+      await page.mouse.wheel(0, -2000);
       await menu.waitFor({ state: "detached" });
+      await page.waitForFunction(() => document.querySelector("#view-routing").scrollTop === 0);
       await click(page, page.locator("#rtPurpose"));
       await title.click();
       await unmarked.click();
@@ -291,6 +294,13 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       await title.click();
       await unmarked.click();
       const all = await page.evaluate(() => t("All purposes"));
+      // the rows the two ticks asked for drawn, and the view at rest: the
+      // view is narrower beside the sidebar, and scrolls while they come in
+      for (let last = "", same = 0; same < 3; await page.waitForTimeout(100)) {
+        const now = await page.locator("#view-routing").evaluate((e) => [e.querySelectorAll(".rt-req").length, e.scrollTop, e.scrollHeight].join());
+        same = now === last ? same + 1 : 0;
+        last = now;
+      }
       const beforeAll = await page.locator("#view-routing").evaluate((e) => e.scrollTop);
       await menu.locator(".pm-item").filter({ has: page.locator(".pm-name", { hasText: all }) }).focus();
       await page.keyboard.press("Enter");

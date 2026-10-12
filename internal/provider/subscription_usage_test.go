@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -44,9 +45,29 @@ func TestSubscriptionUsageServesStale(t *testing.T) {
 	if err := Delete("codex"); err != nil {
 		t.Fatal(err)
 	}
+	// The refresh is held at the vendor, so a copy that waited for it could
+	// not come back: what the stale copy returns, it returns while the
+	// refresh is still in flight (#1586). Held rather than timed, because a
+	// loaded machine makes a wall-clock bound say nothing either way.
+	held := make(chan struct{})
+	reached := make(chan struct{})
+	var releaseOnce, reachedOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(held) }) }
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reachedOnce.Do(func() { close(reached) })
+		<-held
+		w.Write([]byte(`{"copilot_plan":"individual","token_based_billing":true,"quota_snapshots":` +
+			`{"premium_interactions":{"has_quota":true,"unlimited":false,"entitlement":"300","percent_remaining":50}}}`))
+	}))
+	oldUser := CopilotUserURL
+	CopilotUserURL = srv.URL
+	t.Cleanup(func() { CopilotUserURL = oldUser })
+
 	c := &subscriptionUsageCache
 	c.Lock()
-	c.at, c.pending = time.Now().Add(-time.Hour), nil
+	// all four fields the call reads: asked is part of the state this test
+	// primes, not something to inherit from whatever ran before it
+	c.at, c.asked, c.pending = time.Now().Add(-time.Hour), false, nil
 	c.data = []SubscriptionQuota{{Provider: "claude", Name: "Claude Code"}, {Provider: "codex", Name: "Codex"}}
 	c.Unlock()
 	t.Cleanup(func() {
@@ -62,21 +83,24 @@ func TestSubscriptionUsageServesStale(t *testing.T) {
 			<-p
 		}
 	})
+	// before the wait above, which the held vendor would otherwise keep
+	// blocked, and before the process is left with a server nobody closes
+	t.Cleanup(func() { release(); srv.Close() })
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	// The deadline is only so a copy that did wait fails as a FAIL rather
+	// than hanging the run: nothing here is measured against it.
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	start := time.Now()
 	got := SubscriptionUsage(ctx)
-	if time.Since(start) > 40*time.Millisecond {
-		t.Fatalf("waited %v for a stale copy", time.Since(start))
-	}
 	if len(got) != 1 || got[0].Provider != "claude" {
-		t.Fatalf("got %+v, want only claude", got)
+		t.Fatalf("got %+v, want only claude: a copy that waited for the held refresh comes back with nothing", got)
 	}
-	c.Lock()
-	refreshing := c.pending != nil || time.Since(c.at) < time.Minute
-	c.Unlock()
-	if !refreshing {
+	if !SubscriptionUsageReading() {
+		t.Fatal("the copy came back with no refresh in flight")
+	}
+	select {
+	case <-reached:
+	case <-time.After(15 * time.Second):
 		t.Fatal("a stale copy did not start a refresh")
 	}
 	// what showed the stale copy hears when the new one lands
@@ -88,6 +112,7 @@ func TestSubscriptionUsageServesStale(t *testing.T) {
 		}
 	})
 	t.Cleanup(func() { OnSubscriptionUsage(nil) })
+	release()
 	c.Lock()
 	p := c.pending
 	c.at = time.Time{}

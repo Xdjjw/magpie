@@ -3,6 +3,7 @@ package profile
 import (
 	"encoding/json"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -24,7 +25,15 @@ func modelsHome(t *testing.T) (catalogFile string) {
 		t.Fatal(err)
 	}
 	catalogFile = filepath.Join(h, ".codex", "magpie-models.json")
-	write(t, filepath.Join(h, ".codex", "config.toml"), "model = \"relay/m1\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = \""+filepath.ToSlash(catalogFile)+"\"\n\n[model_providers.magpie]\nname = \"magpie\"\nbase_url = \"http://127.0.0.1:1/v1\"\nwire_api = \"responses\"\n")
+	// the catalog named as magpie names it: by its full path, and on
+	// Windows relative to config.toml (#816). A C:/ spelling isn't one
+	// magpie writes or takes for its own list, so on Windows Codex's list
+	// was never written and these tests failed there (#1517).
+	ref := "'" + catalogFile + "'"
+	if runtime.GOOS == "windows" {
+		ref = `"magpie-models.json"`
+	}
+	write(t, filepath.Join(h, ".codex", "config.toml"), "model = \"relay/m1\"\nmodel_provider = \"magpie\"\nmodel_catalog_json = "+ref+"\n\n[model_providers.magpie]\nname = \"magpie\"\nbase_url = \"http://127.0.0.1:1/v1\"\nwire_api = \"responses\"\n")
 	was := catalog.Changed
 	catalog.Changed = agent.SyncCatalog
 	t.Cleanup(func() { catalog.Changed = was })

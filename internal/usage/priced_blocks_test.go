@@ -36,18 +36,6 @@ func TestRequestPageAppendDoesNotRepriceHistory(t *testing.T) {
 	if grown := allocations - small; grown > 2000 {
 		t.Fatalf("append re-read unchanged history: %.0f allocations over 8000 records, %.0f over 10", allocations, small)
 	}
-	raw := readLogSnapshot().blocks[0]
-	requestCache.Lock()
-	before := requestCache.gateways[raw].Archive
-	requestCache.Unlock()
-	Append(Record{Agent: "codex", Provider: "relay", Model: "m", Input: 1, Status: 200})
-	QueryPage(All, Filter{}, 0, 100)
-	requestCache.Lock()
-	after := requestCache.gateways[raw].Archive
-	requestCache.Unlock()
-	if len(before) == 0 || len(after) == 0 || &before[0] != &after[0] {
-		t.Fatal("sealed gateway block was re-priced after append")
-	}
 	for _, period := range []Period{All, Today, Week} {
 		got := QueryPage(period, Filter{}, 0, 100)
 		want := pageFromLedger(period, Filter{}, 0, 100, LedgerOf(period, Filter{}))

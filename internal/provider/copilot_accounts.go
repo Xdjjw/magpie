@@ -167,6 +167,7 @@ func moveAccountSettings(id string, moves map[string]string) error {
 			moved = moveKey(p.AccountCaps, from, to) || moved
 			moved = moveKey(p.AccountWindowCaps, from, to) || moved
 			moved = moveKey(p.AccountConcurrency, from, to) || moved
+			moved = moveKey(p.AccountNames, from, to) || moved
 		}
 	}
 	if !moved {
@@ -222,6 +223,11 @@ func copilotLogins(cfg string) []copilotLoginApp {
 			app, _ = copilotSaved(l.saved)
 		}
 		app.User = l.User
+		// signed out by GitHub with the token it still has (copilot_lapsed.go)
+		if copilotLapsedOn(l.saved, app.Token) {
+			l.Login.Lapsed = l.saved.Lapsed
+			copilotLapsedNote(l.User, true)
+		}
 		out = append(out, copilotLoginApp{l.Login, app})
 	}
 	return out
@@ -280,15 +286,18 @@ func addCopilotLogin(user, plan, token, host string) error {
 
 // copilotEditorRefused says GitHub refused the editors' sign-in of user on
 // host: a stale token in apps.json, which a sign-in from magpie is not let
-// go for (#1238).
+// go for (#1238). The Copilot CLI's, when it is the account's own sign-in,
+// is the same: a revoked one is signed in again in magpie (echo_ts).
 func copilotEditorRefused(cfg, user, host string) bool {
+	who := copilotApp{User: user, Host: host}
 	gh, ghe := copilotEditorLogins(cfg)
 	for _, e := range []*copilotApp{gh, ghe} {
-		if e != nil && copilotSameAccount(*e, copilotApp{User: user, Host: host}) && copilotRefusedToken(e.Token) {
+		if e != nil && copilotSameAccount(*e, who) && copilotRefusedToken(e.Token) {
 			return true
 		}
 	}
-	return false
+	own, ok := copilotLogin(cfg)
+	return ok && own.cli && copilotSameAccount(own, who) && copilotRefusedToken(own.Token)
 }
 
 // copilotProbeEditor asks GitHub whether it still takes the editors' sign-in
@@ -300,6 +309,9 @@ func copilotProbeEditor(ctx context.Context, user, host string) {
 		if e != nil && copilotSameAccount(*e, copilotApp{User: user, Host: host}) && !copilotRefusedToken(e.Token) {
 			_, _ = copilotToken(ctx, *e)
 		}
+	}
+	if own, ok := copilotLogin(copilotConfigDir()); ok && own.cli && copilotSameAccount(own, copilotApp{User: user, Host: host}) && !copilotRefusedToken(own.Token) {
+		_, _ = copilotDirect(ctx, own)
 	}
 }
 
@@ -359,7 +371,12 @@ func copilotUser(ctx context.Context, token, host string) (user, plan string, er
 		Login string `json:"login"`
 	}
 	if _, err := get(gitHubUserURL(host), &gh); err != nil || gh.Login == "" {
-		return "", "", errors.New("GitHub didn't say whose account this is")
+		msg := "GitHub didn't say whose account this is"
+		if err != nil {
+			// why, for a sign-in that ends here (#723)
+			msg += ": " + err.Error()
+		}
+		return "", "", errors.New(msg)
 	}
 	var cp copilotEntitlement
 	if code, err := get(copilotUserURL(host), &cp); err != nil {

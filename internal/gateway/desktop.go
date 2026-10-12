@@ -137,7 +137,9 @@ func claudeLooking(e provider.Entry) string {
 		return desktopEffortAlias + aliasNumber(e.ID)
 	}
 	if desktopAccepts(e.ID) && !strings.HasPrefix(e.ID, desktopAlias) {
-		return e.ID
+		// its Code tab hands it to Claude Code, which reads a dotted
+		// Claude version (claude-opus-4.6) as Claude Opus 4
+		return provider.ClaudeSpelled(e.ID)
 	}
 	return aliasFor(e.ID)
 }
@@ -411,7 +413,19 @@ var desktopPicked struct {
 func desktopPickedPath() string { return filepath.Join(settings.Dir(), "claude-desktop.model") }
 
 // desktopTurn is the model a Claude Desktop request for asked is served by.
-func desktopTurn(asked string, body []byte) string {
+// byClaudeCode is a request Claude Code sent (its claude-cli/ User-Agent)
+// rather than Desktop's own client.
+//
+// Claude Code names the model of each of its own background requests on
+// purpose: its auto mode's safety classifier asks for its sonnet with no
+// tools and a max_tokens of 64 or 256, its notification classifier with
+// 1024 (#1539, tete1030). So a tool-less request from it goes to the
+// session's model only when it is Desktop's title, which Desktop asks
+// Claude Code for when its own request fails (`claude -p --model <its
+// pick> --system-prompt "You write short session titles…" --tools ""`,
+// sent with max_tokens 64000); one for a model magpie doesn't serve still
+// goes there whoever sent it.
+func desktopTurn(asked string, body []byte, byClaudeCode bool) string {
 	if asked == "" {
 		return asked
 	}
@@ -429,7 +443,11 @@ func desktopTurn(asked string, body []byte) string {
 	if asked == picked {
 		return asked
 	}
-	if unserved(asked) || !tools && small(body) && desktopAccepts(asked) {
+	aside := small(body)
+	if byClaudeCode {
+		aside = desktopTitle(body)
+	}
+	if unserved(asked) || !tools && aside && desktopAccepts(asked) {
 		if picked != "" {
 			return picked
 		}
@@ -466,6 +484,41 @@ func desktopDefault(asked string) string {
 		return ""
 	}
 	return shown[0].ID
+}
+
+// desktopTitlePrompt is how the system prompt Claude Desktop asks a
+// session's title and branch name with starts (dcr in its app.asar), sent
+// by its own client or, when that fails, as Claude Code's --system-prompt.
+const desktopTitlePrompt = "You write short session titles."
+
+// desktopTitle: the request's system prompt is Desktop's title prompt, as a
+// string (Desktop's client) or one of its text blocks (Claude Code's).
+func desktopTitle(body []byte) bool {
+	if !bytes.Contains(body, []byte(desktopTitlePrompt)) {
+		return false
+	}
+	var v struct {
+		System json.RawMessage `json:"system"`
+	}
+	if json.Unmarshal(body, &v) != nil {
+		return false
+	}
+	var text string
+	if json.Unmarshal(v.System, &text) == nil {
+		return strings.HasPrefix(text, desktopTitlePrompt)
+	}
+	var blocks []struct {
+		Text string `json:"text"`
+	}
+	if json.Unmarshal(v.System, &blocks) != nil {
+		return false
+	}
+	for _, b := range blocks {
+		if strings.HasPrefix(b.Text, desktopTitlePrompt) {
+			return true
+		}
+	}
+	return false
 }
 
 // small: the request asks for a short answer (max_tokens at most 4096), as

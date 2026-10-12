@@ -70,8 +70,12 @@ func TestGeminiHistoryOpeningWithModel(t *testing.T) {
 			t.Fatal(err)
 		}
 		for route, cs := range geminiContents(t, r) {
-			if got := geminiRoles(cs); got != "user,model,user" {
-				t.Errorf("%s via %s: roles %s, want user,model,user", name, route, got)
+			want := "user,model,user"
+			if name == "model functionCall" {
+				want += ",user" // the question after the tool's response (#1533)
+			}
+			if got := geminiRoles(cs); got != want {
+				t.Errorf("%s via %s: roles %s, want %s", name, route, got, want)
 				continue
 			}
 			lead, _ := json.Marshal(cs[0]["parts"])

@@ -415,3 +415,50 @@ func TestReadKimiCode(t *testing.T) {
 		t.Fatal("nothing read")
 	}
 }
+
+// An OpenCode Go key whose windows can't be read says why, with the way
+// out (sakulalalalalal on X: three Go keys, each "Allowance unavailable"
+// and nothing more). The bodies are OpenCode's own, as zen/go/v1/usage
+// answered on 2026-10-10: a key whose member has no Go, and a key it
+// doesn't know.
+func TestOpenCodeGoSaysWhyNoWindows(t *testing.T) {
+	bodies := map[string]struct {
+		status int
+		body   string
+	}{
+		"/nogo":    {http.StatusForbidden, `{"type":"error","error":{"type":"EntitlementError","message":"OpenCode Go subscription required."}}`},
+		"/unknown": {http.StatusUnauthorized, `{"type":"error","error":{"type":"AuthError","message":"Unauthorized"}}`},
+		"/down":    {http.StatusServiceUnavailable, `{"error":{"type":"api_error","message":"Inference routing is unavailable. Please retry later."}}`},
+		"/other":   {http.StatusOK, `{"usage":{"fiveHour":{"used":3}},"plan":"go"}`},
+	}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b := bodies[r.URL.Path]
+		w.WriteHeader(b.status)
+		w.Write([]byte(b.body))
+	}))
+	defer srv.Close()
+	read := func(path string) string {
+		// the vendor's host, so the OpenCode rules apply
+		_, _, err := planWindows(context.Background(), planQuotaSource{url: srv.URL + path + "?opencode.ai", bearer: true, read: readOpenCodeGo}, "k")
+		if err == nil {
+			t.Fatalf("%s read as windows", path)
+		}
+		return err.Error()
+	}
+	for path, want := range map[string][]string{
+		"/nogo":    {"no OpenCode Go subscription", "member who subscribed"},
+		"/unknown": {"OpenCode didn't take this key", "401 Unauthorized: Unauthorized"},
+		"/down":    {"503 Service Unavailable", "Inference routing is unavailable"},
+		"/other":   {"no rolling, weekly or monthly window", "usage.fiveHour", "plan"},
+	} {
+		got := read(path)
+		for _, w := range want {
+			if !strings.Contains(got, w) {
+				t.Errorf("%s: %q doesn't say %q", path, got, w)
+			}
+		}
+	}
+	if got := read("/other"); strings.Contains(got, "3") || strings.Contains(got, "go\"") {
+		t.Errorf("an unread reply's values are kept out of the error: %q", got)
+	}
+}

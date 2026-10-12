@@ -114,11 +114,11 @@ func tidyLine(line []byte) []byte {
 		return line
 	}
 	var chunk map[string]json.RawMessage
-	if json.Unmarshal(data, &chunk) != nil {
+	if decodeJSON(data, &chunk) != nil {
 		return line
 	}
 	var choices []map[string]json.RawMessage
-	if json.Unmarshal(chunk["choices"], &choices) != nil {
+	if decodeJSON(chunk["choices"], &choices) != nil {
 		return line
 	}
 	changed := false
@@ -128,7 +128,7 @@ func tidyLine(line []byte) []byte {
 			changed = true
 		}
 		var delta map[string]json.RawMessage
-		if json.Unmarshal(c["delta"], &delta) != nil {
+		if decodeJSON(c["delta"], &delta) != nil {
 			continue
 		}
 		inDelta := flattenContent(delta, false)
@@ -167,13 +167,13 @@ func tidyLine(line []byte) []byte {
 // keeps it.
 func withoutEmptyNames(raw json.RawMessage) (json.RawMessage, bool) {
 	var calls []map[string]json.RawMessage
-	if json.Unmarshal(raw, &calls) != nil {
+	if decodeJSON(raw, &calls) != nil {
 		return raw, false
 	}
 	changed := false
 	for _, call := range calls {
 		var fn map[string]json.RawMessage
-		if json.Unmarshal(call["function"], &fn) != nil {
+		if decodeJSON(call["function"], &fn) != nil {
 			continue
 		}
 		if string(fn["name"]) != `""` {
@@ -206,7 +206,7 @@ func partsText(raw json.RawMessage) (text, think string, ok bool) {
 		Text     string          `json:"text"`
 		Thinking json.RawMessage `json:"thinking"`
 	}
-	if json.Unmarshal(raw, &parts) != nil {
+	if decodeJSON(raw, &parts) != nil {
 		return "", "", false
 	}
 	var tb, kb strings.Builder
@@ -217,14 +217,14 @@ func partsText(raw json.RawMessage) (text, think string, ok bool) {
 		case "thinking":
 			// Mistral's is a list of text parts; a plain string is taken too
 			var s string
-			if json.Unmarshal(p.Thinking, &s) == nil {
+			if decodeJSON(p.Thinking, &s) == nil {
 				kb.WriteString(s)
 				continue
 			}
 			var inner []struct {
 				Text string `json:"text"`
 			}
-			json.Unmarshal(p.Thinking, &inner)
+			decodeJSON(p.Thinking, &inner)
 			for _, in := range inner {
 				kb.WriteString(in.Text)
 			}
@@ -249,7 +249,7 @@ func flattenContent(m map[string]json.RawMessage, whole bool) bool {
 	}
 	if think != "" {
 		var had string
-		json.Unmarshal(m["reasoning_content"], &had)
+		decodeJSON(m["reasoning_content"], &had)
 		m["reasoning_content"], _ = json.Marshal(had + think)
 	}
 	return true
@@ -275,17 +275,17 @@ func (t *chatWhole) flush() []byte {
 		return b
 	}
 	var reply map[string]json.RawMessage
-	if json.Unmarshal(b, &reply) != nil {
+	if decodeJSON(b, &reply) != nil {
 		return b
 	}
 	var choices []map[string]json.RawMessage
-	if json.Unmarshal(reply["choices"], &choices) != nil {
+	if decodeJSON(reply["choices"], &choices) != nil {
 		return b
 	}
 	changed := false
 	for _, c := range choices {
 		var msg map[string]json.RawMessage
-		if json.Unmarshal(c["message"], &msg) != nil || !flattenContent(msg, true) {
+		if decodeJSON(c["message"], &msg) != nil || !flattenContent(msg, true) {
 			continue
 		}
 		c["message"], _ = json.Marshal(msg)
@@ -314,7 +314,7 @@ var messageReasoning = []string{"reasoning_content", "reasoning", "reasoning_det
 func reasoningText(m map[string]json.RawMessage) string {
 	for _, f := range messageReasoning[:2] {
 		var s string
-		if json.Unmarshal(m[f], &s) == nil && s != "" {
+		if decodeJSON(m[f], &s) == nil && s != "" {
 			return s
 		}
 	}
@@ -322,7 +322,7 @@ func reasoningText(m map[string]json.RawMessage) string {
 		Text    string `json:"text"`
 		Summary string `json:"summary"`
 	}
-	json.Unmarshal(m["reasoning_details"], &details)
+	decodeJSON(m["reasoning_details"], &details)
 	var b strings.Builder
 	for _, d := range details {
 		if d.Text != "" {
@@ -355,12 +355,12 @@ func withReasoningOnToolTurns(body []byte) []byte {
 	return editMessages(body, []string{"tool_calls"}, func(m map[string]json.RawMessage) bool {
 		var role string
 		var calls []json.RawMessage
-		if json.Unmarshal(m["role"], &role) != nil || role != "assistant" ||
-			json.Unmarshal(m["tool_calls"], &calls) != nil || len(calls) == 0 {
+		if decodeJSON(m["role"], &role) != nil || role != "assistant" ||
+			decodeJSON(m["tool_calls"], &calls) != nil || len(calls) == 0 {
 			return false
 		}
 		var own *string
-		if json.Unmarshal(m["reasoning_content"], &own) == nil && own != nil {
+		if decodeJSON(m["reasoning_content"], &own) == nil && own != nil {
 			return false
 		}
 		think := reasoningText(m)
@@ -385,17 +385,17 @@ func editMessages(body []byte, fields []string, edit func(m map[string]json.RawM
 		return body
 	}
 	var q map[string]json.RawMessage
-	if json.Unmarshal(body, &q) != nil {
+	if decodeJSON(body, &q) != nil {
 		return body
 	}
 	var msgs []json.RawMessage
-	if json.Unmarshal(q["messages"], &msgs) != nil {
+	if decodeJSON(q["messages"], &msgs) != nil {
 		return body
 	}
 	changed := false
 	for i, raw := range msgs {
 		var m map[string]json.RawMessage
-		if json.Unmarshal(raw, &m) != nil || !edit(m) {
+		if decodeJSON(raw, &m) != nil || !edit(m) {
 			continue
 		}
 		if nb, err := marshalPlain(m); err == nil {
@@ -449,7 +449,7 @@ func mistralThinking(body []byte) []byte {
 			delete(m, f)
 		}
 		var role string
-		json.Unmarshal(m["role"], &role)
+		decodeJSON(m["role"], &role)
 		if think == "" || role != "assistant" {
 			return true
 		}
@@ -460,9 +460,9 @@ func mistralThinking(body []byte) []byte {
 		var list []json.RawMessage
 		var s string
 		switch {
-		case len(c) > 0 && c[0] == '[' && json.Unmarshal(c, &list) == nil:
+		case len(c) > 0 && c[0] == '[' && decodeJSON(c, &list) == nil:
 			parts = append(parts, list...)
-		case json.Unmarshal(c, &s) == nil && s != "":
+		case decodeJSON(c, &s) == nil && s != "":
 			text, _ := marshalPlain(map[string]string{"type": "text", "text": s})
 			parts = append(parts, text)
 		}

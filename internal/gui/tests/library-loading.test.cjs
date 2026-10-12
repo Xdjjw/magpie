@@ -44,7 +44,8 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
   test(engine + ": the Library while it loads", async (t) => {
     const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
     t.after(() => browser.close());
-    const ctx = await browser.newContext({ viewport: { width: 980, height: 800 } });
+    // under the sidebar's width: the tabs here are the page's own strip
+    const ctx = await browser.newContext({ viewport: { width: 860, height: 800 } });
     await ctx.addInitScript(() => { try { if (!sessionStorage.getItem("seeded")) { localStorage.setItem("magpie.libTab", "skills"); sessionStorage.setItem("seeded", "1"); } } catch {} });
     const page = await ctx.newPage();
     page.setDefaultTimeout(5000);
@@ -96,4 +97,58 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
     await v.getByText("Write it once", { exact: false }).waitFor();
     assert.deepEqual(errors, []);
   });
+}
+
+// The page comes from a glance first, without what reading the agents'
+// skill folders through takes, which with many big skills took minutes
+// (#541): the Skills tab is drawn at once and says it is still looking,
+// and the agents' own skills come in when the whole read does.
+for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium", "webkit"])) {
+  for (const width of [980, 420]) {
+    test(`${engine} ${width}px: the Library drawn from a glance first`, async (t) => {
+      const browser = await (engine === "webkit" ? webkit.launch() : chromium.launch({ channel: "chromium" }));
+      t.after(() => browser.close());
+      const ctx = await browser.newContext({ viewport: { width, height: 800 } });
+      await ctx.addInitScript(() => { try { localStorage.setItem("magpie.libTab", "skills"); } catch {} });
+      const page = await ctx.newPage();
+      page.setDefaultTimeout(5000);
+      const errors = [];
+      page.on("pageerror", (e) => errors.push(e.message));
+      let open;
+      const whole = new Promise((r) => { open = r; });
+      const full = { ...lib, foundSkills: [{ name: "deck", description: "Slides", agents: ["pi"] }] };
+      const reads = [];
+      const rest = server(Promise.resolve());
+      await page.route("**/*", async (route) => {
+        const url = new URL(route.request().url());
+        if (url.pathname === "/api/library") {
+          const glance = url.searchParams.get("glance") === "1";
+          reads.push(glance ? "glance" : "read");
+          if (glance) return route.fulfill({ json: { ...lib, partial: true } });
+          await whole;
+          return route.fulfill({ json: full });
+        }
+        return rest(route);
+      });
+      await page.goto("http://magpie.test/");
+      await page.locator('button[data-view="library"]').click();
+      const v = page.locator("#view-library");
+      await v.locator(".lib-head .lib-more:not([disabled])").waitFor();
+      assert.equal(await v.locator(".lib-skel").count(), 0, "drawn from the glance, no outline");
+      const wait = v.locator(".lib-found-wait");
+      await wait.waitFor();
+      assert.equal(await wait.getAttribute("aria-busy"), "true");
+      assert.match(await wait.textContent(), /In your agents.*Looking through the agents' skill folders…/);
+      await v.getByText("grilling", { exact: true }).first().waitFor();
+      const box = await wait.boundingBox();
+      assert.ok(box.x >= 0 && box.x + box.width <= width, "the row fits");
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), "no sideways scroll");
+
+      open();
+      await v.getByText("deck", { exact: true }).first().waitFor();
+      assert.equal(await v.locator(".lib-found-wait").count(), 0, "the wait goes");
+      assert.deepEqual(reads, ["glance", "read"]);
+      assert.deepEqual(errors, []);
+    });
+  }
 }

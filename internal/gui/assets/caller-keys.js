@@ -11,6 +11,18 @@ let gatewayKeysRead = 0;
 // (#585): what is picked in it is sent only by its Save.
 let gatewayLimit = null;
 let connectURL = "", connectKeyID = "", connectSecret = null;
+// connectWant and connectKeyWant are the address and gateway key picked in
+// Gateway's Connect, kept across reloads, restarts and updates (coeo91 on
+// Discord: the LAN address went back to 127.0.0.1); "" for a key is This
+// computer
+let connectWant = "", connectKeyWant = "";
+try {
+  connectWant = localStorage.getItem("magpie.connectAddress") || "";
+  connectKeyWant = localStorage.getItem("magpie.connectKey") || "";
+} catch {}
+function keepPick(name, v) {
+  try { localStorage.setItem(name, v); } catch {}
+}
 
 function connectPick(id, label, text, options, value, choose) {
   const b = el("button", "val");
@@ -321,8 +333,18 @@ function gatewayModelsBadge(k) {
 
 // ---- a gateway key's own limit (#585) ----
 
-const limitPeriods = ["day", "week", "month"];
-const limitPer = { day: "per day", week: "per week", month: "per month" };
+// "days" is every N days from when the limit is set or reset (#1509)
+const limitPeriods = ["day", "week", "month", "days"];
+const limitPer = { day: "per day", week: "per week", month: "per month", days: "Every N days" };
+// perWords is a limit's window as the badge says it: "per week", "every 10 days"
+const perWords = (period, days) => period === "days"
+  ? (days === 1 ? t("every 1 day") : t("every {n} days", { n: days }))
+  : t(limitPer[period] || period);
+// limitDays reads a cycle's days: a whole number from 1 to 3650, else NaN
+function limitDays(v) {
+  const s = String(v ?? "").trim();
+  return /^\d{1,4}$/.test(s) && +s >= 1 && +s <= 3650 ? +s : NaN;
+}
 
 // limitTokens reads a count as typed: 2000000, 2,000,000, 500k, 2M, 1.5m,
 // 100万, 1亿; "" for none, NaN for what isn't one.
@@ -352,7 +374,7 @@ function gatewayLimitBadge(k) {
     const parts = [];
     if (u.tokenLimit) parts.push(fmtN(u.tokens) + " / " + fmtN(u.tokenLimit));
     if (u.costLimit) parts.push(usd(u.cost) + " / " + usd(u.costLimit));
-    b.textContent = (u.spent ? t("Spent") + " · " : "") + parts.join(" · ") + " · " + t(limitPer[u.period] || u.period);
+    b.textContent = (u.spent ? t("Spent") + " · " : "") + parts.join(" · ") + " · " + perWords(u.period, u.days);
   }
   b.title = t(u ? "Change this key's limit" : "Set a limit for this key");
   b.setAttribute("aria-label", b.title);
@@ -362,7 +384,7 @@ function gatewayLimitBadge(k) {
     if (gatewayLimit?.id === k.id) gatewayLimit = null;
     else {
       const l = k.limit || {};
-      gatewayLimit = { id: k.id, period: l.period || "day", tokens: l.tokens ? String(l.tokens) : "", cost: l.cost ? String(l.cost) : "", cacheReads: !!l.cacheReads };
+      gatewayLimit = { id: k.id, period: l.period || "day", days: l.days ? String(l.days) : "", tokens: l.tokens ? String(l.tokens) : "", cost: l.cost ? String(l.cost) : "", cacheReads: !!l.cacheReads };
     }
     renderGatewayKeys();
   };
@@ -393,7 +415,8 @@ function gatewayLimitEditor(k) {
   box.onclick = (e) => e.stopPropagation();
   const kept = k.limit || {};
   const changed = () => d.period !== (kept.period || "day") || limitTokens(d.tokens) !== (kept.tokens || 0)
-    || limitCost(d.cost) !== (kept.cost || 0) || d.cacheReads !== !!kept.cacheReads;
+    || limitCost(d.cost) !== (kept.cost || 0) || d.cacheReads !== !!kept.cacheReads
+    || (d.period === "days" && limitDays(d.days) !== kept.days);
   const fields = el("div", "klf");
   // the app's own menu, not a native select
   const period = el("button", "sess-pick klf-period");
@@ -404,7 +427,15 @@ function gatewayLimitEditor(k) {
   const paintPeriod = () => {
     period.dataset.value = d.period;
     period.replaceChildren(el("span", "", t(limitPer[d.period])), svg(CHEV, 11, 1.6));
+    fields.classList.toggle("with-days", d.period === "days");
+    dl.hidden = d.period !== "days";
   };
+  // the days of a cycle, shown for "every N days"
+  const days = input(d.days, "10");
+  days.setAttribute("aria-label", t("Days in a cycle"));
+  days.inputMode = "numeric";
+  const dl = el("label", "klf-field klf-days");
+  dl.append(el("span", "klf-name", t("Days")), days);
   paintPeriod();
   const tokens = input(d.tokens, t("No token cap"));
   tokens.setAttribute("aria-label", t("Token limit"));
@@ -418,20 +449,21 @@ function gatewayLimitEditor(k) {
   cl.append(el("span", "klf-name", t("Estimated cost, US$")), cost);
   const pl = el("label", "klf-field");
   pl.append(el("span", "klf-name", t("Window")), period);
-  fields.append(pl, tl, cl);
+  fields.append(pl, dl, tl, cl);
   const cache = el("label", "klf-check");
   const cb = el("input");
   cb.type = "checkbox";
   cb.checked = d.cacheReads;
   cache.append(cb, el("span", "", t("Count cache reads too")));
-  const hint = el("div", "hint", t("Tokens are each call's uncached input, output and cache writes. The cost is an estimate at the Usage page's prices, not a bill. Windows are calendar ones in this computer's time (a week from Monday). Requests from this computer without a key aren't limited."));
+  const hint = el("div", "hint", t("Tokens are each call's uncached input, output and cache writes. The cost is an estimate at the Usage page's prices, not a bill. Windows are calendar ones in this computer's time (a week from Monday), or every N days from when the limit is set or reset. Requests from this computer without a key aren't limited."));
   const err = el("div", "hint klf-err");
   const unsaved = el("span", "hint munsaved", t("unsaved"));
   unsaved.title = t("Made when you Save; Cancel drops it");
   const save = el("button", "text primary", t("Save"));
   const update = () => {
-    const bad = Number.isNaN(limitTokens(d.tokens)) ? t("Tokens is a count, like 2000000 or 2M")
-      : Number.isNaN(limitCost(d.cost)) ? t("The cost is US dollars, like 5 or 2.50") : "";
+    const bad = d.period === "days" && Number.isNaN(limitDays(d.days)) ? t("Days is a whole number from 1 to 3650")
+      : Number.isNaN(limitTokens(d.tokens)) ? t("Tokens is a count, like 2000000 or 2M")
+        : Number.isNaN(limitCost(d.cost)) ? t("The cost is US dollars, like 5 or 2.50") : "";
     err.textContent = bad;
     err.hidden = !bad;
     unsaved.hidden = !changed();
@@ -445,13 +477,15 @@ function gatewayLimitEditor(k) {
       d.period = v;
       paintPeriod();
       update();
+      if (v === "days") days.focus({ preventScroll: true });
     }, "Limit window", "sess-menu");
   };
+  days.oninput = () => { d.days = days.value; update(); };
   tokens.oninput = () => { d.tokens = tokens.value; update(); };
   cost.oninput = () => { d.cost = cost.value; update(); };
   cb.onchange = () => { d.cacheReads = cb.checked; update(); };
   const close = () => { gatewayLimit = null; renderGatewayKeys(); };
-  for (const i of [tokens, cost]) i.onkeydown = (e) => {
+  for (const i of [days, tokens, cost]) i.onkeydown = (e) => {
     e.stopPropagation();
     if (e.key === "Escape") close();
     else if (e.key === "Enter" && !save.disabled) save.click();
@@ -463,6 +497,7 @@ function gatewayLimitEditor(k) {
     save.disabled = true;
     const tk = limitTokens(d.tokens), c = limitCost(d.cost);
     const limit = tk || c ? { period: d.period, tokens: tk, cost: c, cacheReads: d.cacheReads } : null;
+    if (limit && d.period === "days") limit.days = limitDays(d.days);
     const out = await gatewayKeyAction("limit-key", { key: k.id, limit });
     if (!out) { update(); return; }
     status(t(limit ? "Limit saved for {name}" : "Limit removed for {name}", { name: k.name }), "ok");
@@ -477,8 +512,48 @@ function gatewayLimitEditor(k) {
   }
   foot.append(cancel, save);
   box.append(fields, hint, err);
-  if (k.used) box.append(gatewayLimitLine(k));
+  if (k.used) {
+    // count from 0 again, tokens and cost together (#1509)
+    const zero = el("button", "text klf-reset", t("Reset usage"));
+    zero.title = t("Count this key's use from 0 again, tokens and cost together");
+    zero.onclick = (e) => { e.stopPropagation(); askResetLimit(k); };
+    const used = el("div", "klf-used");
+    used.append(gatewayLimitLine(k), zero);
+    box.append(used);
+  }
   box.append(foot);
   update();
   return box;
+}
+
+// askResetLimit confirms a key's Reset (#1509): what it has used goes back
+// to 0, tokens and cost together; an N-day cycle starts again from now, a
+// calendar window keeps its end.
+function askResetLimit(k) {
+  const u = k.used || {};
+  const ed = el("div", "editor");
+  const head = el("div", "ehead");
+  head.append(el("b", "", t("Reset {name}'s usage?", { name: k.name })));
+  ed.append(head, el("p", "lib-confirm", u.period === "days"
+    ? t("The tokens and cost {name} has used go back to 0 together, and a new {n}-day cycle starts now.", { name: k.name, n: u.days })
+    : t("The tokens and cost {name} has used go back to 0 together. Calls so far in this window stop counting; it still resets {when}.", { name: k.name, when: resetClock(new Date(u.reset)) })));
+  const bar = el("div", "bar");
+  const cancel = el("button", "text", t("Cancel"));
+  cancel.onclick = (e) => { e.stopPropagation(); closeConfirmAsk(); };
+  const go = el("button", "text primary", t("Reset usage"));
+  go.onclick = async (e) => {
+    e.stopPropagation();
+    if (go.disabled) return;
+    go.disabled = true;
+    const out = await gatewayKeyAction("reset-limit-key", { key: k.id });
+    if (!out) { go.disabled = false; return; }
+    closeConfirmAsk();
+    status(t("Usage reset for {name}", { name: k.name }), "ok");
+  };
+  bar.append(el("span", "grow"), cancel, go);
+  ed.append(bar);
+  confirmAsk = ed;
+  openModal(ed);
+  $("#modal").classList.add("lib");
+  cancel.focus({ preventScroll: true });
 }

@@ -70,7 +70,9 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         await page.waitForTimeout(1500);
         // the reader wheels down to the groups, then puts the pointer on the
         // manual group's card
-        await page.mouse.move(8, h / 2);
+        // over the view, not the sidebar beside it
+        const v = await page.locator("#view-routing").boundingBox();
+        await page.mouse.move(v.x + 8, h / 2);
         for (let i = 0; i < 80; i++) {
           const top = await page.evaluate(() => document.querySelector(".rt-group").getBoundingClientRect().top);
           if (top < 300) break;

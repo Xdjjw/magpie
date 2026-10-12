@@ -219,7 +219,7 @@ func perKeyBarred(p provider.Provider, model string, from provider.Protocol) (ou
 	var unlisted []candidate
 	for i, k := range keys {
 		q := p.WithKey(k)
-		if len(q.Speaks()) == 0 {
+		if len(q.Speaks()) == 0 && !q.DecidesModel(model) {
 			continue // made for a protocol this provider has no endpoint for
 		}
 		rest := p.ID
@@ -346,7 +346,8 @@ func (s *Server) plan(p provider.Provider, model string, from provider.Protocol)
 // weighed together as the group's routing says — in order, member by
 // member, each as its own provider's routing orders it; else all as one,
 // so a subscription whose allowance renews soonest goes first whichever
-// provider it is of. A group in the group is planned by its own routing
+// provider it is of, but for a provider set to route another way, which
+// is planned as a group in the group is (ownRouting). A group in the group is planned by its own routing
 // alone, whatever the group's (#576): in order, in its place; else as
 // one, weighed with the rest by the one it would try first, and tried
 // whole where that one goes — the group's routing picks between its
@@ -399,7 +400,7 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 		// where the one it would try first is, the rest of it after
 		type unit struct {
 			m     provider.Member // the model, for one of its keys
-			cs    []candidate     // a group in g: its own order
+			cs    []candidate     // a group in g, or a provider routed its own way: its own order
 			order []Weighed
 		}
 		var units []unit
@@ -420,19 +421,28 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 				cs := planLevel(m.Via[depth], ms[i:j], depth+1, from, &sub, asides, wAsides)
 				pl.left = append(pl.left, sub.left...)
 				if len(cs) > 0 {
-					// weighed by the first it would try that isn't resting
-					head := cs[0]
-					for _, c := range cs {
-						if _, resting := restOf(c.restKey()); !resting {
-							if _, resting = restOf(c.restID()); !resting {
-								head = c
-								break
-							}
-						}
-					}
-					add(unit{cs: cs, order: sub.order}, head)
+					add(unit{cs: cs, order: sub.order}, firstAwake(cs))
 				}
 				i = j
+				continue
+			}
+			if ownRouting(m.Provider, g) {
+				// a provider routed its own way keeps it, as a group
+				// in the group does: weighed as one by the first it
+				// would try, and tried whole in its own order (kchen0x
+				// on X: Antigravity in order inside a Smart group)
+				cs, wg := weigh(m.Provider, keys(m), m.Model, from)
+				var order []Weighed
+				for k, c := range cs {
+					w := weighed(c, m.Provider, wg, false, from)
+					w.Turn = k == 0 && (m.Provider.Routing == provider.Rotate || m.Provider.Routing == provider.Weighted) && len(cs) > 1
+					w.Via = m.Groups()
+					order = append(order, w)
+				}
+				if len(cs) > 0 {
+					add(unit{cs: cs, order: order}, firstAwake(cs))
+				}
+				i++
 				continue
 			}
 			for _, c := range keys(m) {
@@ -490,6 +500,29 @@ func planLevel(g provider.Group, ms []provider.Member, depth int, from provider.
 	return out
 }
 
+// firstAwake is the first of cs that isn't resting, else the first: what
+// a group in a group, or a provider routed its own way, is weighed by.
+func firstAwake(cs []candidate) candidate {
+	for _, c := range cs {
+		if _, resting := restOf(c.restKey()); !resting {
+			if _, resting = restOf(c.restID()); !resting {
+				return c
+			}
+		}
+	}
+	return cs[0]
+}
+
+// ownRouting: p, a model's provider in g, is routed by its own routing
+// rather than weighed key by key with the rest of g. One left on Smart,
+// the default, or routed as g is, is weighed with g's other keys and
+// accounts as one pool, so a subscription whose allowance renews soonest
+// goes first whichever provider it is of; one set another way keeps it,
+// as the user set it, whatever g's routing.
+func ownRouting(p provider.Provider, g provider.Group) bool {
+	return p.Routing != "" && p.Routing != g.Routing
+}
+
 // capHeld is how the account acct of p is held at its usage cap for
 // model at now — a window at or past its own cap, else the account's — or
 // at 100% as a Codex account set not to spend its credits; nil when
@@ -501,6 +534,12 @@ func capHeld(p, acct provider.Provider, model string, now time.Time) *capHold {
 	}
 	a := acct.Account
 	caps := provider.HoldCaps(p, a.Agent, a.User)
+	if a.Agent == "codex" && freeOnChatGPT(model) {
+		// a call ChatGPT counts in no window spends nothing a usage cap
+		// keeps (#1593); credits set not to be spent still hold it at
+		// 100%, as nothing says the backend answers it there
+		caps = provider.WindowCaps{Credits: caps.Credits}
+	}
 	if !caps.Holds() {
 		return nil
 	}
@@ -646,6 +685,52 @@ func restLast(out []candidate, pl planned) ([]candidate, planned) {
 	return append(ready, resting...), pl
 }
 
+// probeOne keeps, of the candidates resting after a failure, only the one
+// back soonest (the first in order on a tie), at its place; the ready ones
+// all stay (#1799). Before, every request asked each resting member in
+// turn once those ahead of it failed, so a member that was down was asked
+// by every request its rest was meant to spare it from, and in an outage
+// of the whole group each request went to all of them. Now a request asks
+// at most one resting member: the one whose rest is nearest its end,
+// whose answer tells whether it is back, as AxonHub's error-aware
+// balancing lets a failed channel's penalty decay rather than send it
+// every request. A lone candidate is always kept, so a request still gets
+// a real answer, and nothing about the request's own content or model
+// rests a member (only the model, by restID), so it isn't left out over
+// those. The trace keeps every member, the resting ones with their rest.
+func probeOne(cs []candidate) []candidate {
+	if len(cs) < 2 {
+		return cs
+	}
+	soonest := -1
+	var until time.Time
+	rests := 0
+	rest := make([]bool, len(cs))
+	for i, c := range cs {
+		r, ok := restOf(c.restKey())
+		if !ok && c.restID() != c.restKey() {
+			r, ok = restOf(c.restID())
+		}
+		if !ok {
+			continue
+		}
+		rests, rest[i] = rests+1, true
+		if soonest < 0 || r.Until.Before(until) {
+			soonest, until = i, r.Until
+		}
+	}
+	if rests < 2 {
+		return cs
+	}
+	out := make([]candidate, 0, len(cs)-rests+1)
+	for i, c := range cs {
+		if i == soonest || !rest[i] {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
 // restingOf is why c rests, by its own key or else its provider's, while
 // it does. A key resting out of its own windows has them read again as it
 // is planned, behind the request and once a minute at most: an ordered
@@ -742,11 +827,25 @@ var retiredWords = regexp.MustCompile(`(?i)"ModelDeprecated"|model_deprecated|mo
 func modelRetired(status int, body []byte) bool {
 	switch status {
 	case 400, 404, 410, 422:
+	case 401:
+		// OpenCode Zen's word for a model it serves no more, said with
+		// its sign-in status: the key is good (a bad one is AuthError)
+		return zenModelGone.Match(body)
 	default:
 		return false
 	}
 	return retiredWords.Match(body) && !quotaWords.Match(body)
 }
+
+// zenModelGone is OpenCode Zen's 401 for a model it no longer serves,
+// as it answered glm-5-free and kimi-k2.5-free on 2026-10-10 once they
+// left its free list: {"type":"error","error":{"type":"ModelError",
+// "message":"Model glm-5-free is not supported"}}. Read in the vendor's
+// body, or in the message magpie put it into ("OpenCode Zen Free: Model
+// glm-5-free is not supported"). Not its "is not supported for format
+// anthropic", a model served on another API (wrongEndpoint), and not its
+// AuthError "Invalid API key." for a key it doesn't take.
+var zenModelGone = regexp.MustCompile(`(^|[\s:"])Model [^"\s]+ is not supported("|\s*$)`)
 
 // refusedWords are how a vendor says it won't take requests from this
 // client at all — WorkBuddy's "Illegal API invocation from an unapproved
@@ -772,6 +871,23 @@ var shapeWords = regexp.MustCompile(`(?i)failed to deserialize|unknown (item |co
 func shapeRefused(status int, body []byte) bool {
 	return (status == 400 || status == 422) && shapeWords.Match(body) &&
 		!quotaWords.Match(body) && !unservedWords.Match(body) && !refusedWords.Match(body)
+}
+
+// regionWords are how a vendor says it doesn't serve where the request
+// comes from: Google's 400 FAILED_PRECONDITION "User location is not
+// supported for the API use." (Gemini, Antigravity, Code Assist; #1621),
+// and OpenAI's "unsupported_country_region_territory", which a relay may
+// pass on as a 400. It is about the address the request leaves from, not
+// the request or the model: another member, going another way, may
+// answer, and this one rests only as briefly as any other failure does.
+// A request's own field named location ("location field is not
+// supported") isn't one.
+var regionWords = regexp.MustCompile(`(?i)\buser location is not supported for the api use\b|unsupported_country_region_territory|country, region,? or territory not supported`)
+
+// regionRefused says the vendor refused the request for where it came
+// from, with regionWords.
+func regionRefused(status int, body []byte) bool {
+	return status >= 400 && regionWords.Match(body)
 }
 
 // protectionWords are how the ChatGPT backend answers a long Codex
@@ -821,7 +937,7 @@ func retryable(status int, body []byte) bool {
 		// in front of zcode.z.ai): another provider goes another way
 		return true
 	case status == 400, status == 422:
-		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body)
+		return quotaWords.Match(body) || unservedWords.Match(body) || refusedWords.Match(body) || shapeWords.Match(body) || regionWords.Match(body)
 	}
 	return false
 }
@@ -849,7 +965,8 @@ const unsaidMargin = 1.2
 // another account of the model, it fails the same, and the agent, told it
 // as a vendor's error, never compacts. The message it is told instead
 // says the prompt is too long. Not for a rate limit, an account's
-// trouble, a model it doesn't serve, or one already saying it overflowed.
+// trouble, a model it doesn't serve, a region it doesn't serve, or one
+// already saying it overflowed.
 func tooLongUnsaid(p provider.Provider, model string, tokens, status int, body []byte) (string, bool) {
 	switch status {
 	case 400, 413, 422, 500, 502, 503, 504:
@@ -857,7 +974,7 @@ func tooLongUnsaid(p provider.Provider, model string, tokens, status int, body [
 		return "", false
 	}
 	if overflowed(status, body) || failure(status, body) != failOther || quotaWords.Match(body) ||
-		unservedWords.Match(body) || refusedWords.Match(body) || provider.EdgeBlocked(body) {
+		unservedWords.Match(body) || refusedWords.Match(body) || provider.EdgeBlocked(body) || regionRefused(status, body) {
 		return "", false
 	}
 	window := windowOf(p, model)
@@ -922,7 +1039,7 @@ func passing(status int, header http.Header, body []byte, again int) (time.Durat
 	case status == 429:
 		// a relay's 429 often says nothing of when (#503: "负载已饱和，请稍
 		// 后再试"); a plan used up or no money left won't clear in seconds
-		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(body)
+		return wait, again < rateRetries && failure(status, body) == failRate && !creditWords.Match(wordsOf(body))
 	}
 	return 0, false
 }
@@ -1340,6 +1457,20 @@ const holdBuffered = 4 * time.Minute
 // reasoning with it, as soon as it does.
 const holdThinking = 4 * time.Minute
 
+// holdLead is how long a stream with nothing but the frames that come
+// before a reply is held, when its agent is kept alive meanwhile
+// (keptQuiet): as long as one that only reasons, under the 300s Codex
+// waits for its next event. With nothing to keep the agent alive (a
+// Gemini stream), it is let through at holdLongest as before.
+const holdLead = holdThinking
+
+// keptQuiet says whether the agent of a held stream is kept alive with
+// SSE comments while it is held (keepQuiet, keepAlive): it asked for a
+// stream, in a protocol that takes a comment.
+func (h *holdWriter) keptQuiet() bool {
+	return h.streams && h.alive != nil && h.alive.proto != provider.Gemini
+}
+
 // refusesAfterThinking tells whether a model's vendor may end a reply that
 // has only reasoned with its safety filter's refusal: Claude's stop_reason
 // refusal, OpenAI's content_filter or bio_policy, Gemini's SAFETY (#248).
@@ -1393,12 +1524,26 @@ func (h *holdWriter) scan() {
 		h.flow()
 		return
 	}
+	if h.alive.tooQuiet(0) {
+		// Codex has gone as long as it waits for an event: what is held
+		// goes now, or it hangs up (agentQuietMost)
+		h.flow()
+		return
+	}
 	longest := holdLongest
 	if h.buffered {
 		longest = holdBuffered
 	}
 	if h.thinking {
 		longest = max(longest, holdThinking)
+	}
+	if h.keptQuiet() {
+		// a stream of nothing but its frames — response.created, pings,
+		// an empty message begun — while its agent is kept alive with
+		// comments: let through at 15s, the 200 the agent then had made
+		// the vendor's server_is_overloaded 21s later the agent's error,
+		// with the group's next member never asked (#1418)
+		longest = max(longest, holdLead)
 	}
 	// a group that asks the next member when one is slow to start holds
 	// the stream until then, for nothing of it to have reached the agent
@@ -1410,14 +1555,15 @@ func (h *holdWriter) scan() {
 		h.flow()
 		return
 	}
-	if (h.thinking || h.buffered || waiting) && time.Since(h.since) >= keepHeldAfter {
+	if (h.thinking || h.buffered || waiting || h.keptQuiet()) && (time.Since(h.since) >= keepHeldAfter || h.alive != nil && h.alive.sent) {
 		h.keepAlive()
 	}
 }
 
 // keepHeldAfter is how long a stream held for its reasoning waits before
 // its agent is first kept alive, as long as a stream with nothing in it
-// is held (holdLongest); a refusal after it still goes to another account,
+// is held where its agent can't be (holdLongest); a refusal after it still
+// goes to another account,
 // whose stream follows the comments in the same response.
 var keepHeldAfter = holdLongest
 
@@ -1427,6 +1573,27 @@ type keptAlive struct {
 	proto provider.Protocol
 	sent  bool      // the stream's 200 and headers went out
 	at    time.Time // the last comment
+	// told is when the agent was last sent anything of a reply, else when
+	// it asked; streams, whether it asked for a stream
+	told    time.Time
+	streams bool
+}
+
+// agentQuietMost is the longest a streaming Responses agent goes with no
+// event while its tries are held, one after another, and the pauses
+// between them. Codex counts only events toward its stream idle timeout,
+// 300s by default, not the SSE comments keepAlive sends: codex-cli 0.162
+// on a server sending nothing but ": keepalive" every 2s, with
+// stream_idle_timeout_ms 6000, failed "stream disconnected before
+// completion: idle timeout waiting for SSE" and reconnected (fadenoob on
+// Discord). Each try was held for up to holdThinking or holdLead by
+// itself, so a second held try, or a group's pause (#1418), went past it.
+var agentQuietMost = 4 * time.Minute
+
+// tooQuiet says whether a Responses agent that has had no event of its
+// reply would go agentQuietMost without one after d more.
+func (a *keptAlive) tooQuiet(d time.Duration) bool {
+	return a != nil && a.streams && a.proto == provider.Responses && !a.told.IsZero() && time.Since(a.told)+d >= agentQuietMost
 }
 
 // keepAlive tells the agent of a stream held past keepHeldAfter for its
@@ -1473,6 +1640,9 @@ func (h *holdWriter) keepAlive() {
 func (h *holdWriter) sent(b []byte) {
 	if len(b) > 0 {
 		h.wrote, h.atLine = time.Now(), b[len(b)-1] == '\n'
+		if h.alive != nil {
+			h.alive.told = h.wrote
+		}
 	}
 }
 
@@ -1734,7 +1904,10 @@ func (h *holdWriter) watch() func() {
 					h.mu.Unlock()
 					return
 				}
-				if time.Since(began) >= keepHeldAfter {
+				// an agent already kept alive (keepQueued, an earlier try)
+				// goes on hearing one every keepaliveEvery: waiting
+				// keepHeldAfter again left it up to twice that with none
+				if time.Since(began) >= keepHeldAfter || h.alive != nil && h.alive.sent {
 					h.keepQuiet()
 				}
 				h.mu.Unlock()
@@ -1777,6 +1950,12 @@ func (h *holdWriter) keepQuiet() {
 	}
 	if !h.heard.IsZero() && time.Since(h.heard) >= keepaliveLongest {
 		return // a stream stuck this long is left for a timeout to end
+	}
+	if !h.passing && h.stream && h.failure == 0 && !h.whole && h.held.Len() > 0 && h.alive.tooQuiet(0) {
+		// a stream held while its vendor is quiet: Codex would hang up
+		// before the next event let it through (agentQuietMost)
+		h.flow()
+		return
 	}
 	if !h.passing {
 		// only a stream, no reply yet to an agent that asked for one, or

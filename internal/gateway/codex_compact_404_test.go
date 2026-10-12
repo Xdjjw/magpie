@@ -97,3 +97,61 @@ func TestCodexCompactOtherFailuresStay(t *testing.T) {
 		}
 	}
 }
+
+// #1511 (TooPub): a relay answered a magpie model's summary request
+// 400 invalid_request_error "apex: Upstream request failed", and Codex's
+// compaction stopped there, while Codex asking the same relay itself
+// compacted. The reporter's body, as it came.
+const relayApex400 = `{"error":{"code":null,"message":"apex: Upstream request failed","param":null,"type":"invalid_request_error"}}`
+
+func TestCodexCompactUpstreamFailed400AsksAgainAsText(t *testing.T) {
+	f := &fake{t: t, reply: sse(
+		`data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"SUMMARY"}]}}`,
+		`data: {"type":"response.completed","response":{"id":"resp_p","status":"completed","output":[]}}`)}
+	f.refuse = func(body []byte) (int, string) {
+		if strings.Contains(string(body), `"rs_1"`) || strings.Contains(string(body), `"fc_1"`) {
+			return 400, relayApex400
+		}
+		return 0, ""
+	}
+	setup(t, provider.Responses, f)
+	code, body := codexPost(t, compact404Request)
+	if code != 200 {
+		t.Fatalf("%d %s", code, body)
+	}
+	if got := compactedText(t, body); got != "SUMMARY" {
+		t.Errorf("summary %q", got)
+	}
+	if f.calls != 2 || !strings.Contains(string(f.got), "fix the login bug") {
+		t.Errorf("asked again (calls %d) with: %s", f.calls, f.got)
+	}
+}
+
+func TestCodexCompactUpstreamFailed400CompactsLocally(t *testing.T) {
+	for _, proto := range []provider.Protocol{provider.Responses, provider.Chat} {
+		f := &fake{t: t, refuse: func([]byte) (int, string) { return 400, relayApex400 }}
+		setup(t, proto, f)
+		code, body := codexPost(t, compact404Request)
+		if code != 200 {
+			t.Fatalf("%v: %d %s", proto, code, body)
+		}
+		got := compactedText(t, body)
+		for _, want := range []string{"fix the login bug", "now add a test", "apex: Upstream request failed", "400"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("%v: local summary lacks %q:\n%s", proto, want, got)
+			}
+		}
+	}
+}
+
+// The relay's words on an account's refusal still go back to Codex.
+func TestCodexCompactUpstreamFailedAccountStays(t *testing.T) {
+	for _, status := range []int{401, 403, 429} {
+		f := &fake{t: t, refuse: func([]byte) (int, string) { return status, relayApex400 }}
+		setup(t, provider.Responses, f)
+		code, body := codexPost(t, compact404Request)
+		if code == 200 || strings.Contains(string(f.got), "This is the conversation so far") {
+			t.Errorf("%d: %d %s (calls %d)", status, code, body, f.calls)
+		}
+	}
+}

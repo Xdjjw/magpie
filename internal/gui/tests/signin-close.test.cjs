@@ -115,9 +115,10 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         });
       });
       assert(fit.every((f) => f.inside), JSON.stringify(fit));
-      // one button puts it away: Open again stands alone, no Close
+      // one button puts it away: Open again stands alone, no Close (beside
+      // it only the proxy the sign-in goes through, #1663)
       const acts = box.locator(".acts");
-      assert.deepEqual(await acts.locator("button").allTextContents(), [w.again]);
+      assert.deepEqual(await acts.locator("button:not(.via)").allTextContents(), [w.again]);
       assert.equal(await box.getByRole("button", { name: w.close, exact: true }).count(), 0, "no Close beside Cancel");
       const cancel = box.locator(":scope > button", { hasText: w.cancel });
       assert.equal(await cancel.count(), 1);

@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -117,6 +119,50 @@ func TestCachedCardsKeepALaterPageRead(t *testing.T) {
 	}
 }
 
+// Two keys of one provider given the same name are two cards: each is
+// read and kept by its key (keyTag), and another magpie is told both
+// after a restart, as the Usage page shows two. cardKeys answered a map
+// keyed by the name, so of one name it held the last key alone, and the
+// first key's reading was told as nobody's.
+func TestCachedCardsKeepBothKeysOfOneName(t *testing.T) {
+	keyLimitsHome(t)
+	p := Provider{ID: "relay", Name: "Relay", Chat: "https://relay.example/v1", Responses: "https://relay.example/v1",
+		Key: "sk-one-key", KeyName: "main", Keys: []KeyAccount{{Key: "sk-two-key", Name: "main"}}}
+	if err := Save(p); err != nil {
+		t.Fatal(err)
+	}
+	// what the Usage page read of each key, kept for the restart (keepLast,
+	// as KeyBalances keeps a card: by the key, under the name it showed)
+	for i, key := range []string{"sk-one-key", "sk-two-key"} {
+		keepLast(SubscriptionQuota{Provider: "relay", Name: "Relay", User: "main",
+			Balance: fmt.Sprintf("$%d.00", i+1)}, keyTag("balance", key))
+	}
+	forget := func() {
+		planQuotaCache.Lock()
+		planQuotaCache.data = nil
+		planQuotaCache.Unlock()
+		keyBalanceCache.Lock()
+		keyBalanceCache.data = nil
+		keyBalanceCache.Unlock()
+	}
+	forget()
+	t.Cleanup(func() {
+		forget()
+		lastQuotas.Lock()
+		lastQuotas.m, lastQuotas.loaded = nil, false
+		lastQuotas.Unlock()
+	})
+	var got []string
+	for _, q := range CachedCards(time.Now()) {
+		if q.Provider == "relay" && q.Kind == "balance" {
+			got = append(got, q.User+" "+q.Balance)
+		}
+	}
+	if len(got) != 2 || got[0] != "main $1.00" || got[1] != "main $2.00" {
+		t.Fatalf("both keys' kept readings, got %v", got)
+	}
+}
+
 // The sibling for keys: routing reads a sub2api key's windows behind the
 // requests (KeyAllowance); another magpie is told them on the key's card,
 // one made for it when the Usage page never read it.
@@ -138,5 +184,36 @@ func TestCachedCardsTellKeyReadings(t *testing.T) {
 	}
 	if n := asked.Load(); n != 1 {
 		t.Fatalf("sub2api asked %d times, want 1", n)
+	}
+}
+
+// Routing's reading of each of two keys of one name goes on that key's
+// own card, not both on the first card of the name.
+func TestKeyReadingsReachBothCardsOfOneName(t *testing.T) {
+	keyLimitsHome(t)
+	p := Provider{ID: "sub2api", Name: "Sub2API", Chat: "https://relay.example/v1", Responses: "https://relay.example/v1",
+		BalanceURL: "https://relay.example/v1/usage", Key: "sk-one-key", KeyName: "main", Keys: []KeyAccount{{Key: "sk-two-key", Name: "main"}}}
+	now := time.Now()
+	week := now.Add(72 * time.Hour)
+	// what routing read of each key (readKeyAllowance)
+	keyAllowances.Lock()
+	if keyAllowances.m == nil {
+		keyAllowances.m = map[string]*keyAllowance{}
+	}
+	for i, key := range []string{"sk-one-key", "sk-two-key"} {
+		q := p
+		q.Key = key
+		keyAllowances.m[keyAllowanceID(q)] = &keyAllowance{read: keyReading{
+			ws: []QuotaWindow{{Name: "7 days", Span: 7 * 24 * time.Hour, Used: float64(10 * (i + 1)), ResetsAt: &week}},
+			at: now, seq: uint64(i + 1)}}
+	}
+	keyAllowances.Unlock()
+	if !strings.HasPrefix(keyCardTag(p), "balance ") {
+		t.Fatalf("not a balance card: %s", keyCardTag(p))
+	}
+	cards := []SubscriptionQuota{{Provider: "sub2api", User: "main"}, {Provider: "sub2api", User: "main"}}
+	got := withKeyReadings(cards, []Provider{p}, "balance")
+	if len(got) != 2 || len(got[0].Windows) != 1 || len(got[1].Windows) != 1 || got[0].Windows[0].Used != 10 || got[1].Windows[0].Used != 20 {
+		t.Fatalf("each key's windows on its own card: %+v", got)
 	}
 }

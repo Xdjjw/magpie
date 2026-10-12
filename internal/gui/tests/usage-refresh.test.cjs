@@ -70,7 +70,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
 
       const p = await open();
       await p.locator('[data-view="usage"]').first().click();
-      await p.locator("#usageTab .opt").nth(1).click(); // Requests
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(1).click(); // Requests
       await p.locator("#ledWrap .led tbody tr").first().waitFor();
       assert.equal((await p.locator("#usageEvery").textContent()).trim(), w.label, "every 5 s to begin with");
 
@@ -109,7 +109,7 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
       assert(/\d{1,2}:\d{2}:\d{2}/.test(await p.locator("#usageReload").getAttribute("title")), "when they were read");
 
       // on Overview it reads the summary, and the allowances are read now too
-      await p.locator("#usageTab .opt").nth(0).click();
+      await p.locator(":is(#usageTab .opt, .nav-s):visible").nth(0).click();
       await p.locator("#stats .kpi:not(.loading-kpi)").first().waitFor();
       const o = calls.overview, q = calls.quotas, a = calls.asked;
       await p.locator("#usageReload").click();

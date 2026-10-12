@@ -72,3 +72,23 @@ func TestFastPick(t *testing.T) {
 		t.Fatalf("switched back, still fast: %v", body)
 	}
 }
+
+// A GPT model on a provider the user added by its address, switched fast in
+// the picker (#1615), is asked for priority there, whichever API the agent
+// speaks.
+func TestFastPickOwnProvider(t *testing.T) {
+	s, up := fasted(t)
+	if err := provider.SetFastPick("claude", "rl/gpt-6.1-sol", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []struct{ path, body string }{
+		{"/v1/messages", `{"model":"rl/gpt-6.1-sol","max_tokens":1024,"messages":[{"role":"user","content":"hi"}]}`},
+		{"/v1/chat/completions", `{"model":"rl/gpt-6.1-sol","messages":[{"role":"user","content":"hi"}]}`},
+	} {
+		r := postFrom(t, s, "claude", a.path, a.body)
+		host, path, _, body := up.last(t)
+		if host != "relay.example" || body["service_tier"] != "priority" || body["speed"] != nil || !r.Tries[0].Fast {
+			t.Fatalf("%s: sent to %s%s %v, traced %+v", a.path, host, path, body, r.Tries)
+		}
+	}
+}

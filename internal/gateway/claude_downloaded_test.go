@@ -9,20 +9,9 @@ import (
 	"testing"
 
 	"github.com/yetone/magpie/internal/claudecode"
-	"github.com/yetone/magpie/internal/proc"
 	"github.com/yetone/magpie/internal/provider"
 	"github.com/yetone/magpie/internal/testenv"
 )
-
-// noClaudeOfTheMachine hides the folders the machine's own tools are in.
-// An empty PATH is not enough: those are probed with it, and a claude in
-// one of them is this machine's, not the download these tests are about.
-func noClaudeOfTheMachine(t *testing.T) {
-	t.Helper()
-	was := proc.SystemBinDirs
-	proc.SystemBinDirs = func() []string { return nil }
-	t.Cleanup(func() { proc.SystemBinDirs = was })
-}
 
 // A machine with no Claude Code of its own (a server, a container) answers
 // a Claude subscription's request with the one `magpie claude-code install`
@@ -33,7 +22,6 @@ func TestClaudeSubscriptionRunsTheDownloadedClaudeCode(t *testing.T) {
 		t.Skip("a shell script stands in for Claude Code")
 	}
 	t.Setenv("PATH", t.TempDir()) // no claude of the machine's own
-	noClaudeOfTheMachine(t)
 	exe := filepath.Join(claudecode.Root(), "2.1.296", "claude")
 	t.Cleanup(func() { _ = claudecode.Remove() })
 	testenv.Program(t, exe, `#!/bin/sh
@@ -65,7 +53,6 @@ func TestClaudeSubscriptionWithoutClaudeCodeSaysHowToGetIt(t *testing.T) {
 		t.Skip("WSL may have one")
 	}
 	t.Setenv("PATH", t.TempDir())
-	noClaudeOfTheMachine(t)
 	_ = os.RemoveAll(claudecode.Root())
 	_, err := claudeBinary()
 	if err == nil || !strings.Contains(err.Error(), "magpie claude-code install") {

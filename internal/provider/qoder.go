@@ -23,6 +23,7 @@ import (
 
 	"github.com/yetone/magpie/internal/catalog"
 	"github.com/yetone/magpie/internal/qoder"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // qoderMu serializes checking, rotating and saving tokens, including sign-in
@@ -157,6 +158,9 @@ func qoderSaved(l savedLogin) (qoder.Credential, bool) {
 // With nothing to move it takes no lock, so listing accounts doesn't wait
 // behind a refresh.
 func migrateQoder() error {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	path := filepath.Join(filepath.Dir(Path()), "qoder.json")
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return nil
@@ -531,7 +535,7 @@ func startQoderSignIn(s *signInFlow, site *qoder.Site) error {
 	if err != nil {
 		return fmt.Errorf("%s sign-in: %w", site.Name, err)
 	}
-	ctx, cancel := context.WithDeadline(context.Background(), fl.deadline)
+	ctx, cancel := context.WithDeadline(s.via(context.Background()), fl.deadline)
 	s.mu.Lock()
 	s.st.URL, s.stop = authURL, cancel
 	s.mu.Unlock()

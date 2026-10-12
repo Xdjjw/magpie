@@ -80,15 +80,29 @@ for (const engine of (process.env.BROWSER ? [process.env.BROWSER] : ["chromium",
         }
         await browser.close();
       });
+      // Routing's groups, drawn above the list, can land after the day's
+      // list does and push it down (#1640): what is measured below is the
+      // page with them in
+      const grouped = page.waitForResponse((r) => new URL(r.url()).pathname === "/api/groups");
       await page.goto("http://magpie.test/?view=routing");
       await page.locator(".rt-days .rt-day").nth(1).click();
       await page.locator(".rt-req").nth(routes.length - 1).waitFor();
+      await grouped;
 
       const tags = await page.locator(".rt-req").evaluateAll((rows) => rows.map((r) => r.querySelector(".asked .kind")?.textContent || ""));
       assert.deepEqual(tags, want[lang].tags);
 
       const story = async (i) => {
         const row = page.locator(".rt-req").nth(i);
+        // the list is there a frame or two before the page is done with it:
+        // the next frame's redraw and fit grow the part above, and the day
+        // clicked is held in place by scrolling. Where the row was is taken
+        // once it has stayed put for 10 frames, not as it is drawn (#1640)
+        await row.evaluate((e) => new Promise((done) => {
+          let last = e.getBoundingClientRect().top, still = 0;
+          const look = () => { const y = e.getBoundingClientRect().top; if (y === last) still++; else { last = y; still = 0; } if (still >= 10) done(); else requestAnimationFrame(look); };
+          requestAnimationFrame(look);
+        }));
         const was = await row.evaluate((e) => e.getBoundingClientRect().top);
         const scrolled = await page.evaluate(() => document.scrollingElement.scrollTop);
         await row.click();

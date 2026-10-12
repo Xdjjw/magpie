@@ -36,6 +36,7 @@ import (
 	"github.com/yetone/magpie/internal/claudecode"
 	"github.com/yetone/magpie/internal/plugin"
 	"github.com/yetone/magpie/internal/proc"
+	"github.com/yetone/magpie/internal/settings"
 )
 
 // Account is the signed-in agent behind a provider.
@@ -184,17 +185,32 @@ func (p Provider) ListedAPIs(model string) []Protocol {
 // Sign authenticates a request to the provider, refreshing what needs it.
 // Plain providers get their key; accounts get the agent's tokens.
 func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, body []byte) error {
+	if p.Account != nil && settings.AccountDiscoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	ctx = p.Via(ctx) // a sign-in refreshed on the way goes through its proxy
 	if p.Account != nil && p.Account.sign != nil {
 		return p.Account.sign(ctx, req, body)
+	}
+	if p.IsVertex() {
+		// a Google token, which goes nowhere but the project's own address
+		if base := p.vertexBase(); base == "" || !strings.HasPrefix(req.URL.String(), base+"/") {
+			return fmt.Errorf("%s is asked only at Vertex AI, at its project's address", p.Name)
+		}
+		tok, err := p.vertexAccessToken(ctx)
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Authorization", "Bearer "+tok)
 	}
 	for k, v := range AuthHeaders(p, proto) {
 		req.Header.Set(k, v)
 	}
 	// The user's own headers ride on plain key+URL providers, after auth so
 	// they can override a default when a gateway insists on a private scheme.
-	// Written to the map directly, not via Set, so the name keeps the exact
-	// case the user typed — some gateways match header names case-sensitively.
+	// Written with the name as the user typed it — some gateways match
+	// header names case-sensitively — in place of the same header in any
+	// other case (PutUserHeader), so it is sent once, theirs.
 	// A list the request has its own of (anthropic-beta) is added to, not
 	// replaced: the user's betas go after those the agent asked.
 	for k, v := range p.Headers {
@@ -202,7 +218,7 @@ func (p Provider) Sign(ctx context.Context, req *http.Request, proto Protocol, b
 			MergeList(req.Header, k, v)
 			continue
 		}
-		req.Header[k] = []string{v}
+		catalog.PutUserHeader(req.Header, k, v)
 	}
 	return nil
 }
@@ -409,17 +425,15 @@ type claudeCredentialLocation struct {
 // claudeCredentialsPath is Claude Code's credentials file, where it keeps
 // its sign-in off the Mac's keychain.
 func claudeCredentialsPath() string {
-	dir := appdir.Getenv("CLAUDE_CONFIG_DIR")
-	if dir == "" {
-		home, _ := os.UserHomeDir()
-		dir = filepath.Join(home, ".claude")
-	}
-	return filepath.Join(dir, ".credentials.json")
+	return filepath.Join(appdir.ClaudeDir(), ".credentials.json")
 }
 
 func readClaudeCredential() (claudeCredentials, claudeCredentialLocation, bool) {
+	if settings.AccountDiscoveryOff() {
+		return claudeCredentials{}, claudeCredentialLocation{}, false
+	}
 	path := claudeCredentialsPath()
-	if b, err := os.ReadFile(path); err == nil {
+	if b, err := readAccountFile(path); err == nil {
 		if c, ok := parseClaudeCredentials(b); ok {
 			return c, claudeCredentialLocation{path: path}, true
 		}
@@ -489,6 +503,9 @@ func keychainText(out []byte) ([]byte, bool) {
 }
 
 func claudeCredential() (claudeCredentials, claudeCredentialLocation, bool) {
+	if settings.AccountDiscoveryOff() {
+		return claudeCredentials{}, claudeCredentialLocation{}, false
+	}
 	claudeCacheMu.Lock()
 	defer claudeCacheMu.Unlock()
 	if time.Since(claudeCacheAt) < claudeCacheTTL {
@@ -513,6 +530,9 @@ func forgetClaudeCredential() {
 }
 
 func saveClaudeCredential(loc claudeCredentialLocation, c claudeCredentials) error {
+	if discoveryOff() {
+		return errAccountDiscoveryOff
+	}
 	b, err := c.marshal()
 	if err != nil {
 		return err
@@ -590,6 +610,9 @@ func claudeIdentity() (user, plan string, signedOut bool) {
 
 // askClaudeStatus runs `claude auth status`; ok is false when it gave no answer.
 func askClaudeStatus() (user, plan string, signedOut, ok bool) {
+	if settings.AccountDiscoveryOff() {
+		return "", "", false, false
+	}
 	path := claudeExecutable()
 	if path == "" {
 		return "", "", false, false
@@ -699,6 +722,9 @@ func refreshFailed(status int, agent, msg string) error {
 
 // Accounts lists the signed-in agents as providers.
 func Accounts() []Provider {
+	if settings.AccountDiscoveryOff() {
+		return nil
+	}
 	rememberLogins(false)
 	home, _ := os.UserHomeDir()
 	cfg := appdir.Getenv("XDG_CONFIG_HOME")
@@ -796,7 +822,7 @@ func placeMoved(out, plugins []Provider) []Provider {
 }
 
 func readJSON(path string, v any) bool {
-	b, err := os.ReadFile(path)
+	b, err := readAccountFile(path)
 	if err != nil {
 		return false
 	}
@@ -867,8 +893,11 @@ type codexAuth struct {
 }
 
 func codexAccount(home string) (Provider, bool) {
-	path := filepath.Join(home, ".codex", "auth.json")
-	b, err := os.ReadFile(path)
+	if settings.AccountDiscoveryOff() {
+		return Provider{}, false
+	}
+	path := filepath.Join(appdir.CodexHomeIn(home), "auth.json")
+	b, err := readAccountFile(path)
 	var a codexAuth
 	if err != nil || json.Unmarshal(b, &a) != nil || a.Tokens.AccessToken == "" || a.AuthMode == "apikey" {
 		return Provider{}, false
@@ -1137,11 +1166,20 @@ func copilotStandIn(a copilotApp) (copilotApp, bool) {
 	return cli, ok && copilotSameAccount(cli, a)
 }
 
-// session is what this sign-in's requests carry. An editor's token GitHub
-// refuses is replaced by the Copilot CLI's sign-in of the same account,
-// sent as the CLI sends it; with none, the error names the file the
-// refused token is in, since it is read before the CLI's (#1238).
+// session is what this sign-in's requests carry, and what GitHub said of
+// it is kept on its account: refused, it is signed out; served, it isn't
+// (copilotSessionDone).
 func (a copilotApp) session(ctx context.Context) (copilotSession, error) {
+	s, err := a.trade(ctx)
+	copilotSessionDone(a, err)
+	return s, err
+}
+
+// trade gets this sign-in's session. An editor's token GitHub refuses is
+// replaced by the Copilot CLI's sign-in of the same account, sent as the
+// CLI sends it; with none, the error names the file the refused token is
+// in, since it is read before the CLI's (#1238).
+func (a copilotApp) trade(ctx context.Context) (copilotSession, error) {
 	if a.cli {
 		return copilotDirect(ctx, a)
 	}

@@ -12,6 +12,7 @@ package gateway
 // what the Routing page says is when the account really comes back.
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"net/http"
@@ -132,6 +133,25 @@ var (
 	plannedWords = regexp.MustCompile(`(?i)quota|usage.?limit|hit your .*limit|limit.{0,24}resets|per.?(day|week|month)|daily|weekly|monthly|额度|用量|套餐|限额已用完`)
 	// resetsWords: Claude Code's "usage limit reached|<when it resets>".
 	resetsWords = regexp.MustCompile(`(?i)limit reached\|(\d{10})\b`)
+	// resetsWhen: a 429 that says in words when the account is back, as
+	// WorkBuddy's do in both its builds (#1669): "将在 2026-10-11 20:16:02
+	// UTC+8重置", "your usage will reset at 2026-10-11 12:37:53 UTC+8, ...".
+	// Only the reset phrasing right beside a whole date and time with its
+	// offset is read, and the offset must be followed by what follows it
+	// there (重置, or a comma or full stop), so a refusal cut short after
+	// "UTC" or "UTC+" isn't read as UTC: another vendor's date in passing
+	// ("deprecated on …"), or one with no offset, is not a reset time.
+	resetsWhen = regexp.MustCompile(`(?i)(?:\bresets? at|将在|将于)\s*(\d{4})-(\d{1,2})-(\d{1,2})[ T](\d{1,2}):(\d{2}):(\d{2})\s*(?:UTC|GMT)([+-])(\d{1,2})(?::?(\d{2}))?(?:\s*(?:重置|[,.;，。；]))`)
+	// otherModels: a refusal that says the account's other models still
+	// answer ("切换其他模型", "switch to the other models"): its limit is
+	// the model's, and the model alone rests
+	otherModels = regexp.MustCompile(`(?i)switch(?:ing)? to (?:the )?other models?|切换(?:到)?其他模型`)
+	// quotaCodes: a vendor's own code for a used-up allowance, which alone
+	// makes a server error (5xx) one over the quota: Claude Code's resets
+	// line, the ChatGPT backend's usage_limit_reached, Google's
+	// RESOURCE_EXHAUSTED. A 5xx's words don't: a relay's 500 "当前模型 …
+	// 负载已经达到上限，请稍后重试" is its load's limit, not the plan's (#1418).
+	quotaCodes = regexp.MustCompile(`(?i)limit reached\|\d{10}\b|usage_limit_reached|RESOURCE_EXHAUSTED`)
 )
 
 // Why a candidate failed, as rest tells it.
@@ -197,6 +217,39 @@ const loopErrType = "reply_loop"
 // over HTTP (proxyconnect) or SOCKS (socks connect).
 var proxyDown = regexp.MustCompile(`proxyconnect |socks connect `)
 
+// wordsOf is an error body as its words are matched: a JSON body that
+// escapes what isn't ASCII as \uXXXX (Python's json.dumps does by default)
+// has its strings decoded and put after it, one to a line, so "用量",
+// "频率" or "将在 … 重置" are read whether the vendor escaped them or not
+// (#1669). Any other body is matched as it is.
+func wordsOf(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`\u`)) {
+		return body
+	}
+	var v any
+	if json.Unmarshal(body, &v) != nil {
+		return body
+	}
+	out := append([]byte(nil), body...)
+	var walk func(any)
+	walk = func(x any) {
+		switch x := x.(type) {
+		case string:
+			out = append(append(out, '\n'), x...)
+		case map[string]any:
+			for _, y := range x {
+				walk(y)
+			}
+		case []any:
+			for _, y := range x {
+				walk(y)
+			}
+		}
+	}
+	walk(v)
+	return out
+}
+
 // failure says why a reply failed.
 func failure(status int, body []byte) string {
 	if status == http.StatusBadGateway && proxyDown.Match(body) {
@@ -205,6 +258,8 @@ func failure(status int, body []byte) string {
 	if _, ok := provider.Verification(body); ok && (status == 401 || status == 403) {
 		return failVerify
 	}
+	// the words are matched decoded, too
+	body = wordsOf(body)
 	switch {
 	case overflowed(status, body):
 		// Kimi's "exceeded model token limit" is the conversation's
@@ -212,9 +267,15 @@ func failure(status int, body []byte) string {
 		return failOther
 	case status == 402, creditWords.Match(body) && (status != 429 || brokeWords.Match(body)) || strings.Contains(string(body), "insufficient_quota"):
 		return failCredit
+	case status == 429 && resetsWhen.Match(body):
+		// out until the time it names, in whichever language it said so:
+		// WorkBuddy's Chinese refusal read as out of quota (用量), its
+		// English one as a rate limit, and each rested its own fallback
+		// (#1669)
+		return failQuota
 	case status == 429 && rateWords.Match(body) && !plannedWords.Match(body):
 		return failRate
-	case usedUpWords.Match(body), status == 429 && plannedWords.Match(body):
+	case status >= 500 && quotaCodes.Match(body), status < 500 && usedUpWords.Match(body), status == 429 && plannedWords.Match(body):
 		return failQuota
 	case status == 429:
 		return failRate
@@ -228,6 +289,10 @@ func failure(status int, body []byte) string {
 // as failure says, and rests as before.
 func failureOf(c candidate, status int, body []byte) string {
 	if status >= 400 && c.p.Account != nil && c.p.Account.Agent == "claude" && provider.ClaudeSignInRequired(string(body)) {
+		return failAuth
+	}
+	// a subscription's sign-in its vendor revoked (#1793): no wait mends it
+	if provider.RevokedAccount(c.p.Account) && provider.SignInRevoked(status, body) {
 		return failAuth
 	}
 	return failure(status, body)
@@ -347,15 +412,58 @@ func resetsIn(body []byte, now time.Time) time.Duration {
 }
 
 // resetsAt is how long until a used-up subscription is back, as its
-// refusal says: Claude Code's "usage limit reached|<unix>", or ChatGPT's
-// resets_at / resets_in_seconds. Zero when it doesn't say.
+// refusal says: Claude Code's "usage limit reached|<unix>", ChatGPT's
+// resets_at / resets_in_seconds, or a time written beside the word for
+// coming back (resetsWritten). Zero when it doesn't say.
 func resetsAt(body []byte, now time.Time) time.Duration {
 	if m := resetsWords.FindSubmatch(body); m != nil {
 		if n, _ := strconv.ParseInt(string(m[1]), 10, 64); time.Unix(n, 0).After(now) {
 			return time.Unix(n, 0).Sub(now)
 		}
 	}
-	return resetsIn(body, now)
+	if d := resetsIn(body, now); d > 0 {
+		return d
+	}
+	return resetsWritten(body, now)
+}
+
+// longestWritten is the furthest off a reset time written in words is
+// believed: WorkBuddy's frequency limits come back within the day, and a
+// time further off than a week is more likely a misreading than a reset.
+const longestWritten = 7 * 24 * time.Hour
+
+// resetsWritten is how long until the time a refusal names in words
+// (resetsWhen), read in the offset it is written with. Zero when there is
+// none, it isn't a real date, it has passed, or it is over longestWritten
+// off.
+func resetsWritten(body []byte, now time.Time) time.Duration {
+	m := resetsWhen.FindSubmatch(wordsOf(body))
+	if m == nil {
+		return 0
+	}
+	n := make([]int, 9)
+	for i, g := range [][]byte{m[1], m[2], m[3], m[4], m[5], m[6], m[8], m[9]} {
+		if len(g) > 0 {
+			n[i], _ = strconv.Atoi(string(g))
+		}
+	}
+	y, mo, d, h, mi, sec, oh, om := n[0], n[1], n[2], n[3], n[4], n[5], n[6], n[7]
+	if oh > 14 || om > 59 {
+		return 0
+	}
+	off := oh*3600 + om*60
+	if string(m[7]) == "-" {
+		off = -off
+	}
+	t := time.Date(y, time.Month(mo), d, h, mi, sec, 0, time.FixedZone("", off))
+	// a date time.Date had to carry over (2026-13-45, 24:61) isn't one
+	if t.Year() != y || int(t.Month()) != mo || t.Day() != d || t.Hour() != h || t.Minute() != mi || t.Second() != sec {
+		return 0
+	}
+	if w := t.Sub(now); w > 0 && w <= longestWritten {
+		return w
+	}
+	return 0
 }
 
 // restAfter sets a failed candidate aside for as long as its failure says.
@@ -461,7 +569,10 @@ func (s *Server) restAfterMarked(c candidate, status int, header http.Header, bo
 	if why == failRate && c.isOpenRouterFree() && sharedPool {
 		id = c.restID()
 	}
-	if pooled || unserved {
+	// a refusal that names its reset and points to the account's other
+	// models is the model's limit: the others still answer (WorkBuddy's
+	// "您也可以切换其他模型继续使用", #1669)
+	if pooled || unserved || why == failQuota && resetsWhen.Match(wordsOf(body)) && otherModels.Match(wordsOf(body)) {
 		id = c.restID()
 	}
 	r.Key = id
@@ -502,15 +613,20 @@ func (s *Server) rateRest(c candidate, header http.Header, body []byte, sharedPo
 	if n > 1 {
 		by = "backoff"
 	}
-	said := retryAfter(header, now)
+	// a Retry-After is held to the longest wait, as any vendor's "try
+	// again in" is; a time the refusal names for when the account is back
+	// (resetsAt, or as keepRetry noted it) is a statement of when it is,
+	// believed as far as out of quota believes it: the same words rested
+	// 8 days read as out of quota and an hour read as a rate limit (#1669)
+	said, saidBy := retryAfter(header, now), "retry-after"
 	if w := resetsNoted(header, now); w > said {
-		said = min(w, longestWait)
+		said, saidBy = min(w, longestQuota), "resets"
 	}
 	if w := resetsAt(body, now); w > said {
-		said = min(w, longestWait)
+		said, saidBy = min(w, longestQuota), "resets"
 	}
 	if said > 0 && said >= d {
-		d, by = said, "retry-after"
+		d, by = said, saidBy
 	}
 	return d, by, n
 }
@@ -650,9 +766,12 @@ func (c candidate) allowanceKey() allowanceKey {
 type left struct {
 	used   float64
 	renews []time.Time
-	soon   []time.Time // renews as Smart ranks them (Allowance.Renewal)
-	pace   float64     // weekly pace: share of its week left per hour until it renews
-	due    time.Time   // when the window that pace went by renews; zero when not known
+	// fullest: when the window used is the share of renews
+	// (Allowance.Fullest), zero when not known
+	fullest time.Time
+	soon    []time.Time // renews as Smart ranks them (Allowance.Renewal)
+	pace    float64     // weekly pace: share of its week left per hour until it renews
+	due     time.Time   // when the window that pace went by renews; zero when not known
 	// restarts: when an auto-used reset starts its windows again
 	// (Allowance.Restarts), zero when none will; dueRestart: due is that,
 	// sooner than the window renews by itself
@@ -713,7 +832,7 @@ func weighRouted(p provider.Provider, cs []candidate, model string, from provide
 			pc, due := a.Pace(c.model, now)
 			amt, of, unit := a.Count(c.model, now)
 			rs := a.Restarts(now)
-			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
+			wg.lefts[c.allowanceKey()] = left{used: u, renews: r, fullest: a.Fullest(c.model, now), soon: a.Renewal(c.model, now), pace: pc, due: due, amount: amt, of: of, unit: unit,
 				restarts: rs, dueRestart: !rs.IsZero() && due.Equal(rs)} // one not known counts as unused
 		}
 	}

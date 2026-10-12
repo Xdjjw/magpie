@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -29,16 +30,25 @@ func (u *deepseekResponses) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	u.mu.Lock()
 	u.inputs = append(u.inputs, q.Input)
 	u.mu.Unlock()
+	// api.deepseek.com's /v1/responses (deepseek-flash, high, checked
+	// 2026-10-11 for #1592) also refuses a tool call whose step has no
+	// reasoning item, as one of the ChatGPT backend's sealed items leaves it
+	thought := false
 	for _, it := range q.Input {
-		if it["type"] != "reasoning" {
-			continue
-		}
-		ok := false
-		content, _ := it["content"].([]any)
-		for _, c := range content {
-			if m, _ := c.(map[string]any); m["type"] == "reasoning_text" && m["text"] != "" {
-				ok = true
+		ok := true
+		switch {
+		case it["type"] == "reasoning":
+			thought, ok = true, false
+			content, _ := it["content"].([]any)
+			for _, c := range content {
+				if m, _ := c.(map[string]any); m["type"] == "reasoning_text" && m["text"] != "" {
+					ok = true
+				}
 			}
+		case it["type"] == "function_call":
+			ok = thought
+		case it["type"] == "function_call_output", it["role"] == "user":
+			thought = false
 		}
 		if !ok {
 			w.Header().Set("Content-Type", "application/json")
@@ -108,15 +118,102 @@ func TestDeepSeekReasoningPassedThrough(t *testing.T) {
 		t.Fatalf("reasoning_text sent = %q, want the summary", got)
 	}
 
-	// nothing to give back: the refusal reaches the client...
-	if code, _ := ask(`{"type":"reasoning","id":"rs_2","summary":[],"content":null,"encrypted_content":null}`); code == 200 {
-		t.Fatal("a reasoning item with nothing in it was answered")
+	// nothing to give back: it goes with a space, which DeepSeek takes
+	if code, b := ask(`{"type":"reasoning","id":"rs_2","summary":[],"content":null,"encrypted_content":null}`); code != 200 {
+		t.Fatalf("a reasoning item with nothing in it: %d %s", code, b)
 	}
-	// ...and the next turn's reasoning, which DeepSeek gave, still goes back
+	if got := reasoningText(up.last()); got != noReasoning {
+		t.Fatalf("an empty item's reasoning_text sent = %q, want %q", got, noReasoning)
+	}
+	// the turn's own reasoning, which DeepSeek gave, goes back as it was
 	if code, b := ask(`{"type":"reasoning","id":"rs_3","summary":[],"content":[{"type":"reasoning_text","text":"I should list the files first."}],"encrypted_content":null}`); code != 200 {
-		t.Fatalf("after a refusal: %d %s", code, b)
+		t.Fatalf("DeepSeek's own reasoning: %d %s", code, b)
 	}
 	if got := reasoningText(up.last()); got != "I should list the files first." {
-		t.Fatalf("after a refusal, reasoning_text sent = %q", got)
+		t.Fatalf("DeepSeek's own reasoning_text sent = %q", got)
+	}
+}
+
+// TestDeepSeekGroupMemberAfterChatGPT (#1592, waangzh): a Codex routing
+// group falls from ChatGPT to DeepSeek's own API. Codex's history holds the
+// ChatGPT backend's sealed reasoning (encrypted_content, no summary at
+// high effort) and, for a turn another member served, tool calls with no
+// reasoning item at all. api.deepseek.com refused both with the reporter's
+// 400 word for word; each now goes with a reasoning_text, the sealed item
+// keeping what it had.
+func TestDeepSeekGroupMemberAfterChatGPT(t *testing.T) {
+	fresh(t)
+	up := &deepseekResponses{}
+	srv := httptest.NewServer(up)
+	defer srv.Close()
+	if err := provider.Save(provider.Provider{ID: "deepseek", Name: "DeepSeek", Preset: "deepseek", Key: "k", Models: []string{"deepseek-flash"}, Responses: srv.URL + "/v1"}); err != nil {
+		t.Fatal(err)
+	}
+	user := `{"type":"message","role":"user","content":[{"type":"input_text","text":"fix the login bug"}]}`
+	call := func(id string) string {
+		return `{"type":"function_call","call_id":"` + id + `","name":"shell","arguments":"{\"command\":[\"ls\"]}"},
+		  {"type":"function_call_output","call_id":"` + id + `","output":"main.go"}`
+	}
+	sealed := `{"type":"reasoning","id":"rs_0d1f","summary":[],"content":null,"encrypted_content":"gAAAAABpZm9vYmFy"}`
+	if err := provider.SaveGroup(provider.Group{ID: "codex-different", Name: "codex-different", Members: []string{"deepseek/deepseek-flash"}, Routing: provider.Ordered}); err != nil {
+		t.Fatal(err)
+	}
+	for name, input := range map[string]string{
+		"sealed by ChatGPT": user + `,` + sealed + `,` + call("call_1"),
+		"no reasoning item": user + `,` + call("call_1"),
+		"second step bare":  user + `,` + sealed + `,` + call("call_1") + `,` + call("call_2"),
+		"an assistant note": user + `,{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Looking."}]},` + call("call_1"),
+	} {
+		for _, model := range []string{"deepseek/deepseek-flash", "group/codex-different"} {
+			code, b := post(t, "/v1/responses", `{"model":"`+model+`","stream":true,"store":false,"reasoning":{"effort":"high","summary":"auto"},"include":["reasoning.encrypted_content"],
+		  "tools":[{"type":"function","name":"shell","parameters":{"type":"object","properties":{"command":{"type":"array","items":{"type":"string"}}}}}],"input":[`+input+`]}`)
+			if code != 200 {
+				t.Errorf("%s, %s: %d %s", name, model, code, b)
+			}
+		}
+		for _, it := range up.last() {
+			if it["type"] == "reasoning" && it["id"] == "rs_0d1f" && it["encrypted_content"] != "gAAAAABpZm9vYmFy" {
+				t.Errorf("%s: the sealed item lost its encrypted_content: %v", name, it)
+			}
+		}
+	}
+}
+
+// Translated to a Responses upstream (Codex's web_search to DeepSeek's
+// own API, #388), a DeepSeek model's tool call with no thinking goes after
+// a reasoning item all the same (#1592); one that thought keeps its own,
+// and another model behind a relay is sent none.
+func TestTranslatedDeepSeekCallWithoutReasoning(t *testing.T) {
+	r, err := parseResponses([]byte(`{"model":"m","input":[
+		{"type":"message","role":"user","content":"hi"},
+		{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"gAAAAABpZm9vYmFy"},
+		{"type":"function_call","call_id":"c1","name":"sh","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c1","output":"ok"},
+		{"type":"reasoning","summary":[{"type":"summary_text","text":"Once more."}]},
+		{"type":"function_call","call_id":"c2","name":"sh","arguments":"{}"},
+		{"type":"function_call_output","call_id":"c2","output":"ok"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var q struct {
+		Input []struct {
+			Type    string  `json:"type"`
+			Content []rText `json:"content"`
+		} `json:"input"`
+	}
+	json.Unmarshal(buildResponses(r, "deepseek-flash", "api.deepseek.com", false), &q)
+	var got []string
+	for _, it := range q.Input {
+		s := it.Type
+		if it.Type == "reasoning" && len(it.Content) == 1 {
+			s += "=" + it.Content[0].Text
+		}
+		got = append(got, s)
+	}
+	if want := "message,reasoning= ,function_call,function_call_output,reasoning=Once more.,function_call,function_call_output"; strings.Join(got, ",") != want {
+		t.Fatalf("sent %s\nwant %s", strings.Join(got, ","), want)
+	}
+	if b := buildResponses(r, "gpt-5.4", "relay.example", false); strings.Contains(string(b), `"reasoning_text"`) {
+		t.Fatalf("gpt-5.4 was given reasoning: %s", b)
 	}
 }

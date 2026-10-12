@@ -73,16 +73,16 @@ func TestFableAndMythosNeverGetABudget(t *testing.T) {
 		Models: []string{"claude-fable-5-1", "claude-mythos-5"}}); err != nil {
 		t.Fatal(err)
 	}
-	for _, c := range []struct{ name, path, body, effort string }{
+	for _, c := range []struct{ name, path, body, effort, thinking string }{
 		{"budget relayed", "/v1/messages",
 			`{"model":"anth/claude-fable-5-1","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":10000},"messages":[{"role":"user","content":"hi"}]}`,
-			"medium"},
+			"medium", `{"display":"summarized","type":"adaptive"}`},
 		{"chat's effort", "/v1/chat/completions",
 			`{"model":"anth/claude-fable-5-1","reasoning_effort":"high","messages":[{"role":"user","content":"hi"}]}`,
-			"high"},
+			"high", `{"display":"summarized","type":"adaptive"}`},
 		{"mythos, budget relayed", "/v1/messages",
 			`{"model":"anth/claude-mythos-5","max_tokens":32000,"thinking":{"type":"enabled","budget_tokens":4000},"messages":[{"role":"user","content":"hi"}]}`,
-			"low"},
+			"low", `{"display":"summarized","type":"adaptive"}`},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			code, body := post(t, c.path, c.body)
@@ -90,8 +90,8 @@ func TestFableAndMythosNeverGetABudget(t *testing.T) {
 				t.Fatalf("status %d: %s", code, body)
 			}
 			got := up.last()
-			if th, _ := json.Marshal(got["thinking"]); string(th) != `{"type":"adaptive"}` {
-				t.Errorf("thinking = %s, want adaptive", th)
+			if th, _ := json.Marshal(got["thinking"]); string(th) != c.thinking {
+				t.Errorf("thinking = %s, want %s", th, c.thinking)
 			}
 			oc, _ := got["output_config"].(map[string]any)
 			if e, _ := oc["effort"].(string); e != c.effort {

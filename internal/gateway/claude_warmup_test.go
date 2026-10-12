@@ -110,7 +110,7 @@ func TestClaudeUsageRunsClaudeCode(t *testing.T) {
 	testenv.Program(t, filepath.Join(dir, "claude"), script)
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("CLAUDE_CODE_OAUTH_TOKEN", "leaked")
-	got, err := claudeUsage(context.Background())
+	got, err := claudeUsage(context.Background(), "")
 	if err != nil || got != text {
 		t.Fatalf("usage %q %v", got, err)
 	}
@@ -130,7 +130,7 @@ func TestClaudeUsageSendsItsRequest(t *testing.T) {
 	for _, k := range []string{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING", "DISABLE_AUTOUPDATER"} {
 		t.Setenv(k, "")
 	}
-	if _, err := claudeUsage(context.Background()); err != nil {
+	if _, err := claudeUsage(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	b, _ := os.ReadFile(log)
@@ -146,11 +146,31 @@ func TestClaudeUsageSendsItsRequest(t *testing.T) {
 		t.Errorf("warm-up lacks CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:\n%s", b)
 	}
 	t.Setenv("CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1")
-	if _, err := claudeUsage(context.Background()); err != nil {
+	if _, err := claudeUsage(context.Background(), ""); err != nil {
 		t.Fatal(err)
 	}
 	if b, _ := os.ReadFile(log); !strings.Contains(string(b), "traffic:1\n") {
 		t.Errorf("/usage run dropped the user's CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC:\n%s", b)
+	}
+}
+
+func TestClaudeUsageRunsInSavedAccountDirectory(t *testing.T) {
+	log := fakeWarmClaude(t, `{"type":"result","is_error":false,"result":"Current session: 17% used"}`, 0)
+	t.Setenv("CLAUDE_CONFIG_DIR", "/the/users/own")
+	t.Setenv("CLAUDE_SECURESTORAGE_CONFIG_DIR", "/another/account")
+	got, err := claudeUsage(context.Background(), "/saved/account")
+	if err != nil || got != "Current session: 17% used" {
+		t.Fatalf("usage %q %v", got, err)
+	}
+	b, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), "dir:/saved/account\n") || !strings.Contains(string(b), "[-p][/usage]") {
+		t.Fatalf("saved account's /usage ran in the wrong directory:\n%s", b)
+	}
+	if os.Getenv("CLAUDE_CONFIG_DIR") != "/the/users/own" || os.Getenv("CLAUDE_SECURESTORAGE_CONFIG_DIR") != "/another/account" {
+		t.Fatal("reading saved usage changed the caller's account directory")
 	}
 }
 
@@ -165,7 +185,7 @@ func TestClaudeVerboseOutput(t *testing.T) {
 		{"type": "result", "subtype": "success", "is_error": false, "result": text},
 	})
 	fakeWarmClaude(t, string(b), 0)
-	got, err := claudeUsage(context.Background())
+	got, err := claudeUsage(context.Background(), "")
 	if err != nil || got != text {
 		t.Fatalf("usage %q %v", got, err)
 	}

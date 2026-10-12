@@ -73,10 +73,10 @@ func init() {
 	provider.UsageClaudeVia(claudeUsage)
 }
 
-// claudeUsage is what Claude Code's /usage prints for the account it is
-// signed in to: a command it answers itself, asking no model, run as
+// claudeUsage is what Claude Code's /usage prints for the account in
+// configDir (empty for its own): a command asking no model, run as
 // askClaude runs it, with nothing of the user's settings and nothing kept.
-func claudeUsage(ctx context.Context) (string, error) {
+func claudeUsage(ctx context.Context, configDir string) (string, error) {
 	binary, err := claudeBinary()
 	if err != nil {
 		return "", err
@@ -99,7 +99,7 @@ func claudeUsage(ctx context.Context) (string, error) {
 		})
 	}
 	env = append(env, "DISABLE_TELEMETRY=1", "DISABLE_ERROR_REPORTING=1", "DISABLE_AUTOUPDATER=1")
-	cmd.Env = binary.env(netproxy.EnvWith(claudeProxy(ctx), env), "")
+	cmd.Env = binary.env(netproxy.EnvWith(claudeProxy(ctx), env), configDir)
 	var out, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &out, &stderr
 	runErr := cmd.Run()

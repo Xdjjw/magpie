@@ -128,6 +128,26 @@ func Sets(goos, home string, getenv func(string) string) []Dirs {
 	return []Dirs{{Data: filepath.Join(d, "Claude"), Mode: filepath.Join(d, "Claude"), ThreeP: filepath.Join(d, "Claude-3p")}}
 }
 
+// Installed says whether Desktop's program is installed on goos, whatever
+// it has written: on Windows, Squirrel's setup puts it in
+// %LOCALAPPDATA%\AnthropicClaude\claude.exe, and the MSIX's has its
+// package folder (Sets' Package). Installed and not yet opened, Desktop has
+// none of its folders (#1482); it still reads at its first start what
+// magpie writes into them. False elsewhere, where the folders tell.
+func Installed(goos, home string, getenv func(string) string) bool {
+	if goos != "windows" {
+		return false
+	}
+	local := getenv("LOCALAPPDATA")
+	if local == "" || !filepath.IsAbs(local) {
+		local = filepath.Join(home, "AppData", "Local")
+	}
+	if fi, err := os.Stat(filepath.Join(local, "AnthropicClaude", "claude.exe")); err == nil && fi.Mode().IsRegular() {
+		return true
+	}
+	return packageDir(local) != ""
+}
+
 // Everywhere are the folders of every set on this computer (Sets), each
 // once: where the readers look for Desktop's sessions and skills.
 func Everywhere() []string {
@@ -142,6 +162,9 @@ func Everywhere() []string {
 	}
 	return out
 }
+
+// LastRun is when Desktop last ran in any of dirs (lastRun).
+func LastRun(dirs ...string) time.Time { return lastRun(dirs...) }
 
 // lastRun is when Desktop last ran in any of dirs, its userData folders:
 // the time Chromium's "Local State" there was written, zero for none. A
