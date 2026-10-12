@@ -237,18 +237,28 @@ Gemini 跳过网关工具注入但共用技能索引 pipeline 的不一致仍未
 | `go test -tags nogui ./...` | **53 个包全部通过，0 失败**（本次之前：4 个包 6 个用例失败） |
 | `go test -race -tags nogui ./internal/gateway/xk/... ./internal/gateway -run 'Test(BuildAsync\|Mcp\|Xkeysmith\|Semantic\|Capability\|XkMaster\|LadderDeadlineDuringForward)' -count=1` | 通过，无 data race |
 | 每个新用例「拿掉修复就会失败」 | 5 个新用例逐一验证过，失败信息见上文各节 |
+| `make cli`（发布构建路径） | 通过；产物 `magpie` 39,124,962 字节，sha256 `03bf79e3b489c538db7849b92080843161dcf8cd1437469ea5be6180a6c15d35`，版本串 `v0.1.1157-47-gb4af0ed3` |
+| 推送 | `origin/codex/magpie-semantic-integration`：`aa00e2e4..b4af0ed3`（fast-forward） |
 
 **没有跑到的**：真实上游联调；GUI 的 Playwright 套件（本次没动 `internal/gui/assets`）；
 Windows / Linux 实机（只做了交叉 vet 与 build，按 code-standards 那不算测试）。
+
+## 分支关系（已核实）
+
+`xkeysmith`（主工作树，`e3e8c9c4`）是 `codex/magpie-semantic-integration` 的**祖先**：
+两者没有分叉，`xkeysmith` 没有任何整合分支缺少的提交，整合分支比它多 6 个提交
+（`a31e7b23`、`aa00e2e4`，加上本次的 4 个）。主工作树那两个二进制的本地修改与源码无关。
 
 ## 后续工作顺序
 
 1. 拍板 Skills 的默认模式（见上文「一处默认行为需要确认」）。
 2. 对齐 504 的 `error.type` 契约，或明确记录「与 Rust 版不一致」是接受的。
 3. Gemini 与技能索引 / full 模式的关系。
-4. 提交并推送本轮源码与测试，核实整合分支与 `xkeysmith` 分支的关系。
-5. 从确认的源码版本重建 CLI 与桌面包，记录提交号与产物校验和，再核对安装后实际运行的版本。
-6. 后续迭代补齐 Skills、Tools、MCP 和审计的桌面管理入口。
+4. **从 `b4af0ed3` 重建 CLI 与桌面包**：`make cli` 已验证（校验和见上），
+   但 fork 自己那两个产物（主工作树的 `xkeysmith-magpie-cli` 与
+   `xkeysmith-magpie-app.zip`，停在 10-11 12:49）的打包配方没在仓库里，
+   需要按原有流程重做，并记录提交号与校验和、核对安装后实际运行的版本。
+5. 后续迭代补齐 Skills、Tools、MCP 和审计的桌面管理入口。
 
 ## 历史上下文
 
