@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/yetone/magpie/internal/gateway"
@@ -28,7 +30,7 @@ func xkCmd(args []string) error {
 			state = "off"
 		}
 		fmt.Println("xkeysmith semantic pipeline:", state)
-		fmt.Println("usage: magpie xk on|off|status|persona [set <text>|set - <file|clear]")
+		fmt.Println("usage: magpie xk on|off|status|persona [set <text>|set - <file>|clear|show]|stats [N]")
 		return nil
 	}
 	switch args[0] {
@@ -55,10 +57,70 @@ func xkCmd(args []string) error {
 		}
 	case "persona":
 		return xkPersonaCmd(args[1:])
+	case "stats":
+		return xkStatsCmd(args[1:])
 	default:
-		return fmt.Errorf("unknown xk command %q: use on|off|status|persona", args[0])
+		return fmt.Errorf("unknown xk command %q: use on|off|status|persona|stats", args[0])
 	}
 	return nil
+}
+
+// `magpie xk stats [N]`:最近 N 条阶梯尝试(默认 500)的拒绝率与分层分布。
+// persona 前后各跑一段,这个数字一对比就是调参依据。
+func xkStatsCmd(args []string) error {
+	last := 500
+	if len(args) > 0 {
+		n, err := strconv.Atoi(args[0])
+		if err != nil || n < 1 {
+			return fmt.Errorf("usage: magpie xk stats [N] (N>=1)")
+		}
+		last = n
+	}
+	s, err := gateway.XkStats(last)
+	if err != nil {
+		return err
+	}
+	if s.Attempts == 0 {
+		fmt.Println("no ladder attempts recorded yet(审计目录还没有数据)")
+		return nil
+	}
+	fmt.Printf("attempts %d · requests %d · refused %d (%.1f%% of attempts, %.1f%% of requests hit a refusal)\n",
+		s.Attempts, s.Requests, s.Refused, s.RefusalRate*100, s.RequestRefusalRate*100)
+	fmt.Printf("decisions: accepted %d · escalated %d · stopped %d\n", s.Accepted, s.Escalated, s.Stopped)
+	fmt.Println("layer   attempts  passed  uncertain  refused  refuse%")
+	for _, row := range s.Layers {
+		fmt.Printf("%-6s %8d %7d %10d %8d %7.1f\n", row.Layer, row.Attempts, row.Passed, row.Uncertain, row.Refused, row.RefusePct*100)
+	}
+	if len(s.Families) > 0 {
+		fmt.Println("not-passed families:")
+		for _, k := range sortedByCount(s.Families) {
+			fmt.Printf("  %-24s %d\n", k, s.Families[k])
+		}
+	}
+	if len(s.Signals) > 0 {
+		fmt.Println("top not-passed signals:")
+		for i, k := range sortedByCount(s.Signals) {
+			if i >= 5 {
+				break
+			}
+			fmt.Printf("  %-32s %d\n", k, s.Signals[k])
+		}
+	}
+	return nil
+}
+
+func sortedByCount(m map[string]int) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if m[keys[i]] != m[keys[j]] {
+			return m[keys[i]] > m[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
 }
 
 func xkPersonaCmd(args []string) error {
