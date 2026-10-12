@@ -78,3 +78,25 @@ jobs:
           name: magpie-cli-${{ matrix.goos }}-${{ matrix.goarch }}
           path: magpie-cli*
           if-no-files-found: error
+
+  windows-app:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 上游 make release-windows 的复刻:go-winres 嵌图标/manifest,
+      # production tag + -H windowsgui 出无控制台的托盘应用,双架构。
+      - name: Build Windows desktop app
+        run: make release-windows
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: magpie-desktop-windows
+          path: dist/magpie-windows-*.exe
+          if-no-files-found: error
