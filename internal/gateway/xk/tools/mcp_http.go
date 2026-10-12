@@ -34,6 +34,9 @@ type httpClient struct {
 	sessionID string
 	nextID    int
 	mu        sync.Mutex
+	// ctx 是连接的生命周期(平面的 conn):Close 取消它,发现期的每个
+	// 请求都从它派生 —— 否则 initialize 之外的阶段要等自身超时才罢手。
+	ctx context.Context
 }
 
 func newHTTPClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*httpClient, error) {
@@ -49,7 +52,7 @@ func newHTTPClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*ht
 	}
 	c := &httpClient{
 		server: cfg.Name, url: cfg.URL, headers: cfg.Headers,
-		client: &http.Client{Timeout: timeout}, nextID: 1,
+		client: &http.Client{Timeout: timeout}, nextID: 1, ctx: ctx,
 	}
 	if _, err := c.requestContext(ctx, "initialize", map[string]any{
 		"protocolVersion": "2025-06-18",
@@ -58,7 +61,7 @@ func newHTTPClient(ctx context.Context, cfg McpServerCfg, timeoutMS uint64) (*ht
 	}); err != nil {
 		return nil, err
 	}
-	if err := c.notify("notifications/initialized"); err != nil {
+	if err := c.notifyContext(ctx, "notifications/initialized"); err != nil {
 		return nil, err
 	}
 	return c, nil
@@ -114,9 +117,15 @@ func (c *httpClient) requestContext(ctx context.Context, method string, params a
 }
 
 func (c *httpClient) notify(method string) error {
+	return c.notifyContext(c.ctx, method)
+}
+
+// notifyContext sends a notification derived from ctx: one sent during
+// discovery carries the plane's lifecycle, so Close ends it at once.
+func (c *httpClient) notifyContext(ctx context.Context, method string) error {
 	payload := map[string]any{"jsonrpc": "2.0", "method": method}
 	body, _ := json.Marshal(payload)
-	req, err := http.NewRequest("POST", c.url, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.url, bytes.NewReader(body))
 	if err != nil {
 		return err
 	}
@@ -183,7 +192,9 @@ func extractResult(raw []byte) (json.RawMessage, error) {
 }
 
 func (c *httpClient) ListTools() ([]McpTool, error) {
-	raw, err := c.request("tools/list", map[string]any{})
+	// 工具发现属于连接建立的一部分:从生命周期 ctx 派生,Close 即取消,
+	// 不等 CallTimeoutMS 自己到点。
+	raw, err := c.requestContext(c.ctx, "tools/list", map[string]any{})
 	if err != nil {
 		return nil, err
 	}
@@ -228,4 +239,8 @@ func (c *httpClient) CallToolContext(ctx context.Context, name string, arguments
 	return text, out.IsError, nil
 }
 
-func (c *httpClient) Close() {}
+func (c *httpClient) Close() {
+	// 生命周期 ctx(c.ctx)由平面的 Close 取消,在途请求随之结束;
+	// 这里再放掉空闲连接,不留池子。
+	c.client.CloseIdleConnections()
+}

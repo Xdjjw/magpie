@@ -2136,16 +2136,34 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 				// Whatever the candidate in flight recorded, its call was cut
 				// by this deadline rather than answered badly, so a failure
 				// held for it is a gateway timeout, not the upstream's own
-				// error. A whole reply already held, or an answer already on
-				// its way, is the one to send.
-				switch {
-				case hw.passing:
-					// already sent: nothing more to write
-				case hw.status >= 400 || hw.status == 0:
+				// error. And the branch runs only with !hw.ended — the
+				// reply was cut, not completed — so whatever is held or
+				// already flowing is part of a reply that never finished:
+				// neither may be handed over as a success.
+				if hw.passing && hw.stream {
+					// The stream had already begun: the agent has its 200
+					// and part of the reply, and a stream that simply ends
+					// there says none of that. Say it as an error event of
+					// the same stream — nothing sent after this, for the
+					// request is over (watch has ended, the copy returned).
+					call.Status, call.Error = http.StatusGatewayTimeout, "the request's wall clock ran out"
+					streamError(w, from, call.Status, call.Error)
+				} else if hw.passing {
+					// A whole reply already handed over — the semantic
+					// plane's own stop, released by xkTerminal with its 504
+					// said, or a held reply given as the last word: the
+					// agent has it complete, headers and body, and nothing
+					// may be appended to a reply that is not a stream; only
+					// the record says the timeout.
+					call.Status, call.Error = http.StatusGatewayTimeout, "the request's wall clock ran out"
+				} else {
+					// Nothing of the reply reached the agent — a stream held
+					// for its first content, a whole one cut mid-body, an
+					// error status, or no answer at all — so a status can
+					// still be said: 504, never a 200 whose held part is an
+					// incomplete reply.
 					call.Status, call.Error = http.StatusGatewayTimeout, "the request's wall clock ran out"
 					failTo(w, kept, from, call.Status, call.Error)
-				default:
-					hw.release()
 				}
 				try.Status, try.Error, try.Fail = call.Status, call.Error, failTimeout
 				telemetry.attempt(call, try, c.p.ID, sent, hw, capture)
