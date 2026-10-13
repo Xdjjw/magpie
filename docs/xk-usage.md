@@ -78,13 +78,31 @@ magpie gateway-key add myclient    # 发一个客户端用的 key
 用你自己的话写),用来在第一次调用就避开关键词误杀:
 
 ```sh
-magpie xk persona set - < docs/xk-persona.txt   # 部署推荐模板(或自己的)
+magpie xk persona set - < docs/xk-persona.txt   # 上传文件(记住来源路径)
 magpie xk persona show                          # 查看
+magpie xk persona on|off                        # 开关:off 只停注入,文本保留
 magpie xk persona clear                         # 清除(做对照基线)
 ```
 
-设置页 → 会话人格 也能编辑,保存即热生效。手写的人格永远优先于模板;
-`xk on` 不会覆盖它。写法要点见 `docs/xk-persona.md`。
+设置页 → 会话人格 = 开关 + 上传文件(不再手写),保存即热生效。自己上传的
+人格永远优先于模板;`xk on` 不会覆盖它。`xk off` 时,有可回读的源文件以
+磁盘上的为准还原,没有则清空。写法要点见 `docs/xk-persona.md`。
+
+## Codex 目录注入(客户端层,可选)
+
+与会话人格独立的第二个注入位:把一个文件**整体替换** `~/.codex/AGENTS.md`
+(Codex 的全局指令),原件自动备份为 `AGENTS.md.magpie-bak`:
+
+```sh
+magpie xk codex set - < 你的文件.md   # 替换(原件备份)
+magpie xk codex on|off               # Off = 还原原件;On = 再写入
+magpie xk codex clear                # 删除注入,原件回归
+```
+
+设置页「Codex 指令文件」行同样操作(开关 + 上传 + 清除)。它从 Codex 组装
+请求时生效(客户端层),人格从网关转发时生效(网关层),**两层同时开就是
+叠加**:两段文本都会在同一条请求里。建议两层放不同内容(Codex 层放交付
+契约/路由规则,人格层放环境框架),避免重复花费 token。
 
 ## 5. 度量:拒绝率用数据说话
 

@@ -294,15 +294,28 @@
         <div class="who"><div class="name" data-t>Semantic pipeline</div><div class="sub" data-t>L0–L4 rewrite, refusal detection and audit for providers marked semantic=yes. On also installs the recommended session persona when none is set; Off restores the previous persona and sends traffic straight to the upstream.</div></div>
         <div id="xkSegs"></div>
       </div>
-      <div class="row pref xk-persona-row" id="xkPersonaRow" hidden>
-        <div class="who"><div class="name" data-t>Session persona</div><div class="sub" data-t>Optional system framing carried by every semantic request from L0 — your authorized working context, in your own words. Empty sends requests unchanged.</div></div>
-        <div class="xk-persona">
-          <textarea id="xkPersonaText" rows="3" spellcheck="false"></textarea>
-          <div class="xk-persona-actions">
-            <button type="button" class="text" id="xkPersonaSave" data-t>Save</button>
+      <div class="row pref xk-upload-row" id="xkPersonaRow" hidden>
+        <div class="who"><div class="name" data-t>Session persona</div><div class="sub" data-t>Optional system framing carried by every semantic request from L0. Upload a file with your authorized working context; the switch applies it, Off leaves requests unchanged.</div></div>
+        <div class="xk-inject">
+          <div class="xk-inject-bar">
+            <div id="xkPersonaSegs"></div>
+            <button type="button" class="text" id="xkPersonaUpload" data-t>Upload file</button>
             <button type="button" class="text" id="xkPersonaClear" data-t>Clear</button>
-            <span class="xk-persona-note" id="xkPersonaNote"></span>
           </div>
+          <div class="xk-inject-meta" id="xkPersonaMeta"></div>
+          <input type="file" id="xkPersonaFile" accept=".txt,.md,.markdown" hidden>
+        </div>
+      </div>
+      <div class="row pref xk-upload-row" id="xkCodexRow" hidden>
+        <div class="who"><div class="name" data-t>Codex instructions</div><div class="sub" data-t>Replaces Codex's global instructions (~/.codex/AGENTS.md) with an uploaded file; the original is backed up and restored on Clear. Stacks with the session persona.</div></div>
+        <div class="xk-inject">
+          <div class="xk-inject-bar">
+            <div id="xkCodexSegs"></div>
+            <button type="button" class="text" id="xkCodexUpload" data-t>Upload file</button>
+            <button type="button" class="text" id="xkCodexClear" data-t>Clear</button>
+          </div>
+          <div class="xk-inject-meta" id="xkCodexMeta"></div>
+          <input type="file" id="xkCodexFile" accept=".txt,.md,.markdown" hidden>
         </div>
       </div>
       <div class="row pref" id="textSizeRow">

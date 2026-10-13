@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -66,6 +67,8 @@ func xkCmd(args []string) error {
 		return xkPersonaCmd(args[1:])
 	case "stats":
 		return xkStatsCmd(args[1:])
+	case "codex":
+		return xkCodexCmd(args[1:])
 	default:
 		return fmt.Errorf("unknown xk command %q: use on|off|status|persona|stats", args[0])
 	}
@@ -142,15 +145,19 @@ func xkPersonaCmd(args []string) error {
 	}
 	switch args[0] {
 	case "set":
-		var text string
+		var text, source string
 		switch {
 		case len(args) >= 3 && args[1] == "-":
-			// `set - <file`:从文件读,多行人格不用塞进 argv。
+			// `set - <file>`:从文件读;记住绝对路径,一键关闭时
+			// 以磁盘上的这份为准还原。
 			data, err := os.ReadFile(args[2])
 			if err != nil {
 				return err
 			}
 			text = string(data)
+			if abs, aerr := filepath.Abs(args[2]); aerr == nil {
+				source = abs
+			}
 		case len(args) >= 2 && args[1] == "-":
 			// `set -`:标准输入。
 			data, err := io.ReadAll(os.Stdin)
@@ -166,17 +173,70 @@ func xkPersonaCmd(args []string) error {
 		if strings.TrimSpace(text) == "" {
 			return fmt.Errorf("persona 文本为空;要清除用 magpie xk persona clear")
 		}
-		if err := gateway.SetXkPersona(text); err != nil {
+		if err := gateway.SetXkPersonaSource(text, source); err != nil {
 			return err
 		}
-		fmt.Printf("persona: 已设置(%d 字符,2 秒内生效;入口注入,所有层生效)\n", len(strings.TrimSpace(text)))
+		if err := gateway.SetXkPersonaEnabled(true); err != nil {
+			return err
+		}
+		fmt.Printf("persona: 已设置并启用(%d 字符,来自 %s;2 秒内生效)\n", len(strings.TrimSpace(text)), source)
 	case "clear":
 		if err := gateway.SetXkPersona(""); err != nil {
 			return err
 		}
 		fmt.Println("persona: 已清除(请求恢复原样)")
+	case "on", "off":
+		if err := gateway.SetXkPersonaEnabled(args[0] == "on"); err != nil {
+			return err
+		}
+		fmt.Println("persona:", args[0])
 	default:
-		return fmt.Errorf("unknown persona command %q: use show|set|clear", args[0])
+		return fmt.Errorf("unknown persona command %q: use show|set|clear|on|off", args[0])
+	}
+	return nil
+}
+
+// `magpie xk codex`:整体替换 ~/.codex/AGENTS.md(原件自动备份),
+// 与人格各自独立、同时生效(客户端层 + 网关层)。
+func xkCodexCmd(args []string) error {
+	if len(args) == 0 || args[0] == "show" {
+		st := gateway.XkCodexInject()
+		if st.Text == "" {
+			fmt.Println("codex inject: off(未上传;magpie xk codex set - < file)")
+			return nil
+		}
+		fmt.Printf("codex inject: %s(%d 字符,源:%s)\n", map[bool]string{true: "on", false: "off"}[st.Enabled], len(st.Text), st.Source)
+		return nil
+	}
+	switch args[0] {
+	case "set":
+		if len(args) < 3 || args[1] != "-" {
+			return fmt.Errorf("usage: magpie xk codex set - <file>")
+		}
+		data, err := os.ReadFile(args[2])
+		if err != nil {
+			return err
+		}
+		source := args[2]
+		if abs, aerr := filepath.Abs(args[2]); aerr == nil {
+			source = abs
+		}
+		if err := gateway.SetXkCodexInject(string(data), source, true); err != nil {
+			return err
+		}
+		fmt.Printf("codex inject: 已替换 ~/.codex/AGENTS.md(%d 字符,原件备份为 AGENTS.md.magpie-bak)\n", len(data))
+	case "on", "off":
+		if err := gateway.SetXkCodexInjectEnabled(args[0] == "on"); err != nil {
+			return err
+		}
+		fmt.Println("codex inject:", args[0])
+	case "clear":
+		if err := gateway.ClearXkCodexInject(); err != nil {
+			return err
+		}
+		fmt.Println("codex inject: 已删除,原件已还原")
+	default:
+		return fmt.Errorf("unknown codex command %q: use show|set|on|off|clear", args[0])
 	}
 	return nil
 }

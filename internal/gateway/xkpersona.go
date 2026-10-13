@@ -33,6 +33,12 @@ const xkPersonaMax = 8192
 
 type xkPersonaState struct {
 	Text string `json:"text"`
+	// Source 是文本的来源(CLI 上传时是可回读的绝对路径,网页上传时是
+	// 文件名标签)。一键关闭时,可读的源文件优先于快照还原。
+	Source string `json:"source,omitempty"`
+	// Enabled 是独立的启用位:文本保留、开关决定是否注入。nil =
+	// 旧文件没有这个字段,按「有文本即启用」推导,行为与之前一致。
+	Enabled *bool `json:"enabled,omitempty"`
 }
 
 func xkPersonaPath() string {
@@ -49,6 +55,31 @@ type xkPersonaSnapshot struct {
 	text    string
 	expires int64
 	path    string
+}
+
+func xkPersonaStateRead() xkPersonaState {
+	var st xkPersonaState
+	if data, err := os.ReadFile(xkPersonaPath()); err == nil {
+		_ = json.Unmarshal(data, &st)
+	}
+	return st
+}
+
+// XkPersonaEnabled 报告人格是否注入:显式开关优先,旧文件按文本
+// 非空推导。
+func XkPersonaEnabled() bool {
+	st := xkPersonaStateRead()
+	if st.Enabled != nil {
+		return *st.Enabled
+	}
+	return strings.TrimSpace(st.Text) != ""
+}
+
+// SetXkPersonaEnabled 拨启用开关,文本不动。
+func SetXkPersonaEnabled(on bool) error {
+	st := xkPersonaStateRead()
+	st.Enabled = &on
+	return xkPersonaStateWrite(st)
 }
 
 // XkPersona 返回当前人格文本;空串 = 未设置。
@@ -74,18 +105,35 @@ func XkPersona() string {
 	return text
 }
 
-// SetXkPersona 写人格(原子写,首尾空白去掉,超长截断);空串即清除。
-// CLI 的 `magpie xk persona set|clear` 调它。
+// SetXkPersona 写人格(原子写,首尾空白去掉,超长截断);空串即清除文本。
+// 启用位不动——那是开关的事。CLI 的 `magpie xk persona set|clear` 调它。
 func SetXkPersona(text string) error {
+	return SetXkPersonaSource(text, "")
+}
+
+// SetXkPersonaSource 写人格并记住来源。
+func SetXkPersonaSource(text, source string) error {
 	text = strings.TrimSpace(text)
 	if n := utf8.RuneCountInString(text); n > xkPersonaMax {
 		text = string([]rune(text)[:xkPersonaMax])
 	}
+	st := xkPersonaStateRead()
+	st.Text, st.Source = text, strings.TrimSpace(source)
+	return xkPersonaStateWrite(st)
+}
+
+// XkPersonaSource 返回人格的来源标注(可能只是文件名)。
+func XkPersonaSource() string {
+	return xkPersonaStateRead().Source
+}
+
+// xkPersonaStateWrite 原子写状态并使读缓存失效。
+func xkPersonaStateWrite(st xkPersonaState) error {
 	path := xkPersonaPath()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(xkPersonaState{Text: text}, "", "  ")
+	data, err := json.MarshalIndent(st, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -122,6 +170,9 @@ func XkPersonaInit() {
 // xkPersonaInjection 是随请求上行的注入块:带一个可检索的标记头,
 // 审计 JSONL 的 RequestBody 里能一眼认出哪段是人格。
 func xkPersonaInjection() string {
+	if !XkPersonaEnabled() {
+		return ""
+	}
 	persona := strings.TrimSpace(XkPersona())
 	if persona == "" {
 		return ""

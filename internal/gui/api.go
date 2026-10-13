@@ -759,24 +759,80 @@ func Handler(w Windows, gw *gateway.Server) http.Handler {
 		}
 		writeJSON(rw, map[string]any{"enabled": gateway.XkMasterOn()})
 	})
-	// 入口人格:设置页的编辑框与 `magpie xk persona set|clear` 读写同一份
-	// 状态;空文本 = 清除。注入从 L0 起生效,2 秒内热更新。
+	// 入口人格:设置页的开关与上传、`magpie xk persona` 子命令读写同一份
+	// 状态。text 可单独换(上传文件),enabled 可单独拨(开关);两者都给
+	// 时先写文本再拨开关。注入从 L0 起生效,2 秒内热更新。
 	mux.HandleFunc("GET /api/xk/persona", func(rw http.ResponseWriter, r *http.Request) {
-		writeJSON(rw, map[string]any{"text": gateway.XkPersona()})
+		writeJSON(rw, map[string]any{"text": gateway.XkPersona(), "enabled": gateway.XkPersonaEnabled(), "source": gateway.XkPersonaSource()})
 	})
-	mux.HandleFunc("POST /api/xk/persona", func(rw http.ResponseWriter, r *http.Request) {
+	// Codex 目录注入:整体替换 ~/.codex/AGENTS.md(原件自动备份),
+	// 与人格各自独立、同时生效。clear=true 全部撤下并还原原件。
+	mux.HandleFunc("GET /api/xk/codex", func(rw http.ResponseWriter, r *http.Request) {
+		st := gateway.XkCodexInject()
+		writeJSON(rw, map[string]any{"text": st.Text, "enabled": st.Enabled, "source": st.Source})
+	})
+	mux.HandleFunc("POST /api/xk/codex", func(rw http.ResponseWriter, r *http.Request) {
 		var in struct {
-			Text string `json:"text"`
+			Text    *string `json:"text"`
+			Source  *string `json:"source"`
+			Enabled *bool   `json:"enabled"`
+			Clear   bool    `json:"clear"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			fail(rw, err)
 			return
 		}
-		if err := gateway.SetXkPersona(in.Text); err != nil {
+		var err error
+		switch {
+		case in.Clear:
+			err = gateway.ClearXkCodexInject()
+		case in.Text != nil:
+			source := ""
+			if in.Source != nil {
+				source = *in.Source
+			}
+			enabled := true
+			if in.Enabled != nil {
+				enabled = *in.Enabled
+			}
+			err = gateway.SetXkCodexInject(*in.Text, source, enabled)
+		case in.Enabled != nil:
+			err = gateway.SetXkCodexInjectEnabled(*in.Enabled)
+		}
+		if err != nil {
 			fail(rw, err)
 			return
 		}
-		writeJSON(rw, map[string]any{"text": gateway.XkPersona()})
+		st := gateway.XkCodexInject()
+		writeJSON(rw, map[string]any{"text": st.Text, "enabled": st.Enabled, "source": st.Source})
+	})
+	mux.HandleFunc("POST /api/xk/persona", func(rw http.ResponseWriter, r *http.Request) {
+		var in struct {
+			Text    *string `json:"text"`
+			Source  *string `json:"source"`
+			Enabled *bool   `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			fail(rw, err)
+			return
+		}
+		if in.Text != nil {
+			source := ""
+			if in.Source != nil {
+				source = *in.Source
+			}
+			if err := gateway.SetXkPersonaSource(*in.Text, source); err != nil {
+				fail(rw, err)
+				return
+			}
+		}
+		if in.Enabled != nil {
+			if err := gateway.SetXkPersonaEnabled(*in.Enabled); err != nil {
+				fail(rw, err)
+				return
+			}
+		}
+		writeJSON(rw, map[string]any{"text": gateway.XkPersona(), "enabled": gateway.XkPersonaEnabled(), "source": gateway.XkPersonaSource()})
 	})
 	mux.HandleFunc("GET /api/state", func(rw http.ResponseWriter, r *http.Request) {
 		// the panel and its model picker load from here: an account still

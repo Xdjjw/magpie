@@ -20442,37 +20442,46 @@ async function refreshXkRow() {
   }
 }
 
-// 会话人格:入口注入的 system 框架,Save/Clear 写回 `/api/xk/persona`,
-// 2 秒内对语义请求生效。正在编辑时不被后台刷新覆盖。
-async function loadXkPersona() {
-  const row = $("#xkPersonaRow"), note = $("#xkPersonaNote");
-  try {
-    const res = await fetch("/api/xk/persona").then((r) => (r.ok ? r.json() : Promise.reject(r.status)));
+// 会话人格与 Codex 指令:同一套「开关 + 上传 + 状态」行。上传读文件后
+// POST 文本(浏览器只给文件名,作为来源标签);Clear 对人格是清文本,
+// 对 Codex 是撤下注入并还原原件。
+function xkInjectRow(ids, api, codex) {
+  const row = $(ids.row);
+  fetch(api).then((r) => (r.ok ? r.json() : Promise.reject(r.status))).then((st) => {
     row.hidden = false;
-    const box = $("#xkPersonaText");
-    if (!xkPersonaDirty && document.activeElement !== box) box.value = res.text || "";
-    if (xkPersonaWired) return;
-    xkPersonaWired = true;
-    box.oninput = () => { xkPersonaDirty = true; note.classList.remove("show"); };
-    box.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) $("#xkPersonaSave").onclick(); };
-    $("#xkPersonaSave").onclick = async () => {
-      const r = await fetch("/api/xk/persona", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: box.value }) }).catch(() => null);
+    $(ids.segs).replaceChildren(segs([["off", t("Off")], ["on", t("On")]], st.enabled && st.text ? "on" : "off", async (pick) => {
+      const r = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: pick === "on" }) }).catch(() => null);
       if (!r || !r.ok) return;
-      xkPersonaDirty = false;
-      note.textContent = t("Saved");
-      note.classList.add("show");
-      setTimeout(() => note.classList.remove("show"), 1500);
-    };
-    $("#xkPersonaClear").onclick = async () => {
-      const r = await fetch("/api/xk/persona", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text: "" }) }).catch(() => null);
-      if (!r || !r.ok) return;
-      box.value = "";
-      xkPersonaDirty = false;
-      note.classList.remove("show");
-    };
-  } catch {
-    row.hidden = true;
-  }
+      xkInjectRow(ids, api, codex);
+    }));
+    $(ids.meta).textContent = st.text
+      ? `${st.source || "—"} · ${st.text.length} chars`
+      : t("Not uploaded");
+  }).catch(() => { row.hidden = true; });
+  if (row.dataset.wired) return;
+  row.dataset.wired = "1";
+  const file = $(ids.file);
+  $(ids.upload).onclick = () => file.click();
+  file.onchange = () => {
+    const f = file.files && file.files[0];
+    if (!f) return;
+    f.text().then((text) =>
+      fetch(api, { method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(codex ? { text, source: f.name } : { text, source: f.name, enabled: true }) })
+    ).then((r) => { if (r && r.ok) xkInjectRow(ids, api, codex); });
+    file.value = "";
+  };
+  $(ids.clear).onclick = async () => {
+    const r = await fetch(api, { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(codex ? { clear: true } : { text: "" }) }).catch(() => null);
+    if (!r || !r.ok) return;
+    xkInjectRow(ids, api, codex);
+  };
+}
+
+function loadXkPersona() {
+  xkInjectRow({ row: "#xkPersonaRow", segs: "#xkPersonaSegs", upload: "#xkPersonaUpload", clear: "#xkPersonaClear", file: "#xkPersonaFile", meta: "#xkPersonaMeta" }, "/api/xk/persona", false);
+  xkInjectRow({ row: "#xkCodexRow", segs: "#xkCodexSegs", upload: "#xkCodexUpload", clear: "#xkCodexClear", file: "#xkCodexFile", meta: "#xkCodexMeta" }, "/api/xk/codex", true);
 }
 
 function renderSettings() {

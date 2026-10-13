@@ -34,8 +34,9 @@ func XkDefaultPersona() string { return xkDefaultPersona }
 const xkPowerFile = "xkeysmith-power.json"
 
 type xkPowerState struct {
-	On    bool   `json:"on"`
-	Saved string `json:"saved_persona"`
+	On           bool   `json:"on"`
+	Saved        string `json:"saved_persona"`
+	SavedEnabled bool   `json:"saved_persona_enabled"`
 }
 
 func xkPowerPath() string {
@@ -86,7 +87,7 @@ func SetXkPower(on bool) (bool, error) {
 	if on {
 		if !st.On {
 			// 第一次拨到开:快照当前人格,空则装推荐模板。
-			st.On, st.Saved = true, XkPersona()
+			st.On, st.Saved, st.SavedEnabled = true, XkPersona(), XkPersonaEnabled()
 			if err := xkPowerWrite(st); err != nil {
 				return false, err
 			}
