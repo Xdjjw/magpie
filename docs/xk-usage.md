@@ -43,7 +43,36 @@ magpie xk status            # on + persona 状态
 托盘菜单和 设置 → 语义流水线 的开关是同一个动作。关(`xk off`)则所有
 请求原样直连、人格还原,2 秒内生效,不用重启——管线出问题时一拨即断。
 
-## 3. 人格(persona):日常调参的主旋钮
+## 3. 客户端怎么接
+
+**方式一:托管的 agent(推荐,Codex 属于这类)。** magpie 直接改写 agent
+自己的配置,把它指到本地网关——agent 正常使用,完全无感:
+
+```sh
+magpie ls                    # 这台机器检测到的 agent
+magpie codex review/m1       # Codex 的模型经 magpie(含语义管线)
+magpie codex default         # Codex 还原为不经 magpie
+```
+
+桌面端的 Agents 页点选是同一件事。LAN 上其他机器的 agent 也能接:设置 →
+General → Share on local network。
+
+**方式二:任意 OpenAI 兼容客户端手动接。** 网关默认在
+`http://127.0.0.1:3425`,四种协议方言都收(`/v1/chat/completions`、
+`/v1/responses` 自动识别;Anthropic Messages、Gemini 同样支持):
+
+```sh
+magpie gateway-key add myclient    # 发一个客户端用的 key
+```
+
+客户端配置:Base URL `http://127.0.0.1:3425/v1`,API Key 用上面发的,
+模型名写 `provider/model`(如 `review/m1`)。请求进来后和托管 agent 的
+流量走同一条路:semantic=yes 的 provider 自动过 L0–L4。
+
+网关的进程形态任选:桌面 app(开着就有)、`magpie serve`(无界面常驻)、
+`magpie tui` / `magpie web`(终端/浏览器)。
+
+## 4. 人格(persona):日常调参的主旋钮
 
 人格是一段随每个语义请求从 L0 上行的 system 框架(你已授权的工作环境,
 用你自己的话写),用来在第一次调用就避开关键词误杀:
@@ -57,7 +86,7 @@ magpie xk persona clear                         # 清除(做对照基线)
 设置页 → 会话人格 也能编辑,保存即热生效。手写的人格永远优先于模板;
 `xk on` 不会覆盖它。写法要点见 `docs/xk-persona.md`。
 
-## 4. 度量:拒绝率用数据说话
+## 5. 度量:拒绝率用数据说话
 
 ```sh
 magpie xk stats          # 最近 500 条阶梯尝试
@@ -76,7 +105,7 @@ magpie xk stats 2000     # 更大窗口
 调参闭环:`xk persona clear` 跑基线 → `stats` 记录 → 部署人格跑同样的活
 → 再 `stats` → 对比。
 
-## 5. 看一次请求发生了什么
+## 6. 看一次请求发生了什么
 
 - **响应头**:`x-xkeysmith-trace`(追踪 id)、`x-xkeysmith-layer`(采纳
   到哪层,L0=直通即成功)、`x-xkeysmith-escalated`(是否升过层)、
@@ -85,7 +114,7 @@ magpie xk stats 2000     # 更大窗口
   位置:`~/.magpie/xkeysmith/audit/`(或对应平台的设置目录)。
 - 每 `xk__mcp__*` 网关工具调用也在同一时间线上。
 
-## 6. 管道内的秘密与工具(按需)
+## 7. 管道内的秘密与工具(按需)
 
 - 秘密/内网目标在 L2+ 自动换成 `«TGT…»` 占位符,回复回来 L4 还原——
   上游看不到原值,审计里有脱敏对照表。
@@ -94,7 +123,7 @@ magpie xk stats 2000     # 更大窗口
   `XKEYSMITH_SKILLS_MODE=index|full`。模型经 `xk__mcp__<server>__<tool>`
   调用它们。
 
-## 7. 状态文件一览
+## 8. 状态文件一览
 
 | 文件(设置目录下) | 作用 |
 |---|---|
@@ -107,7 +136,7 @@ magpie xk stats 2000     # 更大窗口
 设置目录:macOS `~/Library/Application Support/magpie`(或
 `$XDG_CONFIG_HOME/magpie`),Linux `~/.config/magpie`。
 
-## 8. 故障排查
+## 9. 故障排查
 
 | 症状 | 看哪 | 处置 |
 |---|---|---|
