@@ -24,6 +24,7 @@ func xkCmd(args []string) error {
 	if len(args) > 0 && args[0] == "xk" {
 		args = args[1:]
 	}
+	gateway.XkPersonaInit()
 	if len(args) == 0 {
 		state := "on"
 		if !gateway.XkMasterOn() {

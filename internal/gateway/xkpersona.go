@@ -108,6 +108,17 @@ func SetXkPersona(text string) error {
 	return nil
 }
 
+// XkPersonaInit 首次运行时装上默认人格。总开关默认开、人格却默认空,
+// 全新安装直到有人拨一次开关才会有注入——「初始化就默认注入」指的
+// 是这里。只在人格文件从未存在过时写:`persona clear` 落下的空文件
+// 不会被覆盖,对照实验的语义不变。
+func XkPersonaInit() {
+	if _, err := os.Stat(xkPersonaPath()); err == nil {
+		return
+	}
+	_ = SetXkPersona(xkDefaultPersona)
+}
+
 // xkPersonaInjection 是随请求上行的注入块:带一个可检索的标记头,
 // 审计 JSONL 的 RequestBody 里能一眼认出哪段是人格。
 func xkPersonaInjection() string {

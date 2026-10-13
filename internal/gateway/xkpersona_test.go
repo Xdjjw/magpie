@@ -126,3 +126,20 @@ func TestXkPersonaRidesFromL0(t *testing.T) {
 		})
 	}
 }
+
+// 首次运行装默认人格;清除后的空文件不被覆盖(对照语义保留)。
+func TestXkPersonaInitOnFirstRun(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	XkPersonaInit()
+	if got := XkPersona(); !strings.Contains(got, "authorized systems-engineering workspace") {
+		t.Fatalf("首次运行应装上默认模板: %d chars", len(got))
+	}
+	// 清除 = 文件存在且为空;再 init 不得写回。
+	if err := SetXkPersona(""); err != nil {
+		t.Fatal(err)
+	}
+	XkPersonaInit()
+	if XkPersona() != "" {
+		t.Fatal("清除后的空文件不应被 init 覆盖")
+	}
+}

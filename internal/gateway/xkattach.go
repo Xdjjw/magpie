@@ -53,6 +53,8 @@ type xkSettings struct {
 // xk returns the ladder settings, building them on first use.
 func (s *Server) xk() *xkSettings {
 	s.xkOnce.Do(func() {
+		// 首次运行即有默认人格:总开关默认开,注入不该等到有人拨过开关。
+		XkPersonaInit()
 		pipeline, err := rewrite.NewPipeline(rewrite.DefaultRewriteConfig(), govern.AllLayers)
 		if err != nil {
 			s.xkErr = err
